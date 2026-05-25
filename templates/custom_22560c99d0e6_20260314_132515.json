@@ -1,0 +1,26 @@
+{
+  "name": "Enkele strip van 3 (aangepast)",
+  "background_path": "C:/Photobooth/backgrounds/Schermafbeelding 2026-03-11 112900.png",
+  "is_double_strip": true,
+  "cut_default": true,
+  "frames": [
+    {
+      "x": 30,
+      "y": 30,
+      "width": 1140,
+      "height": 560
+    },
+    {
+      "x": 30,
+      "y": 620,
+      "width": 1140,
+      "height": 560
+    },
+    {
+      "x": 30,
+      "y": 1210,
+      "width": 1140,
+      "height": 560
+    }
+  ]
+}

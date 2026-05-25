@@ -1,0 +1,26 @@
+{
+  "name": "Dubbele strip van 3 (aangepast)",
+  "background_path": "C:/Photobooth/backgrounds/confetti.png",
+  "is_double_strip": false,
+  "cut_default": true,
+  "frames": [
+    {
+      "x": 80,
+      "y": 54,
+      "width": 397,
+      "height": 449
+    },
+    {
+      "x": 79,
+      "y": 538,
+      "width": 382,
+      "height": 425
+    },
+    {
+      "x": 30,
+      "y": 1026,
+      "width": 540,
+      "height": 560
+    }
+  ]
+}

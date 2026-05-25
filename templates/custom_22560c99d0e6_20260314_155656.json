@@ -1,0 +1,26 @@
+{
+  "name": "Dubbele strip met 3 foto's (aangepast)",
+  "background_path": "C:/Photobooth/backgrounds/feest_blauw.png",
+  "is_double_strip": false,
+  "cut_default": true,
+  "frames": [
+    {
+      "x": 29,
+      "y": 82,
+      "width": 540,
+      "height": 360
+    },
+    {
+      "x": 32,
+      "y": 493,
+      "width": 540,
+      "height": 360
+    },
+    {
+      "x": 30,
+      "y": 893,
+      "width": 540,
+      "height": 360
+    }
+  ]
+}

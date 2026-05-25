@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# PyInstaller / Inno Setup build artifacts
+build/
+dist/
+installer_output/
+*.spec.bak
+innosetup_installer.exe
+
+# Logs (runtime & build)
+*.log
+
+# Temp files from prior dev sessions
+tmp_*.txt
+tmp_*.ts
+tmp_*.tsx
+tmp_*
+
+# Runtime data / generated state
+printer_counter.json
+
+# Future: secrets moved out of config.py
+secrets.json
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/

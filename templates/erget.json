@@ -1,0 +1,35 @@
+{
+  "name": "erget",
+  "background_path": "C:\\Photobooth\\backgrounds\\confetti.png",
+  "frames": [
+    {
+      "x": 30,
+      "y": 30,
+      "width": 540,
+      "height": 360,
+      "rotation": 0.0
+    },
+    {
+      "x": 37,
+      "y": 431,
+      "width": 521,
+      "height": 355,
+      "rotation": 0.0
+    },
+    {
+      "x": 30,
+      "y": 810,
+      "width": 540,
+      "height": 360,
+      "rotation": 0.0
+    },
+    {
+      "x": 30,
+      "y": 1200,
+      "width": 540,
+      "height": 360,
+      "rotation": 0.0
+    }
+  ],
+  "is_double_strip": false
+}

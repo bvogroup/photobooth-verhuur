@@ -1,0 +1,27 @@
+{
+  "name": "pieter",
+  "background_path": "C:/Photobooth/backgrounds/confetti.png",
+  "frames": [
+    {
+      "x": 22,
+      "y": 37,
+      "width": 570,
+      "height": 570,
+      "rotation": 0.0
+    },
+    {
+      "x": 3,
+      "y": 630,
+      "width": 570,
+      "height": 570,
+      "rotation": 0.0
+    },
+    {
+      "x": 7,
+      "y": 1219,
+      "width": 570,
+      "height": 570,
+      "rotation": 0.0
+    }
+  ]
+}

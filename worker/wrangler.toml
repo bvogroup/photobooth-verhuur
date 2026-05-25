@@ -1,0 +1,12 @@
+name = "photobooth-photos"
+main = "photo-worker.js"
+compatibility_date = "2024-01-01"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "photobooth-photos"
+
+# Cron trigger: clean up expired photos every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]

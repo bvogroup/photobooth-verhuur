@@ -1,0 +1,11 @@
+{
+  "smtp_server": "smtp.gmail.com",
+  "smtp_port": 587,
+  "smtp_username": "clixibo.com@gmail.com",
+  "smtp_password": "dnum beop dhly jkhp",
+  "smtp_from_address": "clixibo.com@gmail.com",
+  "email_subject": "Jouw Photobooth Foto's!",
+  "idle_background": "C:/Photobooth/backgrounds/Schermafbeelding 2026-03-11 112900.png",
+  "selected_template": "Test",
+  "active_event_id": "22560c99d0e6"
+}

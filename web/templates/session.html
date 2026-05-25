@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jouw Foto's</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #F7F5F1;
+            --primary: #D6C29B;
+            --primary-dark: #b8a47d;
+            --text: #53565A;
+            --text-light: #8a8d91;
+            --card: #EFEDE8;
+            --success: #4A9B6E;
+            --danger: #C0392B;
+            --shadow: 0 2px 16px rgba(83, 86, 90, 0.10);
+            --radius: 16px;
+        }
+
+        html, body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            min-height: 100dvh;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* ── Header ─────────────────────────────── */
+        .header {
+            text-align: center;
+            padding: 16px 20px 8px;
+            position: relative;
+            z-index: 10;
+        }
+        .header h1 {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--text);
+        }
+        .header .branding {
+            font-size: 11px;
+            color: var(--text-light);
+            margin-top: 2px;
+            letter-spacing: 0.3px;
+        }
+        .header .branding span {
+            color: var(--primary-dark);
+            font-weight: 600;
+        }
+
+        /* ── Slideshow wrapper ──────────────────── */
+        .slideshow {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 200px);
+            height: calc(100dvh - 200px);
+            min-height: 320px;
+            max-height: 700px;
+            overflow: hidden;
+            touch-action: pan-y;
+        }
+
+        /* ── Track & slides ─────────────────────── */
+        .slides-track {
+            display: flex;
+            height: 100%;
+            transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+            will-change: transform;
+        }
+        .slides-track.dragging {
+            transition: none;
+        }
+
+        .slide {
+            flex: 0 0 100%;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 16px 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .slide .img-wrap {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-height: 0;
+            overflow: hidden;
+            border-radius: var(--radius);
+            background: var(--card);
+            box-shadow: var(--shadow);
+        }
+        .slide img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: var(--radius);
+            display: block;
+            pointer-events: none;
+            -webkit-user-drag: none;
+        }
+        .slide .label {
+            margin-top: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-light);
+            letter-spacing: 0.2px;
+        }
+
+        /* ── Arrow buttons (desktop) ────────────── */
+        .arrow {
+            display: none;
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255,255,255,0.85);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+            color: var(--text);
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 5;
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            transition: opacity 0.2s, background 0.2s;
+        }
+        .arrow:hover { background: #fff; }
+        .arrow:active { background: var(--card); }
+        .arrow.left { left: 10px; }
+        .arrow.right { right: 10px; }
+        .arrow:disabled { opacity: 0; pointer-events: none; }
+
+        @media (hover: hover) and (pointer: fine) {
+            .arrow { display: flex; align-items: center; justify-content: center; }
+        }
+
+        /* ── Controls bar ───────────────────────── */
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px 6px;
+        }
+
+        /* counter */
+        .counter {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-light);
+            letter-spacing: 0.5px;
+        }
+
+        /* download single */
+        .dl-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 28px;
+            background: var(--primary);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            border: none;
+            border-radius: 40px;
+            text-decoration: none;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(214,194,155,0.35);
+            transition: background 0.2s, transform 0.1s;
+        }
+        .dl-btn:active { background: var(--primary-dark); transform: scale(0.97); }
+        .dl-btn svg { width: 18px; height: 18px; fill: #fff; }
+
+        /* share button */
+        .share-btn {
+            display: none; /* hidden by default, shown via JS if Web Share API available */
+            align-items: center;
+            gap: 6px;
+            padding: 10px 28px;
+            background: #25D366;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 700;
+            border: none;
+            border-radius: 40px;
+            text-decoration: none;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(37,211,102,0.30);
+            transition: background 0.2s, transform 0.1s;
+        }
+        .share-btn:active { background: #1da851; transform: scale(0.97); }
+        .share-btn svg { width: 18px; height: 18px; fill: #fff; }
+
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* dots */
+        .dots {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            padding: 4px 0;
+        }
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--card);
+            border: 1.5px solid var(--primary);
+            transition: background 0.3s, transform 0.3s;
+            cursor: pointer;
+        }
+        .dot.active {
+            background: var(--primary);
+            transform: scale(1.25);
+        }
+
+        /* ── Action buttons row ─────────────────── */
+        .actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            padding: 8px 20px 16px;
+            flex-wrap: wrap;
+        }
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            border-radius: 40px;
+            font-size: 14px;
+            font-weight: 600;
+            border: 2px solid var(--primary);
+            background: transparent;
+            color: var(--text);
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .action-btn:active { transform: scale(0.97); }
+        .action-btn.filled {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+        .action-btn.filled:active { background: var(--primary-dark); }
+        .action-btn svg { width: 16px; height: 16px; }
+
+        /* ── Email section ──────────────────────── */
+        .email-section {
+            background: var(--card);
+            border-radius: var(--radius);
+            padding: 24px 20px;
+            margin: 12px 16px 0;
+            box-shadow: var(--shadow);
+        }
+        .email-section h2 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .email-section p {
+            font-size: 13px;
+            color: var(--text-light);
+            margin-bottom: 14px;
+        }
+        .email-section input[type="email"] {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #d8d5cf;
+            border-radius: 12px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .email-section input[type="email"]:focus { border-color: var(--primary); }
+        .email-section .email-btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            margin-top: 10px;
+            background: var(--success);
+            color: #fff;
+            text-align: center;
+            font-size: 15px;
+            font-weight: 700;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .email-section .email-btn:active { background: #3d8a5e; }
+        .email-section .email-btn:disabled { background: #b0b0b0; cursor: not-allowed; }
+        .email-status {
+            text-align: center;
+            margin-top: 8px;
+            font-size: 14px;
+            min-height: 20px;
+        }
+        .email-status.success { color: var(--success); }
+        .email-status.error { color: var(--danger); }
+
+        /* ── Footer ─────────────────────────────── */
+        .footer {
+            text-align: center;
+            color: var(--text-light);
+            padding: 24px 20px 32px;
+            font-size: 11px;
+            letter-spacing: 0.3px;
+        }
+        .footer span { color: var(--primary-dark); font-weight: 600; }
+
+        /* ── Responsive tweaks ──────────────────── */
+        @media (min-width: 600px) {
+            .slideshow { max-height: 550px; }
+            .slide { padding: 16px 40px 0; }
+            .header h1 { font-size: 30px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <div class="header">
+        <h1>Jouw Foto's!</h1>
+        <div class="branding">Powered by <span>Bootharoo</span></div>
+    </div>
+
+    <!-- Slideshow -->
+    <div class="slideshow" id="slideshow">
+        <div class="slides-track" id="track">
+            {% if strip_filename %}
+            <div class="slide" data-url="/download/{{ session_id }}/{{ strip_filename }}" data-label="Fotostrip">
+                <div class="img-wrap">
+                    <img src="/download/{{ session_id }}/{{ strip_filename }}" alt="Fotostrip" loading="eager">
+                </div>
+                <div class="label">Fotostrip</div>
+            </div>
+            {% endif %}
+
+            {% for filename in photo_filenames %}
+            <div class="slide" data-url="/download/{{ session_id }}/{{ filename }}" data-label="Foto {{ loop.index }}">
+                <div class="img-wrap">
+                    <img src="/download/{{ session_id }}/{{ filename }}" alt="Foto {{ loop.index }}" loading="lazy">
+                </div>
+                <div class="label">Foto {{ loop.index }}</div>
+            </div>
+            {% endfor %}
+
+            {% if boomerang_filename %}
+            <div class="slide" data-url="/download/{{ session_id }}/{{ boomerang_filename }}" data-label="Boomerang">
+                <div class="img-wrap">
+                    <img src="/download/{{ session_id }}/{{ boomerang_filename }}" alt="Boomerang GIF" loading="lazy">
+                </div>
+                <div class="label">Boomerang</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <button class="arrow left" id="arrowL" aria-label="Vorige">&#8249;</button>
+        <button class="arrow right" id="arrowR" aria-label="Volgende">&#8250;</button>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+        <div class="counter" id="counter"></div>
+
+        <div class="btn-row">
+            <a class="dl-btn" id="dlBtn" href="#" download>
+                <svg viewBox="0 0 24 24"><path d="M12 16l-6-6h4V4h4v6h4l-6 6zm-7 4h14v2H5v-2z"/></svg>
+                Download
+            </a>
+            <button class="share-btn" id="shareBtn" onclick="sharePhoto()">
+                <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
+                Delen
+            </button>
+        </div>
+
+        <div class="dots" id="dots"></div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="actions">
+        <button class="action-btn filled" id="dlAllBtn" onclick="downloadAll()">
+            <svg viewBox="0 0 24 24" fill="#fff"><path d="M12 16l-6-6h4V4h4v6h4l-6 6zm-7 4h14v2H5v-2z"/></svg>
+            Download alles
+        </button>
+        {% if config_email_enabled %}
+        <button class="action-btn" onclick="document.getElementById('emailSection').scrollIntoView({behavior:'smooth'})">
+            <svg viewBox="0 0 24 24" fill="var(--text)"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+            E-mail
+        </button>
+        {% endif %}
+    </div>
+
+    {% if config_email_enabled %}
+    <!-- Email section -->
+    <div class="email-section" id="emailSection">
+        <h2>E-mail je foto's</h2>
+        <p>Ontvang al je foto's direct in je inbox.</p>
+        <input type="email" id="emailInput" placeholder="naam@voorbeeld.nl" autocomplete="email" inputmode="email">
+        <button class="email-btn" id="emailBtn" onclick="sendEmail()">Verstuur naar mijn e-mail</button>
+        <div class="email-status" id="emailStatus"></div>
+    </div>
+    {% endif %}
+
+    <div class="footer">Powered by <span>Bootharoo</span></div>
+
+    <script>
+    (function() {
+        var track = document.getElementById('track');
+        var slides = track.children;
+        var total = slides.length;
+        var cur = 0;
+
+        var dotsWrap = document.getElementById('dots');
+        var counter = document.getElementById('counter');
+        var dlBtn = document.getElementById('dlBtn');
+        var arrowL = document.getElementById('arrowL');
+        var arrowR = document.getElementById('arrowR');
+
+        // Build dots
+        for (var i = 0; i < total; i++) {
+            var d = document.createElement('div');
+            d.className = 'dot' + (i === 0 ? ' active' : '');
+            d.setAttribute('data-i', i);
+            d.addEventListener('click', function() { goTo(parseInt(this.getAttribute('data-i'))); });
+            dotsWrap.appendChild(d);
+        }
+
+        function update() {
+            track.style.transform = 'translateX(-' + (cur * 100) + '%)';
+            // dots
+            var dots = dotsWrap.children;
+            for (var i = 0; i < dots.length; i++) {
+                dots[i].className = 'dot' + (i === cur ? ' active' : '');
+            }
+            // counter
+            counter.textContent = (cur + 1) + ' / ' + total;
+            // download btn
+            var s = slides[cur];
+            dlBtn.href = s.getAttribute('data-url');
+            dlBtn.setAttribute('download', '');
+            // arrows
+            arrowL.disabled = cur === 0;
+            arrowR.disabled = cur === total - 1;
+        }
+
+        function goTo(i) {
+            if (i < 0 || i >= total) return;
+            cur = i;
+            update();
+        }
+
+        arrowL.addEventListener('click', function() { goTo(cur - 1); });
+        arrowR.addEventListener('click', function() { goTo(cur + 1); });
+
+        // Swipe support
+        var startX = 0, startY = 0, dx = 0, isDragging = false, isHorizontal = null;
+
+        track.addEventListener('touchstart', function(e) {
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+            dx = 0;
+            isDragging = true;
+            isHorizontal = null;
+            track.classList.add('dragging');
+        }, { passive: true });
+
+        track.addEventListener('touchmove', function(e) {
+            if (!isDragging) return;
+            var moveX = e.touches[0].clientX - startX;
+            var moveY = e.touches[0].clientY - startY;
+
+            if (isHorizontal === null) {
+                if (Math.abs(moveX) > 8 || Math.abs(moveY) > 8) {
+                    isHorizontal = Math.abs(moveX) > Math.abs(moveY);
+                }
+                if (!isHorizontal) return;
+            }
+            if (!isHorizontal) return;
+
+            e.preventDefault();
+            dx = moveX;
+            var offset = -(cur * track.offsetWidth) + dx;
+            track.style.transform = 'translateX(' + offset + 'px)';
+        }, { passive: false });
+
+        track.addEventListener('touchend', function() {
+            if (!isDragging) return;
+            isDragging = false;
+            track.classList.remove('dragging');
+            if (isHorizontal && Math.abs(dx) > 50) {
+                if (dx < 0 && cur < total - 1) cur++;
+                else if (dx > 0 && cur > 0) cur--;
+            }
+            update();
+        }, { passive: true });
+
+        // Keyboard
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowLeft') goTo(cur - 1);
+            else if (e.key === 'ArrowRight') goTo(cur + 1);
+        });
+
+        update();
+    })();
+
+    // Share via Web Share API
+    if (navigator.share) {
+        document.getElementById('shareBtn').style.display = 'inline-flex';
+    }
+
+    function sharePhoto() {
+        var slides = document.getElementById('track').children;
+        var cur = document.querySelector('.dot.active');
+        var idx = cur ? parseInt(cur.getAttribute('data-i')) : 0;
+        var slide = slides[idx];
+        var url = slide.getAttribute('data-url');
+        var label = slide.getAttribute('data-label') || 'Foto';
+
+        // Try to share the actual image file
+        fetch(url)
+            .then(function(r) { return r.blob(); })
+            .then(function(blob) {
+                var ext = url.toLowerCase().endsWith('.gif') ? '.gif' : '.jpg';
+                var file = new File([blob], label + ext, { type: blob.type });
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    return navigator.share({
+                        title: label + ' - Bootharoo',
+                        files: [file]
+                    });
+                } else {
+                    // Fallback: share URL only
+                    return navigator.share({
+                        title: label + ' - Bootharoo',
+                        text: 'Bekijk mijn foto van de photobooth! 📸',
+                        url: window.location.href
+                    });
+                }
+            })
+            .catch(function(err) {
+                // If fetch fails, share URL
+                if (err.name !== 'AbortError') {
+                    navigator.share({
+                        title: 'Mijn foto - Bootharoo',
+                        text: 'Bekijk mijn foto van de photobooth! 📸',
+                        url: window.location.href
+                    }).catch(function() {});
+                }
+            });
+    }
+
+    // Download all
+    function downloadAll() {
+        var slides = document.getElementById('track').children;
+        for (var i = 0; i < slides.length; i++) {
+            var url = slides[i].getAttribute('data-url');
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = '';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            // stagger to avoid browser blocking
+            (function(el, delay) {
+                setTimeout(function() { el.click(); document.body.removeChild(el); }, delay);
+            })(a, i * 300);
+        }
+    }
+
+    {% if config_email_enabled %}
+    // Email
+    function sendEmail() {
+        var email = document.getElementById('emailInput').value.trim();
+        var btn = document.getElementById('emailBtn');
+        var status = document.getElementById('emailStatus');
+
+        if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            status.textContent = 'Voer een geldig e-mailadres in';
+            status.className = 'email-status error';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Bezig met verzenden...';
+        status.textContent = '';
+        status.className = 'email-status';
+
+        fetch('/email/{{ session_id }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email })
+        })
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+            if (data.success) {
+                status.textContent = 'Verzonden! Check je inbox.';
+                status.className = 'email-status success';
+                btn.textContent = 'Verzonden!';
+            } else {
+                status.textContent = data.error || 'Verzenden mislukt';
+                status.className = 'email-status error';
+                btn.disabled = false;
+                btn.textContent = 'Verstuur naar mijn e-mail';
+            }
+        })
+        .catch(function() {
+            status.textContent = 'Netwerkfout, probeer opnieuw';
+            status.className = 'email-status error';
+            btn.disabled = false;
+            btn.textContent = 'Verstuur naar mijn e-mail';
+        });
+    }
+    {% endif %}
+    </script>
+
+</body>
+</html>

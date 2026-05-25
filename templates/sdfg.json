@@ -1,0 +1,28 @@
+{
+  "name": "sdfg",
+  "background_path": "C:\\Photobooth\\backgrounds\\Schermafbeelding 2026-03-11 112900.png",
+  "frames": [
+    {
+      "x": 128,
+      "y": 26,
+      "width": 407,
+      "height": 516,
+      "rotation": 0.0
+    },
+    {
+      "x": 97,
+      "y": 539,
+      "width": 347,
+      "height": 282,
+      "rotation": 0.0
+    },
+    {
+      "x": 39,
+      "y": 1020,
+      "width": 467,
+      "height": 467,
+      "rotation": 0.0
+    }
+  ],
+  "is_double_strip": false
+}
