@@ -127,14 +127,15 @@ def _make_strip_frames(num: int, strip_w: int = 600, margin: int = 30,
 
 
 def _make_strip_frames_ar(num: int, strip_w: int = 600, margin: int = 30,
-                           spacing: int = 30, aspect: float = 3.0 / 2.0) -> List[PhotoFrame]:
+                           spacing: int = 30, aspect: float = 3.0 / 2.0,
+                           canvas_h: int = 1800) -> List[PhotoFrame]:
     """Calculate evenly spaced vertical frames with enforced aspect ratio.
 
     Photos maintain the given aspect ratio (default 3:2 landscape like Canon).
-    Frames are centered horizontally if narrower than available width.
+    Frames are centered horizontally + vertically (gelijke ruimte boven/onder).
     """
     usable_w = strip_w - 2 * margin
-    usable_h = 1800 - 2 * margin - (num - 1) * spacing
+    usable_h = canvas_h - 2 * margin - (num - 1) * spacing
 
     # Start with full width, calculate height from aspect ratio
     frame_w = usable_w
@@ -318,46 +319,64 @@ def get_preset_layouts() -> List[Template]:
     # op 1200x1800. DNP-driver snijdt elke 2" = 3 fysieke strips van 5x10 cm.
     TRIPLE_W = 600    # portrait canvas width (= 2" = 5 cm @ 300 DPI)
     TRIPLE_H = 1200   # portrait canvas height (= 4" = 10 cm)
-    TM = 24           # iets krappere marge dan 30 vanwege smaller canvas
-    TS = 20           # spacing tussen frames
 
     # --- Triple strip: 2 foto's onder elkaar ---
-    triple2_usable_h = TRIPLE_H - 2 * TM - TS
-    triple2_frame_h = triple2_usable_h // 2
-    triple2_frame_w = TRIPLE_W - 2 * TM
-    triple2_frames = []
-    for i in range(2):
-        y = TM + i * (triple2_frame_h + TS)
-        triple2_frames.append(PhotoFrame(
-            x=TM, y=y, width=triple2_frame_w, height=triple2_frame_h))
     presets.append(Template(
         name="DNP strip — 2 foto's",
         background_path="",
-        frames=triple2_frames,
+        frames=_make_triple_frames(2, TRIPLE_W, TRIPLE_H),
         is_double_strip=False,
         cut_default=True,
         is_triple_strip=True,
     ))
 
     # --- Triple strip: 3 foto's onder elkaar ---
-    triple3_usable_h = TRIPLE_H - 2 * TM - 2 * TS
-    triple3_frame_h = triple3_usable_h // 3
-    triple3_frame_w = TRIPLE_W - 2 * TM
-    triple3_frames = []
-    for i in range(3):
-        y = TM + i * (triple3_frame_h + TS)
-        triple3_frames.append(PhotoFrame(
-            x=TM, y=y, width=triple3_frame_w, height=triple3_frame_h))
     presets.append(Template(
         name="DNP strip — 3 foto's",
         background_path="",
-        frames=triple3_frames,
+        frames=_make_triple_frames(3, TRIPLE_W, TRIPLE_H),
         is_double_strip=False,
         cut_default=True,
         is_triple_strip=True,
     ))
 
     return presets
+
+
+def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
+                         aspect: float = 3.0 / 2.0) -> List[PhotoFrame]:
+    """Frames voor DNP 5x10cm triple strip, verticaal gecentreerd met ademruimte.
+
+    Anders dan _make_strip_frames_ar: laat altijd minstens ~50px boven én onder
+    over zodat het ontwerp niet tegen de cut-randen aanloopt en visueel
+    gecentreerd staat in het portrait canvas.
+    """
+    side_margin = 30                 # links/rechts marge
+    spacing = 18                     # ruimte tussen frames
+    # Streef-target: ~14% van canvas hoogte als top+bottom breathing room
+    target_breathing = int(canvas_h * 0.14)
+    side_w = canvas_w - 2 * side_margin
+
+    # Bepaal frame-grootte binnen de "comfortabele" hoogte (canvas - breathing)
+    comfort_h = canvas_h - 2 * target_breathing - (num - 1) * spacing
+    frame_h = comfort_h // num
+    frame_w = int(frame_h * aspect)
+
+    # Als frame_w groter is dan beschikbare breedte → schaal terug op breedte
+    if frame_w > side_w:
+        frame_w = side_w
+        frame_h = int(frame_w / aspect)
+
+    # Centreer het hele blok verticaal in het canvas
+    block_h = num * frame_h + (num - 1) * spacing
+    y_start = (canvas_h - block_h) // 2
+    x_offset = (canvas_w - frame_w) // 2
+
+    frames = []
+    for i in range(num):
+        y = y_start + i * (frame_h + spacing)
+        frames.append(PhotoFrame(x=x_offset, y=y, width=frame_w, height=frame_h))
+    return frames
 
 
 def list_templates(templates_dir: str, backgrounds_dir: str) -> List[Template]:

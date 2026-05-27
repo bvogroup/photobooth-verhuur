@@ -9412,9 +9412,15 @@ class PhotoboothWindow(QMainWindow):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Canvas is 1200x1800; scale to fit preview
-        canvas_w = 1200
-        canvas_h = 1800
+        # Canvas size hangt af van strip-type:
+        #  triple_strip → 600x1200 portrait (5x10 cm DNP strip)
+        #  anders       → 1200x1800 (4x6 vel)
+        if getattr(layout, 'is_triple_strip', False):
+            canvas_w = 600
+            canvas_h = 1200
+        else:
+            canvas_w = 1200
+            canvas_h = 1800
         scale_x = w / canvas_w
         scale_y = h / canvas_h
         scale = min(scale_x, scale_y) * 0.92
@@ -9451,8 +9457,9 @@ class PhotoboothWindow(QMainWindow):
             painter.setBrush(QBrush(QColor("#ffe0e6")))
             painter.drawRect(px, py, page_w, page_h)
 
-        # Draw cut line for double strip layouts
-        if not layout.is_double_strip:
+        # Cut line: alleen voor klassieke single-strip (HiTi-cut tussen 2 helften).
+        # Triple strip heeft 2 horizontale cuts; voor preview-eenvoud niet getekend.
+        if not layout.is_double_strip and not getattr(layout, 'is_triple_strip', False):
             cut_x = int(offset_x + 600 * scale)
             painter.setPen(QPen(QColor("#ccaaaa"), 1, Qt.DashLine))
             painter.drawLine(cut_x, int(offset_y), cut_x, int(offset_y + canvas_h * scale))
@@ -9515,6 +9522,7 @@ class PhotoboothWindow(QMainWindow):
                 ])
                 painter.drawPolygon(shoulders)
 
+        is_triple = getattr(layout, 'is_triple_strip', False)
         for frame in layout.frames:
             fx = int(offset_x + frame.x * scale)
             fy = int(offset_y + frame.y * scale)
@@ -9523,8 +9531,9 @@ class PhotoboothWindow(QMainWindow):
             frame_rot = getattr(frame, 'rotation', 0)
             _draw_photo_placeholder(painter, fx, fy, fw, fh, frame_rot)
 
-            # If double strip, draw mirrored frame on right half
-            if not layout.is_double_strip:
+            # Single-strip op HiTi wordt gespiegeld naar rechterhelft (cut tussen).
+            # Triple-strip is een fysiek 5x10cm ontwerp — geen duplicatie in preview.
+            if not layout.is_double_strip and not is_triple:
                 fx2 = int(offset_x + (frame.x + 600) * scale)
                 _draw_photo_placeholder(painter, fx2, fy, fw, fh, frame_rot)
 
