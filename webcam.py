@@ -117,13 +117,7 @@ class WebcamCamera:
         print(f"[WEBCAM] Verbinden met OpenCV index {device_index} (naam={camera_name})...")
         try:
             self.cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
-            if resolution:
-                try:
-                    w, h = map(int, resolution.split("x"))
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                except (ValueError, AttributeError):
-                    pass
+            self._apply_resolution(self.cap, resolution)
 
             self._connected = self.cap.isOpened()
 
@@ -137,13 +131,7 @@ class WebcamCamera:
                         if camera_name.lower() in name.lower() or name.lower() in camera_name.lower():
                             print(f"[WEBCAM] Naam match gevonden: index {idx} = '{name}'")
                             self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                            if resolution:
-                                try:
-                                    w, h = map(int, resolution.split("x"))
-                                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                                except (ValueError, AttributeError):
-                                    pass
+                            self._apply_resolution(self.cap, resolution)
                             self._connected = self.cap.isOpened()
                             if self._connected:
                                 device_index = idx
@@ -161,13 +149,7 @@ class WebcamCamera:
                     try:
                         self.cap = cv2.VideoCapture(try_idx, cv2.CAP_DSHOW)
                         if self.cap.isOpened():
-                            if resolution:
-                                try:
-                                    w, h = map(int, resolution.split("x"))
-                                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                                except (ValueError, AttributeError):
-                                    pass
+                            self._apply_resolution(self.cap, resolution)
                             self._connected = True
                             device_index = try_idx
                             print(f"[WEBCAM] Fallback gevonden op index {try_idx}")
@@ -193,6 +175,25 @@ class WebcamCamera:
         except Exception as e:
             print(f"[WEBCAM] Verbindingsfout: {e}")
             return False
+
+    @staticmethod
+    def _apply_resolution(cap, resolution):
+        """Set capture resolution. Lege string = hoogste beschikbare.
+
+        OpenCV clamp-t te hoge waarden naar de echte max van de camera, dus
+        3840x2160 zetten resulteert in de werkelijke max-resolutie van het
+        apparaat (vaak 1920x1080 bij laptops/tablets, hoger bij externe cams).
+        """
+        if resolution:
+            try:
+                w, h = map(int, resolution.split("x"))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                return
+            except (ValueError, AttributeError):
+                pass
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
 
     def _store_frame(self, jpeg_bytes):
         """Keep reference to latest frame for live view."""
