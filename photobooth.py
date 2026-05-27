@@ -8572,6 +8572,102 @@ class PhotoboothWindow(QMainWindow):
         card_pmode_lay.addLayout(pmode_row)
         tab5_lay.addWidget(card_pmode)
 
+        # ── Card: Booth-modus (Standalone vs Gekoppeld) ──
+        card_bmode, card_bmode_lay = self._settings_card("Modus")
+        bmode_row = QHBoxLayout()
+        bmode_row.setSpacing(20)
+        from PyQt5.QtWidgets import QButtonGroup as _BG2
+        self._booth_mode_group = _BG2(self)
+        self._booth_mode_standalone_radio = QRadioButton("Standalone (huidige flow)")
+        self._booth_mode_standalone_radio.setFont(QFont("DM Sans", 13))
+        self._booth_mode_linked_radio = QRadioButton("Gekoppeld (event uit Clixibo)")
+        self._booth_mode_linked_radio.setFont(QFont("DM Sans", 13))
+        self._booth_mode_group.addButton(self._booth_mode_standalone_radio)
+        self._booth_mode_group.addButton(self._booth_mode_linked_radio)
+        self._booth_mode_standalone_radio.setChecked(True)
+        self._booth_mode_standalone_radio.toggled.connect(self._on_booth_mode_changed)
+        self._booth_mode_linked_radio.toggled.connect(self._on_booth_mode_changed)
+        bmode_row.addWidget(self._booth_mode_standalone_radio)
+        bmode_row.addWidget(self._booth_mode_linked_radio)
+        bmode_row.addStretch()
+        card_bmode_lay.addLayout(bmode_row)
+        tab5_lay.addWidget(card_bmode)
+
+        # ── Card: Gekoppeld event (alleen zichtbaar in Linked-modus) ──
+        self._card_linked, card_linked_lay = self._settings_card("Gekoppeld event")
+        self._linked_status_label = QLabel("Geen event gekoppeld")
+        self._linked_status_label.setFont(QFont("DM Sans", 13))
+        self._linked_status_label.setStyleSheet(label_style)
+        self._linked_status_label.setWordWrap(True)
+        card_linked_lay.addWidget(self._linked_status_label)
+
+        # Knoppen-rij
+        linked_btn_row = QHBoxLayout()
+        linked_btn_row.setSpacing(10)
+        self._btn_couple_event = QPushButton("📷  Koppel event")
+        self._btn_couple_event.setFont(QFont("DM Sans", 12, QFont.Bold))
+        self._btn_couple_event.setCursor(Qt.PointingHandCursor)
+        self._btn_couple_event.setMinimumHeight(40)
+        self._btn_couple_event.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_PRIMARY}; color: {config.COLOR_TEXT_ON_PRIMARY}; "
+            f"border: none; border-radius: 8px; padding: 8px 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+            f"QPushButton:disabled {{ background: {config.COLOR_BORDER}; color: {config.COLOR_TEXT_DIM}; }}"
+        )
+        self._btn_couple_event.clicked.connect(self._on_couple_event_clicked)
+        linked_btn_row.addWidget(self._btn_couple_event)
+
+        self._btn_refresh_event = QPushButton("🔄  Ververs")
+        self._btn_refresh_event.setFont(QFont("DM Sans", 12))
+        self._btn_refresh_event.setCursor(Qt.PointingHandCursor)
+        self._btn_refresh_event.setMinimumHeight(40)
+        self._btn_refresh_event.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; color: white; "
+            f"border: none; border-radius: 8px; padding: 8px 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        self._btn_refresh_event.clicked.connect(self._on_refresh_event_clicked)
+        self._btn_refresh_event.setVisible(False)
+        linked_btn_row.addWidget(self._btn_refresh_event)
+
+        self._btn_unlink_event = QPushButton("Loskoppelen")
+        self._btn_unlink_event.setFont(QFont("DM Sans", 12))
+        self._btn_unlink_event.setCursor(Qt.PointingHandCursor)
+        self._btn_unlink_event.setMinimumHeight(40)
+        self._btn_unlink_event.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {config.COLOR_TEXT_DIM}; "
+            f"border: 1px solid {config.COLOR_BORDER}; border-radius: 8px; padding: 8px 18px; }}"
+            f"QPushButton:hover {{ color: {config.COLOR_DANGER}; border-color: {config.COLOR_DANGER}; }}"
+        )
+        self._btn_unlink_event.clicked.connect(self._on_unlink_event_clicked)
+        self._btn_unlink_event.setVisible(False)
+        linked_btn_row.addWidget(self._btn_unlink_event)
+        linked_btn_row.addStretch()
+        card_linked_lay.addLayout(linked_btn_row)
+
+        # Foto-aantal selectie (alleen relevant als gekoppeld)
+        self._linked_count_row = QHBoxLayout()
+        self._linked_count_label = QLabel("Foto's per strip:")
+        self._linked_count_label.setFont(QFont("DM Sans", 12))
+        self._linked_count_label.setStyleSheet(label_style)
+        self._linked_count_row.addWidget(self._linked_count_label)
+        self._linked_count_spin = self._make_touch_spin(
+            1, 4, 2, on_change=self._on_linked_count_changed,
+        )
+        self._linked_count_row.addWidget(self._linked_count_spin)
+        self._linked_count_row.addStretch()
+        card_linked_lay.addLayout(self._linked_count_row)
+
+        # Upload-voortgang
+        self._linked_progress_label = QLabel("")
+        self._linked_progress_label.setFont(QFont("DM Sans", 11))
+        self._linked_progress_label.setStyleSheet(dim_label_style)
+        self._linked_progress_label.setWordWrap(True)
+        card_linked_lay.addWidget(self._linked_progress_label)
+
+        tab5_lay.addWidget(self._card_linked)
+        self._card_linked.setVisible(False)  # initieel verborgen (Standalone default)
+
         # Verhuur: camera-instellingen verplaatst uit Camera-tab naar hier
         if hasattr(self, '_card_cam_mode'):
             self._card_cam_mode.setParent(None)
@@ -9114,6 +9210,19 @@ class PhotoboothWindow(QMainWindow):
                 self._printer_mode_dnp_radio.setChecked(True)
             self._printer_mode_canon_radio.blockSignals(False)
             self._printer_mode_dnp_radio.blockSignals(False)
+
+        # Update booth-modus radio (Standalone/Linked) + linked event card
+        if hasattr(self, '_booth_mode_linked_radio') and ev:
+            bmode = getattr(ev, 'booth_mode', 'standalone')
+            self._booth_mode_standalone_radio.blockSignals(True)
+            self._booth_mode_linked_radio.blockSignals(True)
+            if bmode == 'linked':
+                self._booth_mode_linked_radio.setChecked(True)
+            else:
+                self._booth_mode_standalone_radio.setChecked(True)
+            self._booth_mode_standalone_radio.blockSignals(False)
+            self._booth_mode_linked_radio.blockSignals(False)
+            self._update_linked_card_visibility()
 
         # Update payment settings
         if hasattr(self, '_payment_toggle') and ev:
@@ -11498,6 +11607,173 @@ class PhotoboothWindow(QMainWindow):
             QMessageBox.information(self, "Language / Taal",
                 "Language changed. Please restart the application.\n"
                 "Taal gewijzigd. Herstart de applicatie.")
+
+    def _on_booth_mode_changed(self, checked):
+        """Wissel tussen Standalone en Linked-modus."""
+        if not checked:
+            return
+        mode = "linked" if self._booth_mode_linked_radio.isChecked() else "standalone"
+        if self.active_event:
+            self.active_event.booth_mode = mode
+            self.active_event.save(config.EVENTS_DIR)
+        print(f"[SETTINGS] Booth-modus: {mode}")
+        self._update_linked_card_visibility()
+
+    def _update_linked_card_visibility(self):
+        """Toon/verberg de Gekoppeld-event-kaart en knoppen-state."""
+        if not hasattr(self, '_card_linked'):
+            return
+        ev = self.active_event
+        mode = getattr(ev, 'booth_mode', 'standalone') if ev else 'standalone'
+        self._card_linked.setVisible(mode == 'linked')
+
+        if mode != 'linked':
+            return
+
+        booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
+        label = getattr(ev, 'linked_booking_label', '') if ev else ''
+
+        if booking_id:
+            self._linked_status_label.setText(f"🟢 {label or booking_id}\nID: {booking_id}")
+            self._btn_couple_event.setVisible(False)
+            self._btn_refresh_event.setVisible(True)
+            self._btn_unlink_event.setVisible(True)
+            self._linked_count_label.setVisible(True)
+            self._linked_count_spin.setVisible(True)
+            self._touch_spin_set(self._linked_count_spin, getattr(ev, 'linked_photo_count', 2))
+            self._update_linked_progress()
+        else:
+            self._linked_status_label.setText("Geen event gekoppeld")
+            self._btn_couple_event.setVisible(True)
+            self._btn_refresh_event.setVisible(False)
+            self._btn_unlink_event.setVisible(False)
+            self._linked_count_label.setVisible(False)
+            self._linked_count_spin.setVisible(False)
+            self._linked_progress_label.setText("")
+
+    def _update_linked_progress(self):
+        """Werk de upload-voortgang regel bij."""
+        ev = self.active_event
+        if not ev or not getattr(ev, 'linked_booking_id', ''):
+            self._linked_progress_label.setText("")
+            return
+        try:
+            from cloud_uploader import get_status
+            s = get_status(ev.linked_booking_id)
+        except Exception:
+            return
+        if s["total"] == 0:
+            self._linked_progress_label.setText("Nog geen foto's geüpload.")
+            return
+        pct = int(100 * s["uploaded"] / max(1, s["total"]))
+        msg = f"Upload: {s['uploaded']}/{s['total']} foto's ({pct}%)"
+        if s["pending"] > 0:
+            msg += f" — {s['pending']} wacht op upload"
+        if s["failed"] > 0:
+            msg += f" — {s['failed']} mislukt"
+        self._linked_progress_label.setText(msg)
+
+    def _on_couple_event_clicked(self):
+        """Open de event-koppel modal — implementatie in Fase 3."""
+        # Capture-sessie check
+        if hasattr(self, 'state') and self.state not in (State.IDLE, State.SETTINGS):
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Event koppelen",
+                "Stop eerst de huidige sessie voor je een event koppelt.")
+            return
+        self._show_couple_event_dialog()
+
+    def _on_refresh_event_clicked(self):
+        """Re-fetch booking metadata + design uit cloud."""
+        ev = self.active_event
+        token = getattr(ev, 'linked_token', '') if ev else ''
+        if not token:
+            return
+        from cloud_booking import fetch_booking
+        b, err = fetch_booking(token, use_cache_on_offline=True)
+        if err and not b:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Ververs mislukt", err)
+            return
+        # Update event metadata
+        if b and self.active_event:
+            self._apply_linked_booking(b)
+            self._update_linked_card_visibility()
+        if err:
+            print(f"[LINKED] Ververs waarschuwing: {err}")
+
+    def _on_unlink_event_clicked(self):
+        """Loskoppelen — clear linked_* velden."""
+        from PyQt5.QtWidgets import QMessageBox
+        if QMessageBox.question(self, "Loskoppelen",
+            "Loskoppelen van het event? Foto's blijven in de queue tot ze geüpload zijn."
+            ) != QMessageBox.Yes:
+            return
+        ev = self.active_event
+        if ev:
+            ev.linked_booking_id = ""
+            ev.linked_token = ""
+            ev.linked_booking_label = ""
+            ev.linked_design_path = ""
+            ev.save(config.EVENTS_DIR)
+        self._update_linked_card_visibility()
+        print("[LINKED] Event losgekoppeld")
+
+    def _on_linked_count_changed(self, value):
+        """Aantal foto's per strip aangepast (operator-keuze)."""
+        ev = self.active_event
+        if not ev:
+            return
+        ev.linked_photo_count = int(value)
+        ev.save(config.EVENTS_DIR)
+        print(f"[LINKED] Foto-aantal: {value}")
+        # Fase 4 zal hier template-frames opnieuw genereren
+
+    def _apply_linked_booking(self, booking_data: dict):
+        """Schrijf booking-metadata naar active_event (na coupling of refresh)."""
+        if not self.active_event:
+            return
+        b = booking_data.get("booking", {})
+        q = booking_data.get("quote", {})
+        bid = b.get("id", "")
+        # Display label: customer + event_date als beschikbaar
+        name = (b.get("customer_name") or q.get("customer_name")
+                or b.get("event_name") or q.get("event_name") or "Gekoppeld event")
+        date = (b.get("event_date") or b.get("event_start_date")
+                or q.get("event_date") or q.get("event_start_date") or "")
+        label = f"{name}" + (f" · {date}" if date else "")
+        self.active_event.linked_booking_id = str(bid)
+        self.active_event.linked_token = q.get("token", self.active_event.linked_token)
+        self.active_event.linked_booking_label = label
+        self.active_event.linked_design_path = b.get("photostrip_design_url", "")
+        self.active_event.linked_photo_count = int(booking_data.get("photo_count_preset", 2))
+        # Printer-mode override vanuit cloud
+        cloud_pm = booking_data.get("printer_mode", "")
+        if cloud_pm in ("standard", "premium"):
+            # Map naar bestaande "canon"/"dnp" waarden
+            self.active_event.printer_mode = "canon" if cloud_pm == "standard" else "dnp"
+        self.active_event.save(config.EVENTS_DIR)
+
+    def _show_couple_event_dialog(self):
+        """Placeholder — wordt in Fase 3 ingevuld met QR-scan + handmatig."""
+        from PyQt5.QtWidgets import QInputDialog
+        token, ok = QInputDialog.getText(
+            self, "Event koppelen",
+            "QR-scan komt in volgende update.\nVoor nu: plak de event-token (40 chars uit /offerte/<id>):",
+        )
+        if not ok or not token.strip():
+            return
+        token = token.strip()
+        from cloud_booking import fetch_booking
+        b, err = fetch_booking(token, use_cache_on_offline=False)
+        if not b:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Koppelen mislukt", err or "Onbekende fout")
+            return
+        self._apply_linked_booking(b)
+        self._update_linked_card_visibility()
+        # Fase 4: trigger design fetch + start uploader
+        print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
 
     def _on_printer_mode_changed(self, checked):
         """Persisteer printer-modus (canon|dnp) booth-wide via active_event.

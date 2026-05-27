@@ -101,6 +101,16 @@ class BoothSettings:
     # "dnp" = nieuwe flow (triple strip 5x10cm op DNP QW410 met 2-inch cut).
     printer_mode: str = "dnp"
 
+    # ── Booth-modus (verhuur Linked-functie) ──────────────────
+    # "standalone" = huidige flow (lokaal + 30-min QR share)
+    # "linked"     = gekoppeld aan booking in clixibo, foto's via R2 queue
+    booth_mode: str = "standalone"
+    linked_booking_id: str = ""
+    linked_token: str = ""
+    linked_booking_label: str = ""      # display name "Klant · Datum"
+    linked_design_path: str = ""        # storage path naar design in Supabase
+    linked_photo_count: int = 2          # operator-keuze, default 2
+
     # ── Persistence ────────────────────────────────────────────
 
     @classmethod

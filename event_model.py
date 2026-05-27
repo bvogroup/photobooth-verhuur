@@ -101,6 +101,13 @@ class Event:
     save_photos_locally: bool = True   # Save photos to local disk
     # Printer-modus (verhuur-versie): "canon" = oude flow, "dnp" = triple strip.
     printer_mode: str = "dnp"
+    # Booth-modus + Linked-koppeling (verhuur-versie)
+    booth_mode: str = "standalone"
+    linked_booking_id: str = ""
+    linked_token: str = ""
+    linked_booking_label: str = ""
+    linked_design_path: str = ""
+    linked_photo_count: int = 2
     session_count: int = 0           # Number of sessions run
     photo_count: int = 0             # Total photos taken
     # Print-quotum per event — onafhankelijk van auto_print_copies/max_prints
