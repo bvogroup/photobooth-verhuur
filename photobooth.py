@@ -8701,6 +8701,9 @@ class PhotoboothWindow(QMainWindow):
         bmode_row.addStretch()
         card_bmode_lay.addLayout(bmode_row)
         tab5_lay.addWidget(card_bmode)
+        # Verhuur is ALTIJD Linked-modus — modus-kaart verbergen.
+        # Widgets blijven bestaan voor backwards compat met handlers.
+        card_bmode.setVisible(False)
 
         # ── Card: Gekoppeld event (alleen zichtbaar in Linked-modus) ──
         self._card_linked, card_linked_lay = self._settings_card("Gekoppeld event")
@@ -9497,56 +9500,26 @@ class PhotoboothWindow(QMainWindow):
         # Filter op printer-modus: canon → geen triple strips, dnp → alleen triple
         pm = getattr(self.active_event, 'printer_mode', 'dnp') if self.active_event else 'dnp'
 
-        # Linked-modus: linked template gaat ALS EERSTE in de juiste categorie.
-        # Filter ook op printer_mode — DNP-design hoort niet in Canon-grid en v.v.
-        booth_mode = getattr(self.active_event, 'booth_mode', 'standalone') if self.active_event else 'standalone'
+        # Verhuur = altijd Linked-modus. Alleen de linked template variants tonen
+        # (Event <id> (2 foto's), Event <id> (3 foto's)). Geen DNP-presets, geen
+        # categorie-headers — operator ziet direct de 2 keuzes voor het event.
+        booth_mode = "linked"  # forced
         linked_booking_id = getattr(self.active_event, 'linked_booking_id', '') if self.active_event else ''
-        linked_tmpl = None
-        if booth_mode == 'linked' and linked_booking_id:
+        linked_variants = []
+        if linked_booking_id:
+            prefix = f"Event {linked_booking_id[:8]} ("
             for tmpl in custom:
-                if tmpl.name == f"Event {linked_booking_id[:8]}":
-                    # Match alleen als triple_strip status klopt met huidige modus
-                    if (pm == 'dnp' and tmpl.is_triple_strip) or \
-                       (pm != 'dnp' and not tmpl.is_triple_strip):
-                        linked_tmpl = tmpl
-                    break
-        if linked_tmpl:
-            cat_cut.insert(0, linked_tmpl)  # bovenaan
+                if tmpl.name.startswith(prefix) and tmpl.name.endswith(" foto's)"):
+                    linked_variants.append(tmpl)
+            linked_variants.sort(key=lambda t: t.num_photos)
 
-        for layout in self._preset_layouts:
-            if pm == 'dnp':
-                if not layout.is_triple_strip:
-                    continue
-            else:  # canon
-                if layout.is_triple_strip:
-                    continue
-            # If user edited this preset, use the custom version for preview
-            display_layout = custom_by_name.get(layout.name, layout)
-            if layout.cut_default:
-                cat_cut.append(display_layout)
-            else:
-                cat_nocut.append(display_layout)
-
-        # Track custom template names for delete buttons
-        for tmpl in custom:
+        for tmpl in linked_variants:
             self._custom_template_names.add(tmpl.name)
 
-        categories = [
-            (t("double_strips"), cat_cut),
-            (t("single_strips"), cat_nocut),
-        ]
-
-        # Custom templates are loaded internally but hidden from the UI
-        # if custom:
-        #     categories.append(("Eigen templates", custom))
-
         self._cat_grids = {}
-        for cat_name, layouts in categories:
-            if not layouts:
-                continue
-            # Check if selected layout is in this category
-            cat_has_selected = any(l.name == selected for l in layouts)
-            self._add_layout_category(cat_name, layouts, selected, start_open=cat_has_selected)
+        if linked_variants:
+            # Geen categorie-header — direct grid van varianten
+            self._add_layout_category("", linked_variants, selected, start_open=True)
 
         if selected:
             self.settings_active_label.setText(t("layout_label", name=self._translate_template_name(selected)))
@@ -11789,45 +11762,41 @@ class PhotoboothWindow(QMainWindow):
         self._update_linked_card_visibility()
 
     def _update_linked_card_visibility(self):
-        """Toon/verberg de Gekoppeld-event-kaart en knoppen-state.
+        """Toon de Gekoppeld-event-kaart altijd (verhuur = altijd Linked).
 
-        Verplaatst de kaart bij Linked-modus naar de Event-tab (waar het
-        thuishoort), en verbergt event-picker/new/delete/idle-bg uit de
-        Standalone-flow. Bij Standalone weer omgekeerd.
+        Verbergt alle Canon/Standalone-flow UI op Event- en Layout-tabs
+        zodat alleen de Linked-relevante onderdelen zichtbaar zijn.
         """
         if not hasattr(self, '_card_linked'):
             return
         ev = self.active_event
-        mode = getattr(ev, 'booth_mode', 'standalone') if ev else 'standalone'
-        is_linked = (mode == 'linked')
+        # Verhuur is altijd linked — geen toggle meer
+        is_linked = True
 
-        # Standalone-Event-tab widgets verbergen in Linked-modus
+        # Standalone-Event-tab widgets altijd verbergen
         if hasattr(self, '_event_picker_row'):
-            self._event_picker_row.setVisible(not is_linked)
+            self._event_picker_row.setVisible(False)
         if hasattr(self, '_card_idle_bg'):
-            self._card_idle_bg.setVisible(not is_linked)
+            self._card_idle_bg.setVisible(False)
+        # Canon bg-management UI op Layout-tab verbergen
         if hasattr(self, '_canva_btn'):
-            self._canva_btn.setVisible(not is_linked)
+            self._canva_btn.setVisible(False)
+        if hasattr(self, '_layout_bg_label'):
+            self._layout_bg_label.setVisible(False)
+        if hasattr(self, '_layout_bg_btn'):
+            self._layout_bg_btn.setVisible(False)
+        if hasattr(self, '_layout_bg_remove_btn'):
+            self._layout_bg_remove_btn.setVisible(False)
 
-        # Gekoppeld-kaart fysiek verplaatsen tussen tabs
-        if is_linked and hasattr(self, '_tab0_lay'):
-            # Move naar Event-tab (top) als nog niet daar
+        # Gekoppeld-kaart naar Event-tab verplaatsen (top)
+        if hasattr(self, '_tab0_lay'):
             current = self._card_linked.parentWidget()
             tab0_widget = self._tab0_lay.parentWidget()
             if current is not tab0_widget:
                 self._card_linked.setParent(None)
                 self._tab0_lay.insertWidget(0, self._card_linked)
-        elif not is_linked and hasattr(self, '_tab5_lay'):
-            current = self._card_linked.parentWidget()
-            tab5_widget = self._tab5_lay.parentWidget() if hasattr(self, '_tab5_lay') else None
-            if tab5_widget and current is not tab5_widget:
-                self._card_linked.setParent(None)
-                self._tab5_lay.addWidget(self._card_linked)
 
-        self._card_linked.setVisible(is_linked)
-
-        if not is_linked:
-            return
+        self._card_linked.setVisible(True)
 
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
         label = getattr(ev, 'linked_booking_label', '') if ev else ''
@@ -11928,8 +11897,8 @@ class PhotoboothWindow(QMainWindow):
             ev.linked_token = ""
             ev.linked_booking_label = ""
             ev.linked_design_path = ""
-            # Loskoppelen impliceert booth_mode='standalone' — radio matcht state
-            ev.booth_mode = "standalone"
+            # NIET booth_mode wisselen — verhuur blijft altijd 'linked'.
+            # Card toont nu lege "Geen event gekoppeld" state met Koppel-knop.
             ev.save(config.EVENTS_DIR)
         # Stop uploader (queue blijft op disk staan; bij re-koppeling pakt-ie weer op)
         if old_booking_id:
@@ -12094,10 +12063,12 @@ class PhotoboothWindow(QMainWindow):
             print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
 
     def _apply_design_to_template(self, local_design_path):
-        """Synchroon (lokaal) — valideer formaat + maak template aan.
+        """Synchroon (lokaal) — valideer formaat + genereer 2 én 3 foto-variant.
 
-        Equivalent van _fetch_and_apply_linked_design maar zonder de
-        netwerk-stappen (die zijn al in de worker gebeurd).
+        Maakt 'Event <id> (2)' en 'Event <id> (3)' templates aan met het cloud-
+        design als achtergrond. Operator kan tussen 2/3 foto's wisselen door op
+        de variant te klikken in de Layout-grid.
+        Ook: clear event.background_path zodat de cloud-design altijd wint.
         """
         ev = self.active_event
         if not ev:
@@ -12116,15 +12087,34 @@ class PhotoboothWindow(QMainWindow):
             return False, vmsg
 
         from template_model import make_linked_template
-        tmpl = make_linked_template(pm, ev.linked_photo_count, local_design_path, booking_id)
         os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
-        tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}.json")
-        try:
-            tmpl.save(tmpl_path)
-        except Exception as e:
-            return False, f"Template opslaan mislukt: {e}"
 
-        ev.template_name = tmpl.name
+        # Verwijder oude variant-loze linked_<id>.json (uit oudere versies)
+        old_single = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}.json")
+        if os.path.isfile(old_single):
+            try:
+                os.remove(old_single)
+                print(f"[LINKED] Oude template verwijderd: {old_single}")
+            except OSError:
+                pass
+
+        # Genereer beide varianten zodat operator kan kiezen
+        variants_created = []
+        for count in (2, 3):
+            tmpl = make_linked_template(pm, count, local_design_path, booking_id)
+            tmpl.name = f"Event {booking_id[:8]} ({count} foto's)"
+            tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}_{count}foto.json")
+            try:
+                tmpl.save(tmpl_path)
+                variants_created.append(tmpl)
+            except Exception as e:
+                return False, f"Template opslaan mislukt: {e}"
+
+        # Default actief: variant met linked_photo_count (default 3)
+        default_count = ev.linked_photo_count or 3
+        ev.template_name = f"Event {booking_id[:8]} ({default_count} foto's)"
+        # Belangrijk: clear event.background_path zodat template-bg uit cloud wint
+        ev.background_path = ""
         ev.save(config.EVENTS_DIR)
         if hasattr(self, '_layout_categories_container'):
             try:
@@ -12134,9 +12124,10 @@ class PhotoboothWindow(QMainWindow):
         return True, ""
 
     def _fetch_and_apply_linked_design(self) -> tuple[bool, str]:
-        """Download het design uit cloud, valideer formaat, maak Template + activeer.
+        """Synchroon: download design + delegate naar _apply_design_to_template.
 
-        Returns (success, error_message).
+        Gebruikt voor auto-recouple bij startup (blocking is acceptabel daar).
+        Voor interactieve flows: gebruik CouplingWorker (async).
         """
         ev = self.active_event
         if not ev:
@@ -12149,38 +12140,12 @@ class PhotoboothWindow(QMainWindow):
         if not design_path:
             return False, "Booking heeft nog geen design — klant moet er één uploaden in het portaal."
 
-        from cloud_booking import fetch_design, validate_design_format
+        from cloud_booking import fetch_design
         local, err = fetch_design(token, design_path, booking_id)
         if not local:
             return False, err or "Design fetch mislukt"
 
-        # Map cloud printer_mode → onze interne naam
-        pm = ev.printer_mode  # al gemapped in _apply_linked_booking
-        cloud_check_mode = "premium" if pm == "dnp" else "standard"
-        ok, vmsg = validate_design_format(local, cloud_check_mode)
-        if not ok:
-            return False, vmsg
-
-        # Template bouwen + opslaan
-        from template_model import make_linked_template
-        tmpl = make_linked_template(pm, ev.linked_photo_count, local, booking_id)
-        # Persist als JSON in templates/
-        os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
-        tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}.json")
-        try:
-            tmpl.save(tmpl_path)
-        except Exception as e:
-            return False, f"Template opslaan mislukt: {e}"
-
-        # Aan event koppelen + refresh layout-lijst
-        ev.template_name = tmpl.name
-        ev.save(config.EVENTS_DIR)
-        if hasattr(self, '_layout_categories_container'):
-            try:
-                self._load_settings_templates()
-            except Exception as e:
-                print(f"[LINKED] Layout refresh waarschuwing: {e}")
-        return True, ""
+        return self._apply_design_to_template(local)
 
     def _start_linked_uploader(self):
         """Start upload-worker voor het gekoppelde event."""

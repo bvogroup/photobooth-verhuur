@@ -181,6 +181,8 @@ class BoothSettings:
         instance.pin_code = "1350"
         instance.lock_icon_size = 60
         instance.save_photos_locally = True
+        # Verhuur-versie is ALTIJD Linked-modus — geen Standalone-flow meer.
+        instance.booth_mode = "linked"
 
     @classmethod
     def exists(cls) -> bool:
@@ -201,7 +203,8 @@ _EVENT_ONLY_FIELDS: Set[str] = {
     "linked_booking_label",
     "linked_design_path",
     "linked_photo_count",
-    "booth_mode",  # Mode is ook per-event keuze, niet booth-wide.
+    # booth_mode is wel booth-wide — forced naar "linked" in _apply_verhuur_overrides
+    # zodat de verhuur-versie altijd in Linked-modus draait, geen Standalone meer.
 }
 
 
