@@ -13547,8 +13547,25 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.save(config.EVENTS_DIR)
         print(f"[EDITOR-SAVE] OK: '{custom_name}' ({len(t.frames)} frames, "
               f"triple={is_triple}) → {fname}")
+        # Sanity-check: lees direct het bestand terug zodat we zeker weten
+        # dat de write op disk staat vóór de grid-rebuild
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                disk = _json.load(f)
+            disk_frames = len(disk.get("frames", []))
+            disk_triple = disk.get("is_triple_strip")
+            print(f"[EDITOR-SAVE] Disk check: {disk_frames} frames, triple={disk_triple}")
+        except Exception as e:
+            print(f"[EDITOR-SAVE] Disk check fout: {e}")
 
-        # Refresh + terug naar settings
+        # Eerst stack omschakelen → settings-page wordt visible
+        self.stack.setCurrentIndex(self.pages["settings"])
+
+        # Forceer Qt event-flush zodat de page-switch verwerkt is voor de rebuild
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        # Refresh layout grid + form-velden
         try:
             self._load_settings_for_event()
         except Exception as e:
@@ -13557,7 +13574,10 @@ class PhotoboothWindow(QMainWindow):
             self._load_settings_templates()
         except Exception as e:
             print(f"[EDITOR-SAVE] _load_settings_templates waarschuwing: {e}")
-        self.stack.setCurrentIndex(self.pages["settings"])
+
+        # Nogmaals processEvents zodat de nieuwe thumbs daadwerkelijk paint-ed worden
+        QApplication.processEvents()
+        print("[EDITOR-SAVE] UI refresh klaar")
 
     def _editor_change_background(self):
         """Change the layout background image."""
