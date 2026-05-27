@@ -386,34 +386,36 @@ def make_linked_template(printer_mode: str, photo_count: int,
 
 
 def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
-                         aspect: float = 3.0 / 2.0,
-                         coverage: float = 0.75) -> List[PhotoFrame]:
-    """Frames voor DNP 5x10cm triple strip.
+                         aspect: float = 4.0 / 3.0) -> List[PhotoFrame]:
+    """Frames voor DNP 5x10cm triple strip op basis van Surface Pro 7 webcam.
 
-    Vult ~coverage van het canvas met foto's en verdeelt de resterende
-    ruimte gelijk over de marges en spacing zodat alles symmetrisch oogt:
-       top-margin = spacing tussen frames = bottom-margin.
+    Aspect-ratio = 4:3 landscape (1920x1440 webcam) → frame_w / frame_h = 4/3.
 
-    aspect: breedte:hoogte ratio van een frame (1.0 = vierkant, 1.5 = 3:2).
-    coverage: doelvulgraad. Default 0.75 (= 75% van canvas wordt foto).
+    Spec per fotoaantal:
+      - 3 foto's: foto's nemen samen 75% van canvas-HOOGTE in. Frames worden
+        gecentreerd horizontaal met gelijke gaps top + tussen + bottom.
+      - 2 foto's: elke foto neemt 85% van canvas-BREEDTE. Beide frames
+        verticaal gecentreerd met gelijke gaps top/middel/bottom.
+
+    Verschillende strategie omdat 3 foto's hoogte-limited zijn en 2 foto's
+    breedte-limited (de natuurlijke vorm bij dit aspect).
     """
-    canvas_area = canvas_w * canvas_h
-    target_area_per_frame = (canvas_area * coverage) / num
-
-    # area = frame_w * frame_h, frame_h = frame_w / aspect
-    # → area = frame_w² / aspect → frame_w = sqrt(area * aspect)
-    frame_w = int((target_area_per_frame * aspect) ** 0.5)
-    frame_h = int(frame_w / aspect)
-
-    # Veiligheid: niet breder dan canvas - kleine marge
-    side_margin_min = 20
-    max_w = canvas_w - 2 * side_margin_min
-    if frame_w > max_w:
-        frame_w = max_w
+    if num >= 3:
+        # 3-foto: 75% verticaal opvullen
+        total_photo_h = int(canvas_h * 0.75)
+        frame_h = total_photo_h // num
+        frame_w = int(frame_h * aspect)
+        # Zorg dat het in de breedte past
+        max_w = canvas_w - 40  # min 20px marge links + rechts
+        if frame_w > max_w:
+            frame_w = max_w
+            frame_h = int(frame_w / aspect)
+    else:
+        # 1-2 foto's: 85% horizontaal opvullen
+        frame_w = int(canvas_w * 0.85)
         frame_h = int(frame_w / aspect)
 
-    # Verticale verdeling: gelijke spacing top + (num-1) gaps + bottom
-    # → (num + 1) gaps van gelijke grootte
+    # Verticale verdeling: gelijke gaps (num+1 totaal)
     block_h = num * frame_h
     total_gap = canvas_h - block_h
     gap = total_gap // (num + 1)
@@ -428,14 +430,8 @@ def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
 
 
 def _triple_aspect_for(num: int) -> float:
-    """Default photo aspect-ratio voor DNP strip op basis van fotoaantal.
-
-    - 2 foto's → vierkant (1:1) zodat ze maximaal groot worden
-    - 3 foto's → 3:2 landscape (matcht Surface Pro 7 / Canon-camera aspect)
-    """
-    if num == 2:
-        return 1.0
-    return 3.0 / 2.0
+    """Photo aspect-ratio voor DNP strip: altijd 4:3 (Surface Pro 7 webcam 1920x1440)."""
+    return 4.0 / 3.0
 
 
 def _triple_spacing_for(num: int) -> int:

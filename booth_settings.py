@@ -109,7 +109,7 @@ class BoothSettings:
     linked_token: str = ""
     linked_booking_label: str = ""      # display name "Klant · Datum"
     linked_design_path: str = ""        # storage path naar design in Supabase
-    linked_photo_count: int = 2          # operator-keuze, default 2
+    linked_photo_count: int = 3          # operator-keuze, default 3 (gebruiker-verzoek)
 
     # ── Persistence ────────────────────────────────────────────
 

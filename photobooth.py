@@ -9630,13 +9630,19 @@ class PhotoboothWindow(QMainWindow):
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(4)
 
-        # Draw layout preview
+        # Draw layout preview — wrap in try/except zodat 1 stuk template
+        # niet de hele grid laat crashen
         thumb_label = QLabel()
         thumb_label.setAlignment(Qt.AlignCenter)
         thumb_label.setFixedHeight(155)
-        preview = self._render_layout_preview(layout, 148, 155)
-        if preview:
-            thumb_label.setPixmap(preview)
+        try:
+            preview = self._render_layout_preview(layout, 148, 155)
+            if preview:
+                thumb_label.setPixmap(preview)
+        except Exception as e:
+            thumb_label.setText(f"⚠️\n{e}")
+            thumb_label.setStyleSheet(f"color: {config.COLOR_DANGER}; font-size: 9px;")
+            print(f"[LAYOUT-GRID] Preview render fout voor '{layout.name}': {e}")
         lay.addWidget(thumb_label)
 
         # Layout name (translated)
@@ -11913,7 +11919,9 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.linked_token = q.get("token", self.active_event.linked_token)
         self.active_event.linked_booking_label = label
         self.active_event.linked_design_path = b.get("photostrip_design_url", "")
-        self.active_event.linked_photo_count = int(booking_data.get("photo_count_preset", 2))
+        # Gebruiker-keuze: altijd 3 foto's voor DNP linked-modus (kan later
+        # variabel via UI). Cloud-DB-default is 2 — die negeren we.
+        self.active_event.linked_photo_count = 3
         # Printer-mode: alleen overschrijven bij EXPLICIETE 'premium' upgrade.
         # 'standard' kan ook de fallback-default zijn — dan laten we de lokaal
         # gekozen modus staan i.p.v. die te resetten. Operator kan altijd
