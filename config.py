@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.5"
+VERSION = "v1.99.6"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -67,8 +67,15 @@ BOOMERANG_FRAME_DURATION_MS = 66   # playback speed per frame
 BOOMERANG_SIZE = (480, 320)        # GIF dimensions in pixels
 
 # === Bootharoo CRM / Authentication (Supabase) ===
+# Legacy auth project — niet meer actief gebruikt in verhuur-versie,
+# maar veld blijft voor compat met oude code-paden.
 SUPABASE_URL = "https://aesimuddpsbvgipdbzsi.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFlc2ltdWRkcHNidmdpcGRienNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0MzE2MTAsImV4cCI6MjA4OTAwNzYxMH0.ZujxXG32-uW-Yy_QsWULWPz4PFQFizlGfvE2Us9BIK4"
+
+# === Clixibo Backend (Supabase) — Linked-modus events ===
+# Booking lookup, design-fetch, R2 upload-tickets.
+CLIXIBO_SUPABASE_URL = "https://xmfbsofhitxhrozhmpzi.supabase.co"
+CLIXIBO_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhtZmJzb2ZoaXR4aHJvemhtcHppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1OTYzMjIsImV4cCI6MjA4MTE3MjMyMn0._nAetMPlV4KvXSvoEJFzcKDtw_QYWGYt0YyiGBkUYQU"
 
 # === Email Settings ===
 EMAIL_ENABLED = True  # SMTP configured in settings.json

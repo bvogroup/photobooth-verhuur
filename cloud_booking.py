@@ -64,14 +64,14 @@ def fetch_booking(token: str, use_cache_on_offline: bool = True) -> Tuple[Option
 
     Bij netwerk-fout en cache aanwezig: gebruikt cache + waarschuwing in error.
     """
-    url = f"{config.SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-booking"
+    url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-booking"
     try:
         resp = requests.post(
             url,
             headers={
                 "Content-Type": "application/json",
-                "apikey": config.SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {config.SUPABASE_ANON_KEY}",
+                "apikey": config.CLIXIBO_ANON_KEY,
+                "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
             },
             json={"token": token},
             timeout=15,
@@ -139,14 +139,14 @@ def fetch_design(token: str, design_path: str, booking_id: str) -> Tuple[Optiona
     local = _design_cache_path(booking_id, ext)
 
     # 1. Vraag signed URL via bestaande edge function
-    url = f"{config.SUPABASE_URL.rstrip('/')}/functions/v1/get-photostrip-design-url"
+    url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photostrip-design-url"
     try:
         resp = requests.post(
             url,
             headers={
                 "Content-Type": "application/json",
-                "apikey": config.SUPABASE_ANON_KEY,
-                "Authorization": f"Bearer {config.SUPABASE_ANON_KEY}",
+                "apikey": config.CLIXIBO_ANON_KEY,
+                "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
             },
             json={"token": token, "path": design_path},
             timeout=15,

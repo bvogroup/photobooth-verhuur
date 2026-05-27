@@ -337,14 +337,14 @@ class UploadWorker(QObject):
         if cached and cached.get("expires_at_mono", 0) > now + _TICKET_LEAD_TIME_HOURS * 3600:
             return cached
 
-        url = f"{config.SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-r2-ticket"
+        url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-r2-ticket"
         try:
             r = requests.post(
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "apikey": config.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {config.SUPABASE_ANON_KEY}",
+                    "apikey": config.CLIXIBO_ANON_KEY,
+                    "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
                 },
                 json={"token": self.token, "filename": filename, "content_type": "image/jpeg"},
                 timeout=15,
@@ -364,14 +364,14 @@ class UploadWorker(QObject):
         return data
 
     def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str]) -> None:
-        url = f"{config.SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
+        url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
         try:
             r = requests.post(
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "apikey": config.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {config.SUPABASE_ANON_KEY}",
+                    "apikey": config.CLIXIBO_ANON_KEY,
+                    "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
                 },
                 json={
                     "token": self.token,
