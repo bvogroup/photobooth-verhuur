@@ -1,13 +1,13 @@
-; Bootharoo Photobooth Installer
+; Bootharoo Photobooth Installer (verhuur-versie)
 ; Built with Inno Setup 6
 ;
 ; Build steps:
-;   1. cd C:\Photobooth
+;   1. cd C:\Photobooth-verhuur
 ;   2. pyinstaller bootharoo.spec --noconfirm
 ;   3. "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Bootharoo"
-#define MyAppVersion "2.43"
+#define MyAppVersion "1.99.32"
 #define MyAppPublisher "Bootharoo"
 #define MyAppURL "https://bootharoo.com"
 #define MyAppExeName "Bootharoo.exe"
@@ -25,7 +25,7 @@ AppSupportURL={#MyAppURL}
 DefaultDirName={commonpf32}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=C:\Photobooth\dist
+OutputDir=C:\Photobooth-verhuur\dist
 OutputBaseFilename=Bootharoo_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
@@ -46,7 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Snelkoppeling op bureaublad aanmaken"; GroupDescription: "Extra opties:"
 
 [Files]
-Source: "C:\Photobooth\dist\Bootharoo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\Photobooth-verhuur\dist\Bootharoo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

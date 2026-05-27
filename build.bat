@@ -4,7 +4,7 @@ echo   Bootharoo Photobooth - EXE Builder
 echo ============================================
 echo.
 
-cd /d C:\Photobooth
+cd /d C:\Photobooth-verhuur
 
 for /f "delims=" %%v in ('python -c "import config; print(config.VERSION)"') do set VERSION=%%v
 echo Versie: %VERSION%
@@ -29,6 +29,6 @@ if errorlevel 1 (
 echo.
 echo [3/3] Klaar!
 echo.
-echo EXE locatie: C:\Photobooth\dist\Bootharoo_%VERSION%\Bootharoo_%VERSION%.exe
+echo EXE locatie: C:\Photobooth-verhuur\dist\Bootharoo\Bootharoo.exe
 echo.
 pause

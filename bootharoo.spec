@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Bootharoo Photobooth.
+PyInstaller spec file for Bootharoo Photobooth (verhuur).
 
 Build with:
-    cd C:\\Photobooth
+    cd C:\\Photobooth-verhuur
     pyinstaller bootharoo.spec --noconfirm
 
 Output: dist\Bootharoo\Bootharoo.exe  (folder mode, fast startup)
