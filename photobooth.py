@@ -1199,37 +1199,21 @@ class PhotoboothWindow(QMainWindow):
         self._do_startup_auth()
 
     def _do_startup_auth(self):
-        """Check authentication at startup.
+        """Verhuur-versie: licentie is altijd geldig, plan = professional.
 
-        Always goes to idle screen — app works without login but with watermark.
-        If logged in, watermark is removed and online features are enabled.
+        Geen login-flow, geen banner, geen online verificatie.
         """
-        # Check if language is set, show selection if not (first boot only)
         lang = load_language()
         if not lang:
             self._show_language_selection()
             return
 
-        allowed, user, plan, message = auth.startup_auth_check()
-        if allowed:
-            with self._auth_lock:
-                self._auth_plan = plan
-                self._cached_user = user or {}
-            identifier = user.get('name') or user.get('email') or '?'
-            print(f"[AUTH] Ingelogd als {identifier} (plan: {plan})")
-            # Background verify (non-blocking)
-            threading.Thread(target=self._background_auth_verify, daemon=True).start()
-        else:
-            with self._auth_lock:
-                self._auth_plan = ""
-                self._cached_user = {}
-            print(f"[AUTH] Niet ingelogd ({message})")
-        # Always load event and go to idle — app works without login
+        with self._auth_lock:
+            self._auth_plan = "professional"
+            self._cached_user = {"name": "Photobooth Verhuur", "plan": "professional"}
+        print("[AUTH] Verhuur-versie — licentie altijd geldig (professional)")
         self._load_active_event()
-        # Pas live-view alignment toe op basis van geladen event-setting
-        # (default 'center' = ongewijzigd t.o.v. v2.25)
         self._apply_live_view_alignment()
-        # Rebuild idle page AFTER auth check so license banner is correct
         self._rebuild_idle_page()
         self._go_idle()
 
@@ -1355,19 +1339,8 @@ class PhotoboothWindow(QMainWindow):
         self._go_idle()
 
     def _is_pro_feature(self, feature):
-        """Check if a feature is allowed under the current plan.
-
-        Online/sharing features require Professional plan + login.
-        """
-        if not self._auth_plan:
-            # Not logged in — block all online features
-            if feature in ("qr_sharing", "email", "data_collection", "sharing"):
-                return False
-        if self._auth_plan == "starter":
-            # Starter plan — block pro-only features
-            if feature in ("qr_sharing", "email", "data_collection", "sharing"):
-                return False
-        return auth.is_feature_allowed(feature)
+        """Verhuur-versie: alle features altijd beschikbaar."""
+        return True
 
     def _is_logged_in(self):
         """Check if user is logged in with a valid plan."""
@@ -6869,16 +6842,6 @@ class PhotoboothWindow(QMainWindow):
 
     def _switch_settings_tab(self, index):
         """Switch the active settings tab."""
-        # Block Delen tab (index 4) for non-professional plans
-        tab_names = [t("tab_event"), t("tab_layout"), t("tab_print"), t("tab_camera"), t("tab_sharing"), t("tab_payments"), t("tab_advanced")]
-        # Block Delen tab (index 4) and Betalingen tab (index 5) for non-professional
-        # Block pro-only tabs
-        pro_tabs = {4: "sharing", 5: "payments"}
-        if index in pro_tabs and not self._is_pro_feature(pro_tabs[index]):
-                from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.information(self, t("pro_title"),
-                    t("pro_sharing_msg"))
-                return
         self._settings_tab_stack.setCurrentIndex(index)
         for i, btn in enumerate(self._settings_tab_buttons):
             if i == index:
@@ -6955,7 +6918,8 @@ class PhotoboothWindow(QMainWindow):
         tab_bar_container = QVBoxLayout()
         tab_bar_container.setSpacing(0)
         tab_bar_container.setContentsMargins(0, 0, 0, 0)
-        tab_names = [t("tab_event"), t("tab_layout"), t("tab_print"), t("tab_camera"), t("tab_sharing"), t("tab_payments"), t("tab_advanced")]
+        # Verhuur-versie: Delen + Betalingen tabs verborgen
+        tab_names = [t("tab_event"), t("tab_layout"), t("tab_print"), t("tab_camera"), t("tab_advanced")]
         self._settings_tab_buttons = []
 
         screen = self.screen()
@@ -7406,6 +7370,8 @@ class PhotoboothWindow(QMainWindow):
         order_paper_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         order_paper_btn.clicked.connect(self._on_order_paper)
         connect_lay.addWidget(order_paper_btn)
+        # Verhuur: "Bestel printpapier" knop verbergen.
+        order_paper_btn.setVisible(False)
 
         # _printer_settings_container is nu de wrapper voor de Printer-koppel content
         # (inhoud is hierboven direct via connect_lay toegevoegd).
@@ -7485,6 +7451,9 @@ class PhotoboothWindow(QMainWindow):
 
         settings_lay.addStretch()
         tab2_lay.addWidget(self._print_settings_card)
+        # Verhuur: hele Printerinstellingen sub-kaart verbergen (auto-print +
+        # 1 kopie zijn hardcoded via booth_settings.load).
+        self._print_settings_card.setVisible(False)
 
         tab2_lay.addStretch()
         self._settings_tab_stack.addWidget(tab2_scroll)
@@ -7529,6 +7498,7 @@ class PhotoboothWindow(QMainWindow):
         sharing_row.addStretch()
         card_timing_lay.addLayout(sharing_row)
         tab3_lay.addWidget(card_timing)
+        card_timing.setVisible(False)  # verhuur: hardcoded countdown/pauze/QR-tijd
 
         # Card: Camera Modus
         card_cam_mode, card_cam_mode_lay = self._settings_card(t("card_camera_mode"))
@@ -7558,6 +7528,9 @@ class PhotoboothWindow(QMainWindow):
         cam_mode_row.addWidget(self._cam_webcam_radio)
         cam_mode_row.addStretch()
         card_cam_mode_lay.addLayout(cam_mode_row)
+        # Verhuur: alleen webcam mogelijk — verberg de keuze-radios.
+        self._cam_dslr_radio.setVisible(False)
+        self._cam_webcam_radio.setVisible(False)
 
         # Webcam selection (hidden by default)
         self._webcam_select_row = QWidget()
@@ -7581,7 +7554,8 @@ class PhotoboothWindow(QMainWindow):
         test_cam_btn.clicked.connect(self._test_webcam_diagnostic)
         wsr.addWidget(test_cam_btn)
         card_cam_mode_lay.addWidget(self._webcam_select_row)
-        self._webcam_select_row.setVisible(False)
+        # Verhuur: webcam-modus is hardcoded → picker altijd zichtbaar.
+        self._webcam_select_row.setVisible(True)
 
         # Connect radio buttons
         self._cam_dslr_radio.toggled.connect(self._on_camera_mode_changed)
@@ -7613,6 +7587,9 @@ class PhotoboothWindow(QMainWindow):
         rot_row.addWidget(self._cam_rotation_combo)
         rot_row.addStretch()
         card_cam_set_lay.addLayout(rot_row)
+        # Verhuur: rotatie hardcoded op 0° — verberg de keuze.
+        rot_label.setVisible(False)
+        self._cam_rotation_combo.setVisible(False)
 
         # Positie live view — radio buttons (default: midden centreren = ongewijzigd)
         from PyQt5.QtWidgets import QRadioButton, QButtonGroup
@@ -7650,6 +7627,10 @@ class PhotoboothWindow(QMainWindow):
         self._live_view_pos_radios["center"].setChecked(True)
         lvp_row.addLayout(lvp_col, 1)
         card_cam_set_lay.addLayout(lvp_row)
+        # Verhuur: live-view-positie hardcoded op 'center' — verberg de keuze.
+        lvp_label.setVisible(False)
+        for _rb in self._live_view_pos_radios.values():
+            _rb.setVisible(False)
 
         tab3_lay.addWidget(card_cam_set)
 
@@ -7962,7 +7943,9 @@ class PhotoboothWindow(QMainWindow):
         tab4_lay.addWidget(card_attach)
 
         tab4_lay.addStretch()
-        self._settings_tab_stack.addWidget(tab4_scroll)
+        # Verhuur-versie: tab Delen NIET toegevoegd aan stack (widgets bestaan
+        # nog voor backwards compat met code-referenties elders).
+        tab4_scroll.setParent(None)
 
         # ════════════════════════════════════════════
         # TAB 5: Betalingen
@@ -8387,7 +8370,8 @@ class PhotoboothWindow(QMainWindow):
         self._custom_card.setVisible(False)
 
         tab5_pay_lay.addStretch()
-        self._settings_tab_stack.addWidget(tab5_pay_scroll)
+        # Verhuur-versie: tab Betalingen NIET toegevoegd aan stack.
+        tab5_pay_scroll.setParent(None)
 
         # ════════════════════════════════════════════
         # TAB 6: Geavanceerd
@@ -8477,6 +8461,8 @@ class PhotoboothWindow(QMainWindow):
         pin_row.addStretch()
         card_lock_lay.addLayout(pin_row)
         tab5_lay.addWidget(card_lock)
+        # Verhuur: lock-icon-size + PIN-config verbergen (PIN is hardcoded 1350).
+        card_lock.setVisible(False)
 
         # Card: Account / Abonnement
         card_account, card_account_lay = self._settings_card(t("card_license"))
@@ -8538,6 +8524,8 @@ class PhotoboothWindow(QMainWindow):
         account_btn_row.addStretch()
         card_account_lay.addLayout(account_btn_row)
         tab5_lay.addWidget(card_account)
+        # Verhuur: licentie/account-kaart verbergen (geen login meer).
+        card_account.setVisible(False)
 
         # App version at bottom of Advanced tab — dynamisch vanuit config.VERSION
         version_label = QLabel(t("version", version=config.VERSION))
@@ -11145,19 +11133,11 @@ class PhotoboothWindow(QMainWindow):
                         break
 
             def _on_cam_change(ci):
+                # Verhuur: resolutie-keuze verborgen, altijd "Standaard" (=hoogste).
                 res_combo.clear()
-                cam_idx = cam_combo.itemData(ci)
-                if cam_idx in resolutions and resolutions[cam_idx]:
-                    for r in resolutions[cam_idx]:
-                        res_combo.addItem(r)
-                    if self.active_event and self.active_event.webcam_resolution:
-                        ri = res_combo.findText(self.active_event.webcam_resolution)
-                        if ri >= 0:
-                            res_combo.setCurrentIndex(ri)
-                else:
-                    res_combo.addItem("Standaard")
-                res_label.setVisible(True)
-                res_combo.setVisible(True)
+                res_combo.addItem("Standaard")
+                res_label.setVisible(False)
+                res_combo.setVisible(False)
 
             cam_combo.currentIndexChanged.connect(_on_cam_change)
             _on_cam_change(cam_combo.currentIndex())

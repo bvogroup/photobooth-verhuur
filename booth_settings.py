@@ -119,18 +119,54 @@ class BoothSettings:
         """Laad booth-settings. Bij ontbrekend of corrupt bestand: defaults."""
         p = cls.path()
         if not os.path.isfile(p):
-            return cls()
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as ex:
-            print(f"[BOOTH-SETTINGS] Kon niet laden ({ex}); defaults gebruikt")
-            return cls()
-        # Filter only known fields zodat oude json-bestanden met onbekende
-        # velden niet crashen en nieuwe velden defaults krijgen.
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in data.items() if k in known}
-        return cls(**filtered)
+            instance = cls()
+        else:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Filter only known fields zodat oude json-bestanden met onbekende
+                # velden niet crashen en nieuwe velden defaults krijgen.
+                known = {f.name for f in cls.__dataclass_fields__.values()}
+                filtered = {k: v for k, v in data.items() if k in known}
+                instance = cls(**filtered)
+            except Exception as ex:
+                print(f"[BOOTH-SETTINGS] Kon niet laden ({ex}); defaults gebruikt")
+                instance = cls()
+        cls._apply_verhuur_overrides(instance)
+        return instance
+
+    @staticmethod
+    def _apply_verhuur_overrides(instance: "BoothSettings") -> None:
+        """Force verhuur-specific values regardless of what is stored on disk.
+
+        Houdt de software simpel: de gebruiker kan deze waarden niet via de UI
+        veranderen, dus elke afwijking in booth_settings.json wordt genegeerd en
+        teruggezet bij elke load.
+        """
+        instance.countdown_seconds = 5
+        instance.photo_delay_ms = 3000
+        instance.sharing_timeout = 30
+        instance.camera_mode = "webcam"
+        instance.camera_rotation = 0
+        instance.live_view_position = "center"
+        instance.webcam_resolution = ""  # leeg = hoogste beschikbare
+        instance.gallery_enabled = True
+        instance.email_enabled = False
+        instance.email_collect = False
+        instance.data_collect_enabled = False
+        instance.qr_branding_enabled = False
+        instance.qr_branding_text = ""
+        instance.auto_print = True
+        instance.auto_print_copies = 1
+        instance.print_copies = 1
+        instance.max_prints = 1
+        instance.extra_prints_allowed = 0
+        instance.payment_enabled = False
+        instance.sumup_enabled = False
+        instance.payment_method = "none"
+        instance.custom_flow_unlocked = False
+        instance.pin_code = "1350"
+        instance.lock_icon_size = 60
 
     @classmethod
     def exists(cls) -> bool:

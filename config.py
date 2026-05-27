@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99"
+VERSION = "v1.99.1"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -84,7 +84,7 @@ COUNTDOWN_BEEP = True     # Play beep sound during countdown
 
 # === LED Flash Relay (USB-serial CH340 board) ===
 LED_RELAY_ENABLED = True
-LED_RELAY_PORT = "COM5"
+LED_RELAY_PORT = "auto"  # "auto" = vind CH340 board automatisch, of "COM3" voor vaste poort
 
 # === Colors (Clixibo Design System) ===
 # Warm beige/gold palette matching the Clixibo website
