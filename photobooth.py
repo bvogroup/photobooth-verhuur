@@ -7044,8 +7044,9 @@ class PhotoboothWindow(QMainWindow):
         tab_bar_container = QVBoxLayout()
         tab_bar_container.setSpacing(0)
         tab_bar_container.setContentsMargins(0, 0, 0, 0)
-        # Verhuur-versie: Delen + Betalingen tabs verborgen
-        tab_names = [t("tab_event"), t("tab_layout"), t("tab_print"), t("tab_camera"), t("tab_advanced")]
+        # Verhuur-versie: Delen + Betalingen + Camera tabs verborgen (camera
+        # settings zijn verplaatst naar Geavanceerd).
+        tab_names = [t("tab_event"), t("tab_layout"), t("tab_print"), t("tab_advanced")]
         self._settings_tab_buttons = []
 
         screen = self.screen()
@@ -7151,6 +7152,11 @@ class PhotoboothWindow(QMainWindow):
         photo_storage_row.addWidget(open_photos_btn)
         photo_storage_row.addStretch()
         card_event_lay.addLayout(photo_storage_row)
+        # Verhuur: toggle + "Opgeslagen foto's"-link verbergen, foto's worden
+        # altijd lokaal opgeslagen (zie save_photos_locally hardcoded in
+        # booth_settings._apply_verhuur_overrides).
+        self._save_photos_toggle.setVisible(False)
+        open_photos_btn.setVisible(False)
 
         tab0_lay.addWidget(card_event)
 
@@ -7295,6 +7301,8 @@ class PhotoboothWindow(QMainWindow):
         intro_text_row.addWidget(self._intro_text_input)
         card_intro_lay.addLayout(intro_text_row)
         tab0_lay.addWidget(card_intro)
+        # Verhuur: intro-scherm verbergen (geen instelbare intro tekst/duur).
+        card_intro.setVisible(False)
 
         tab0_lay.addStretch()
         self._settings_tab_stack.addWidget(tab0_scroll)
@@ -7628,6 +7636,7 @@ class PhotoboothWindow(QMainWindow):
 
         # Card: Camera Modus
         card_cam_mode, card_cam_mode_lay = self._settings_card(t("card_camera_mode"))
+        self._card_cam_mode = card_cam_mode  # verhuur: verplaatst naar Geavanceerd
 
         radio_style = f"QRadioButton {{ font-size: 13px; spacing: 8px; }} QRadioButton::indicator {{ width: 18px; height: 18px; }}"
         combo_style = (
@@ -7690,6 +7699,7 @@ class PhotoboothWindow(QMainWindow):
 
         # Card: Camera Instellingen (mirror + rotation)
         card_cam_set, card_cam_set_lay = self._settings_card(t("card_camera_settings"))
+        self._card_cam_set = card_cam_set  # verhuur: verplaatst naar Geavanceerd
 
         self._cam_mirror_cb = ToggleSwitch(t("camera_mirror"))
         self._cam_mirror_cb.setFont(QFont("DM Sans", 12))
@@ -7761,7 +7771,9 @@ class PhotoboothWindow(QMainWindow):
         tab3_lay.addWidget(card_cam_set)
 
         tab3_lay.addStretch()
-        self._settings_tab_stack.addWidget(tab3_scroll)
+        # Verhuur: Camera-tab niet meer in tab-bar. De zichtbare onderdelen
+        # (mirror + webcam picker) worden hieronder naar Geavanceerd verplaatst.
+        tab3_scroll.setParent(None)
 
         # ════════════════════════════════════════════
         # TAB 4: Delen
@@ -8559,6 +8571,14 @@ class PhotoboothWindow(QMainWindow):
         pmode_row.addStretch()
         card_pmode_lay.addLayout(pmode_row)
         tab5_lay.addWidget(card_pmode)
+
+        # Verhuur: camera-instellingen verplaatst uit Camera-tab naar hier
+        if hasattr(self, '_card_cam_mode'):
+            self._card_cam_mode.setParent(None)
+            tab5_lay.addWidget(self._card_cam_mode)
+        if hasattr(self, '_card_cam_set'):
+            self._card_cam_set.setParent(None)
+            tab5_lay.addWidget(self._card_cam_set)
 
         # Card: Lock icon
         card_lock, card_lock_lay = self._settings_card(t("card_lock"))

@@ -170,6 +170,7 @@ class BoothSettings:
         instance.custom_flow_unlocked = False
         instance.pin_code = "1350"
         instance.lock_icon_size = 60
+        instance.save_photos_locally = True
 
     @classmethod
     def exists(cls) -> bool:
