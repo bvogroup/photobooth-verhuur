@@ -9006,6 +9006,14 @@ class PhotoboothWindow(QMainWindow):
         # Add stacked widget to main layout
         lay.addWidget(self._settings_tab_stack, stretch=1)
 
+        # Verhuur: forceer Linked-UI direct na build. Anders blijven Standalone-
+        # widgets (event-picker, idle-bg) zichtbaar totdat _load_settings_for_event
+        # ze opruimt — wat soms te laat / nooit gebeurt afhankelijk van flow.
+        try:
+            self._update_linked_card_visibility()
+        except Exception as e:
+            print(f"[BUILD] _update_linked_card_visibility fout (niet kritiek): {e}")
+
         # Set initial active tab
         self._switch_settings_tab(0)
 
