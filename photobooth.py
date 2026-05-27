@@ -13463,51 +13463,72 @@ class PhotoboothWindow(QMainWindow):
         self._editor_update_count_label()
 
     def _editor_save(self):
+        """Save edited layout — wrapped in try/except met log + dialoog."""
+        try:
+            self._editor_save_impl()
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[EDITOR-SAVE] Crash:\n{tb}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Opslaan mislukt",
+                f"Kon template niet opslaan:\n{type(e).__name__}: {e}\n\n"
+                f"Stacktrace in app_crash.log.")
+
+    def _editor_save_impl(self):
         """Save edited layout as custom template and go back to settings."""
         canvas = self._editor_canvas
-        if not canvas.template or not self.active_event:
+        if not canvas.template:
+            print("[EDITOR-SAVE] Geen template op canvas — kan niets opslaan")
+            return
+        if not self.active_event:
+            print("[EDITOR-SAVE] Geen active_event — terug naar settings")
             self.stack.setCurrentIndex(self.pages["settings"])
             return
 
         import json as _json
 
-        # Save custom layout to templates dir
         t = canvas.template
         is_triple = bool(getattr(t, 'is_triple_strip', False))
-        custom_name = self._editor_name_input.text().strip()
-        if not custom_name:
-            # Behoud "Event xxx (N foto's)" naam voor linked-templates zodat ze
-            # in de Layout-grid blijven verschijnen (filter zoekt op " foto's)")
-            custom_name = t.name
 
-        # Derive cut_default from strip type. Triple = altijd snijden.
+        # Naam-veld lezen — vallen terug op template.name (voor linked-templates
+        # zodat de overwrite-by-name match krijgt en de grid-filter werkt)
+        try:
+            entered = self._editor_name_input.text().strip() if hasattr(self, '_editor_name_input') else ""
+        except Exception:
+            entered = ""
+        custom_name = entered or t.name
+        if not custom_name:
+            custom_name = "Template"
+
         cut_default = is_triple or (not t.is_double_strip)
 
         data = {
             "name": custom_name,
             "background_path": t.background_path or "",
             "is_double_strip": t.is_double_strip,
-            "is_triple_strip": is_triple,  # ← was vergeten! → veroorzaakte Canon-mirror in editor
+            "is_triple_strip": is_triple,
             "cut_default": cut_default,
             "frames": [{"x": f.x, "y": f.y, "width": f.width, "height": f.height,
                          "rotation": getattr(f, 'rotation', 0.0)}
                         for f in t.frames],
         }
 
-        # Check if a template with this name already exists — overwrite it
+        # Zoek bestaand bestand met dezelfde naam → overwrite
         fname = None
         if os.path.isdir(config.TEMPLATES_DIR):
             for existing_fname in os.listdir(config.TEMPLATES_DIR):
-                if existing_fname.lower().endswith(".json"):
-                    try:
-                        fpath = os.path.join(config.TEMPLATES_DIR, existing_fname)
-                        with open(fpath, "r", encoding="utf-8") as f:
-                            existing = _json.load(f)
-                        if existing.get("name") == custom_name:
-                            fname = existing_fname
-                            break
-                    except Exception:
-                        pass
+                if not existing_fname.lower().endswith(".json"):
+                    continue
+                try:
+                    fpath = os.path.join(config.TEMPLATES_DIR, existing_fname)
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        existing = _json.load(f)
+                    if existing.get("name") == custom_name:
+                        fname = existing_fname
+                        break
+                except Exception:
+                    pass
 
         if not fname:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -13515,18 +13536,27 @@ class PhotoboothWindow(QMainWindow):
 
         path = os.path.join(config.TEMPLATES_DIR, fname)
         os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            _json.dump(data, f, indent=2)
+        # Atomic write: tmp + rename
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
 
-        # Update event to use custom layout
         self.active_event.template_name = custom_name
         self.active_event.cut_enabled = cut_default
         self.active_event.save(config.EVENTS_DIR)
-        print(f"[EDITOR] Layout opgeslagen: {custom_name} -> {path}")
+        print(f"[EDITOR-SAVE] OK: '{custom_name}' ({len(t.frames)} frames, "
+              f"triple={is_triple}) → {fname}")
 
-        # Go back to settings
-        self._load_settings_for_event()
-        self._load_settings_templates()
+        # Refresh + terug naar settings
+        try:
+            self._load_settings_for_event()
+        except Exception as e:
+            print(f"[EDITOR-SAVE] _load_settings_for_event waarschuwing: {e}")
+        try:
+            self._load_settings_templates()
+        except Exception as e:
+            print(f"[EDITOR-SAVE] _load_settings_templates waarschuwing: {e}")
         self.stack.setCurrentIndex(self.pages["settings"])
 
     def _editor_change_background(self):
