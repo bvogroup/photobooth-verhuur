@@ -131,7 +131,36 @@ def _ensure_firewall_rule():
         print(f"[FIREWALL] Fout: {e}")
 
 
+def _install_crash_logger():
+    """Vang alle uncaught exceptions + log naar app_crash.log met timestamp."""
+    import traceback
+    from datetime import datetime
+    crash_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_crash.log")
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        # KeyboardInterrupt → laat door
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        try:
+            with open(crash_log, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"CRASH @ {datetime.now().isoformat()}\n")
+                f.write(f"{'='*60}\n")
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+                f.flush()
+        except Exception:
+            pass
+        # Ook naar console
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+    print(f"[CRASH-LOG] Crashes worden gelogd naar {crash_log}")
+
+
 def main():
+    _install_crash_logger()
+
     # High DPI support for Surface displays
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

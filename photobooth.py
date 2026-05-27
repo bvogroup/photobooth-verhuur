@@ -13307,9 +13307,23 @@ class PhotoboothWindow(QMainWindow):
 
     def _open_layout_editor(self):
         """Open layout editor for the currently selected layout."""
+        try:
+            self._open_layout_editor_impl()
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[EDITOR] Crash in _open_layout_editor:\n{tb}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Editor fout",
+                f"Kon editor niet openen:\n{type(e).__name__}: {e}\n\n"
+                f"Stack trace is gelogd naar app_crash.log.")
+
+    def _open_layout_editor_impl(self):
         if not self.active_event or not self.active_event.template_name:
+            print("[EDITOR] Geen active_event of template_name")
             return
         target = self.active_event.template_name
+        print(f"[EDITOR] Open editor voor template: {target!r}")
         # Search presets first, then custom templates
         all_layouts = list(get_preset_layouts())
         if os.path.isdir(config.TEMPLATES_DIR):
@@ -13318,25 +13332,31 @@ class PhotoboothWindow(QMainWindow):
                 if fname.lower().endswith(".json"):
                     try:
                         all_layouts.append(TModel.load(os.path.join(config.TEMPLATES_DIR, fname)))
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        print(f"[EDITOR] Kon {fname} niet laden: {ex}")
         # Find last match (custom templates override presets with same name)
         match = None
         for layout in all_layouts:
             if layout.name == target:
                 match = layout
-        if match:
-            self._editor_canvas.set_template(match)
-            self._editor_canvas.set_event_background(self.active_event.background_path if self.active_event else "")
-            self._editor_title.setText(t("editor_title"))
-            self._editor_name_input.setText(match.name)
-            self._editor_info.setText("")
-            self._editor_update_count_label()
-            # Update XY input fields if they exist
-            if hasattr(self, '_editor_x_input'):
-                self._update_editor_xy_fields()
-            self.stack.setCurrentIndex(self.pages["layout_editor"])
+        if not match:
+            print(f"[EDITOR] Geen match voor template_name {target!r}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Template niet gevonden",
+                f"Kon template '{target}' niet vinden. Selecteer eerst een layout.")
             return
+        print(f"[EDITOR] Match gevonden: {match.name}, {match.num_photos} frames, "
+              f"is_triple={getattr(match, 'is_triple_strip', False)}, "
+              f"is_double={match.is_double_strip}")
+        self._editor_canvas.set_template(match)
+        self._editor_canvas.set_event_background(self.active_event.background_path if self.active_event else "")
+        self._editor_title.setText(t("editor_title"))
+        self._editor_name_input.setText(match.name)
+        self._editor_info.setText("")
+        self._editor_update_count_label()
+        if hasattr(self, '_editor_x_input'):
+            self._update_editor_xy_fields()
+        self.stack.setCurrentIndex(self.pages["layout_editor"])
 
     def _on_editor_frame_changed(self):
         """Update info label and XY fields when a frame is resized/moved."""
