@@ -5199,8 +5199,12 @@ class PhotoboothWindow(QMainWindow):
             if self._display_strip_path and self._display_strip_path != self.strip_path:
                 # DNP flow → alleen portrait uploaden, NIET de 3-up print sheet
                 self._maybe_enqueue_linked(self._display_strip_path, prefix="strip_portrait_")
+            elif self._single_strip_path and os.path.isfile(self._single_strip_path):
+                # Canon flow → upload 600x1800 enkele strip (niet het 1200x1800
+                # vel met 2 gedupliceerde helften).
+                self._maybe_enqueue_linked(self._single_strip_path, prefix="strip_")
             else:
-                # Canon flow → strip_path is de single strip
+                # Fallback: enkel strip_path beschikbaar (bv. test of niet-linked)
                 self._maybe_enqueue_linked(self.strip_path, prefix="strip_")
             self._go_review()
         else:
@@ -5572,10 +5576,18 @@ class PhotoboothWindow(QMainWindow):
                     return None
             print(f"[STRIP] Fotostrip opgeslagen: {strip_path}")
 
-            # Generate single strip (left half) for sharing if enabled
+            # Generate single strip (left half) for sharing if enabled, OR
+            # altijd in Canon linked-modus (cloud-gallery moet de 600x1800
+            # single strip tonen, niet het 1200x1800 vel met dubbele helften).
             self._single_strip_path = None
             ev = self.active_event
-            if ev and ev.share_single_strip and PRINT_W >= 1200:
+            _force_single = bool(
+                ev
+                and getattr(ev, 'booth_mode', 'standalone') == 'linked'
+                and getattr(ev, 'printer_mode', 'canon') == 'canon'
+                and not template.is_double_strip
+            )
+            if ev and (ev.share_single_strip or _force_single) and PRINT_W >= 1200:
                 try:
                     from PIL import Image as _Img
                     full = _Img.open(strip_path)
@@ -12070,13 +12082,15 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.linked_photo_count = 3
         # Coupling impliceert booth_mode='linked' — UI moet matchen met state
         self.active_event.booth_mode = "linked"
-        # Printer-mode: alleen overschrijven bij EXPLICIETE 'premium' upgrade.
-        # 'standard' kan ook de fallback-default zijn — dan laten we de lokaal
-        # gekozen modus staan i.p.v. die te resetten. Operator kan altijd
-        # handmatig wisselen in Geavanceerd.
+        # Printer-mode: cloud is source-of-truth — het design is opgeslagen
+        # met een specifieke aspect-ratio (1.5:1 Canon vs 2:1 DNP). De lokale
+        # printer_mode moet daarop matchen anders faalt validate_design_format
+        # en kan de print-compose niet de juiste output bouwen.
         cloud_pm = booking_data.get("printer_mode", "")
         if cloud_pm == "premium":
             self.active_event.printer_mode = "dnp"
+        elif cloud_pm == "standard":
+            self.active_event.printer_mode = "canon"
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
@@ -12171,15 +12185,17 @@ class PhotoboothWindow(QMainWindow):
                     f"{fetch_err}\n\nKlik OK en scan opnieuw met een nieuw design.")
                 self.active_event.linked_design_path = ""
                 self.active_event.save(config.EVENTS_DIR)
-        elif err_msg and err_msg != "geen design":
-            # Booking OK maar design fetch faalde
+        elif err_msg == "geen design":
+            # Booking nog zonder design → witte achtergrond gebruiken zodat
+            # er meteen gewerkt kan worden. Klant kan later design uploaden +
+            # operator op 'Ververs' klikken om alsnog branding toe te voegen.
+            self._apply_design_to_template("", force_regen=True)
+            print("[LINKED] Booking zonder design — witte achtergrond gebruikt")
+        elif err_msg:
+            # Booking OK maar design fetch faalde door netwerk/serverfout
             QMessageBox.warning(self, "Design probleem",
                 f"Booking is gekoppeld, maar design kon niet opgehaald worden:\n{err_msg}\n\n"
                 "Klik 'Ververs' zodra er internet is.")
-        elif err_msg == "geen design":
-            QMessageBox.information(self, "Geen design",
-                "Booking gekoppeld, maar er is nog geen design geüpload "
-                "in het portaal.")
 
         self._update_linked_card_visibility()
         self._start_linked_uploader()
@@ -12193,6 +12209,9 @@ class PhotoboothWindow(QMainWindow):
         design als achtergrond. Operator kan tussen 2/3 foto's wisselen door op
         de variant te klikken in de Layout-grid.
 
+        Bij lege/missende local_design_path wordt een wit-achtergrond template
+        gegenereerd (booking nog zonder design — niet-blokkerend).
+
         Args:
             force_regen: True = altijd overschrijven (Ververs-knop, eerste
                          coupling). False = bestaande templates met user-
@@ -12204,15 +12223,18 @@ class PhotoboothWindow(QMainWindow):
         booking_id = ev.linked_booking_id
         if not booking_id:
             return False, "Geen booking_id"
-        if not local_design_path or not os.path.isfile(local_design_path):
-            return False, "Design-bestand niet gevonden"
 
-        from cloud_booking import validate_design_format
         pm = ev.printer_mode
-        cloud_check_mode = "premium" if pm == "dnp" else "standard"
-        ok, vmsg = validate_design_format(local_design_path, cloud_check_mode)
-        if not ok:
-            return False, vmsg
+        # Lege design-path = booking zonder design → witte achtergrond,
+        # GEEN format-validatie nodig.
+        design_path_for_template = ""
+        if local_design_path and os.path.isfile(local_design_path):
+            from cloud_booking import validate_design_format
+            cloud_check_mode = "premium" if pm == "dnp" else "standard"
+            ok, vmsg = validate_design_format(local_design_path, cloud_check_mode)
+            if not ok:
+                return False, vmsg
+            design_path_for_template = local_design_path
 
         from template_model import make_linked_template
         os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
@@ -12235,7 +12257,7 @@ class PhotoboothWindow(QMainWindow):
             if os.path.isfile(tmpl_path) and not force_regen:
                 print(f"[LINKED] Template bestaat al — behoud user-edits: linked_{booking_id}_{count}foto.json")
                 continue
-            tmpl = make_linked_template(pm, count, local_design_path, booking_id)
+            tmpl = make_linked_template(pm, count, design_path_for_template, booking_id)
             tmpl.name = f"Event {booking_id[:8]} ({count} foto's)"
             try:
                 tmpl.save(tmpl_path)
@@ -12267,6 +12289,9 @@ class PhotoboothWindow(QMainWindow):
 
         Gebruikt voor auto-recouple bij startup (blocking is acceptabel daar).
         Voor interactieve flows: gebruik CouplingWorker (async).
+
+        Bij geen design beschikbaar: template met witte achtergrond aanmaken
+        zodat de booth meteen bruikbaar is.
         """
         ev = self.active_event
         if not ev:
@@ -12277,11 +12302,14 @@ class PhotoboothWindow(QMainWindow):
         if not token or not booking_id:
             return False, "Geen geldige koppeling"
         if not design_path:
-            return False, "Booking heeft nog geen design — klant moet er één uploaden in het portaal."
+            # Geen design nog geüpload → wit-achtergrond template (niet-blokkerend)
+            return self._apply_design_to_template("")
 
         from cloud_booking import fetch_design
         local, err = fetch_design(token, design_path, booking_id)
         if not local:
+            # Download mislukt → fallback naar wit zodat booth bruikbaar blijft
+            self._apply_design_to_template("")
             return False, err or "Design fetch mislukt"
 
         return self._apply_design_to_template(local)

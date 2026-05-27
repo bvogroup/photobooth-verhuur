@@ -390,17 +390,23 @@ def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
     """Frames voor DNP 5x10cm triple strip — top-anchored.
 
     Spec per fotoaantal (gebruiker-wens):
-      - 3 foto's: 16:9 landscape, top-anchored met kleine top-margin,
-        ruimte onderin behouden voor design/tekst.
-      - 2 foto's: 3:2 (tussen 16:9 en vierkant), iets langer dan voorheen,
-        ook top-anchored met meer ademruimte onderin.
+      - 3 foto's: 16:9 landscape, 10% kleiner dan max, top-anchored hoog
+        zodat onderin ruimte blijft voor design/tekst (bv. "18 JAAR").
+      - 2 foto's: 3:2 (tussen 16:9 en vierkant), iets langer, top-anchored
+        met meer ademruimte onderin.
 
     Aspect parameter wordt voor 2-foto overruled naar 3:2 ongeacht meegegeven
     waarde, voor consistente UX.
     """
-    TOP_MARGIN = 50
-    SIDE_MARGIN_MIN = 20
-    SPACING = 30
+    # Per-count parameters: 3-foto staat hoger en is 10% kleiner dan 2-foto.
+    if num == 3:
+        TOP_MARGIN = 30
+        SIDE_MARGIN_MIN = 48   # (600 - 504) / 2 → 10% smaller dan max breedte
+        SPACING = 30
+    else:
+        TOP_MARGIN = 50
+        SIDE_MARGIN_MIN = 20
+        SPACING = 30
 
     # Voor 2-foto: gebruikerseis 'tussen 16:9 en vierkant'. Override naar 3:2.
     effective_aspect = (3.0 / 2.0) if num == 2 else aspect
