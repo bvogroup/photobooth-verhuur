@@ -11834,22 +11834,54 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.linked_booking_label = label
         self.active_event.linked_design_path = b.get("photostrip_design_url", "")
         self.active_event.linked_photo_count = int(booking_data.get("photo_count_preset", 2))
-        # Printer-mode override vanuit cloud
+        # Printer-mode: alleen overschrijven bij EXPLICIETE 'premium' upgrade.
+        # 'standard' kan ook de fallback-default zijn — dan laten we de lokaal
+        # gekozen modus staan i.p.v. die te resetten. Operator kan altijd
+        # handmatig wisselen in Geavanceerd.
         cloud_pm = booking_data.get("printer_mode", "")
-        if cloud_pm in ("standard", "premium"):
-            # Map naar bestaande "canon"/"dnp" waarden
-            self.active_event.printer_mode = "canon" if cloud_pm == "standard" else "dnp"
+        if cloud_pm == "premium":
+            self.active_event.printer_mode = "dnp"
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
-        """Open de event-koppel modal: webcam QR-scan + handmatige fallback."""
+        """Open de event-koppel modal: webcam QR-scan + handmatige fallback.
+
+        Geeft tijdelijk de webcam vrij zodat de QR-scanner exclusief toegang
+        krijgt. Reconnect daarna zodat de capture-flow weer kan werken.
+        """
         from couple_event_dialog import CoupleEventDialog
         # Bepaal welke webcam te gebruiken (zelfde als capture-webcam)
         wc_idx = 0
-        if self.active_event and getattr(self.active_event, 'webcam_index', None) is not None:
-            wc_idx = self.active_event.webcam_index
-        dlg = CoupleEventDialog(self, webcam_index=wc_idx)
-        if dlg.exec_() != dlg.Accepted:
+        wc_res = ""
+        wc_name = ""
+        if self.active_event:
+            wc_idx = getattr(self.active_event, 'webcam_index', 0) or 0
+            wc_res = getattr(self.active_event, 'webcam_resolution', '') or ""
+            wc_name = getattr(self.active_event, 'webcam_name', '') or ""
+
+        # Webcam tijdelijk loslaten — QR-scanner kan anders niet openen
+        cam_was_connected = False
+        try:
+            if hasattr(self, 'camera') and self.camera and self.camera.is_connected():
+                cam_was_connected = True
+                self.camera.stop_live_view()
+                self.camera.disconnect()
+        except Exception as e:
+            print(f"[LINKED] Camera vrijgeven fout (continue): {e}")
+
+        try:
+            dlg = CoupleEventDialog(self, webcam_index=wc_idx)
+            result = dlg.exec_()
+        finally:
+            # Reconnect altijd, ook als dialog gecanceld werd
+            if cam_was_connected:
+                try:
+                    self.camera.connect(wc_idx, wc_res, wc_name)
+                    print(f"[LINKED] Camera heraangesloten ({wc_idx})")
+                except Exception as e:
+                    print(f"[LINKED] Camera reconnect fout: {e}")
+
+        if result != dlg.Accepted:
             return
         token = dlg.selected_token
         if not token:
