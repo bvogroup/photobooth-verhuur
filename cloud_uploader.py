@@ -59,6 +59,19 @@ _UPLOAD_TIMEOUT = 60                    # seconden per PUT
 _CLEANUP_AFTER_DAYS = 30                # uploaded/ files na deze tijd weg
 _TICKET_LEAD_TIME_HOURS = 1             # vernieuw URL als < 1u geldig
 
+# Per-booking lock om race tussen enqueue() en worker te voorkomen.
+# enqueue() schrijft nieuwe entries; worker leest queue + uploadt + schrijft
+# resultaat terug. Zonder lock kan een mid-tick enqueue worden overschreven.
+_queue_locks: dict = {}
+_queue_locks_lock = threading.Lock()
+
+
+def _get_queue_lock(booking_id: str) -> threading.Lock:
+    with _queue_locks_lock:
+        if booking_id not in _queue_locks:
+            _queue_locks[booking_id] = threading.Lock()
+        return _queue_locks[booking_id]
+
 
 def _data_root() -> str:
     """Documents/Bootharoo/ — overleeft software-updates."""
@@ -106,7 +119,8 @@ def _backoff(attempts: int) -> float:
 def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> Optional[str]:
     """Voeg een foto toe aan de upload-queue van een event.
 
-    Verplaats de file naar pending/ en registreer in queue.json.
+    Verplaats de file naar pending/ en registreer in queue.json. Atomic onder
+    booking-lock zodat een tegelijkertijd-draaiende worker geen entries verliest.
     Returns het pad in pending/ of None bij fout.
     """
     if not booking_id or not os.path.isfile(file_path):
@@ -116,7 +130,7 @@ def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> 
     filename = os.path.basename(file_path)
     dest = os.path.join(pending, filename)
 
-    # Conflict-resolutie: hang timestamp aan filename
+    # Conflict-resolutie: hang timestamp aan filename als al bestaat
     if os.path.exists(dest):
         base, ext = os.path.splitext(filename)
         filename = f"{base}_{int(time.time())}{ext}"
@@ -128,17 +142,19 @@ def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> 
         print(f"[QUEUE] Kon foto niet kopiëren naar pending: {e}")
         return None
 
-    q = _read_queue(booking_id)
-    q.setdefault("files", {})[filename] = {
-        "state": "pending",
-        "attempts": 0,
-        "last_error": "",
-        "next_retry_at": 0.0,
-        "taken_at": taken_at or datetime.now(timezone.utc).isoformat(),
-        "size_bytes": os.path.getsize(dest),
-        "object_key": "",
-    }
-    _write_queue(booking_id, q)
+    lock = _get_queue_lock(booking_id)
+    with lock:
+        q = _read_queue(booking_id)
+        q.setdefault("files", {})[filename] = {
+            "state": "pending",
+            "attempts": 0,
+            "last_error": "",
+            "next_retry_at": 0.0,
+            "taken_at": taken_at or datetime.now(timezone.utc).isoformat(),
+            "size_bytes": os.path.getsize(dest),
+            "object_key": "",
+        }
+        _write_queue(booking_id, q)
     print(f"[QUEUE] Foto in queue: {booking_id}/{filename} ({q['files'][filename]['size_bytes']} bytes)")
     return dest
 
@@ -201,15 +217,45 @@ class UploadWorker(QObject):
     # ── intern ────────────────────────────────────────────────────────
 
     def _run(self):
-        # Race-fix bij restart: alle "uploading" rows terug naar "pending"
-        q = _read_queue(self.booking_id)
-        changed = False
-        for fname, meta in q.get("files", {}).items():
-            if meta.get("state") == "uploading":
-                meta["state"] = "pending"
-                meta["last_error"] = "restart recovery"
-                changed = True
-        if changed:
+        # Recovery bij startup: race-fix + orphan-pickup
+        lock = _get_queue_lock(self.booking_id)
+        with lock:
+            q = _read_queue(self.booking_id)
+            files = q.setdefault("files", {})
+
+            # 1) "uploading" rows die nooit klaar kwamen → terug naar pending
+            for fname, meta in files.items():
+                if meta.get("state") == "uploading":
+                    meta["state"] = "pending"
+                    meta["last_error"] = "restart recovery"
+
+            # 2) Orphan files in pending/ folder die NIET in queue.json staan
+            #    (bv. door race-condition tijdens een eerdere sessie weggevallen)
+            pending_dir = os.path.join(queue_dir(self.booking_id), "pending")
+            try:
+                disk_files = set(os.listdir(pending_dir))
+            except FileNotFoundError:
+                disk_files = set()
+            for disk_fname in disk_files:
+                if disk_fname not in files:
+                    full = os.path.join(pending_dir, disk_fname)
+                    if not os.path.isfile(full):
+                        continue
+                    try:
+                        size = os.path.getsize(full)
+                    except OSError:
+                        size = 0
+                    files[disk_fname] = {
+                        "state": "pending",
+                        "attempts": 0,
+                        "last_error": "orphan recovered",
+                        "next_retry_at": 0.0,
+                        "taken_at": datetime.now(timezone.utc).isoformat(),
+                        "size_bytes": size,
+                        "object_key": "",
+                    }
+                    print(f"[QUEUE] Orphan teruggevonden: {disk_fname}")
+
             _write_queue(self.booking_id, q)
 
         # Hoofd-loop
@@ -218,22 +264,29 @@ class UploadWorker(QObject):
                 self._tick()
             except Exception as e:
                 print(f"[UPLOAD] Loop fout (continue): {e}")
-            # Wachten in kleine stappen om snel stoppen te ondersteunen
             for _ in range(_TICK_INTERVAL):
                 if self._stop.is_set():
                     return
                 time.sleep(1)
 
     def _tick(self):
-        q = _read_queue(self.booking_id)
-        files = q.get("files", {})
+        """Eén ronde: lees queue, upload pending files, schrijf resultaten terug.
+
+        Schrijft per file UNDER LOCK + re-read zodat parallelle enqueue() calls
+        niet verloren gaan (race-fix v1.99.11).
+        """
+        lock = _get_queue_lock(self.booking_id)
+        with lock:
+            q = _read_queue(self.booking_id)
+            files = dict(q.get("files", {}))  # snapshot voor iteratie
+
         if not files:
             return
 
         now_mono = time.monotonic()
         progress = False
 
-        for filename, meta in list(files.items()):
+        for filename, meta in files.items():
             if self._stop.is_set():
                 break
             state = meta.get("state", "pending")
@@ -243,13 +296,17 @@ class UploadWorker(QObject):
             if next_retry and next_retry > now_mono:
                 continue  # nog niet tijd voor retry
 
-            # Probeer te uploaden
+            # Probeer te uploaden (kan minuten duren)
             ok, err = self._upload_one(filename, meta)
-            files[filename] = meta  # in-place updated
             progress = True
 
-            # Persist na elke file (kleine writes, maar veilig)
-            _write_queue(self.booking_id, q)
+            # Persist resultaat met merge: re-read queue, update ALLEEN deze file,
+            # behoud alle andere entries (incl. files toegevoegd tijdens upload).
+            with lock:
+                current = _read_queue(self.booking_id)
+                current_files = current.setdefault("files", {})
+                current_files[filename] = meta
+                _write_queue(self.booking_id, current)
 
         # Cleanup uploaded/ files ouder dan 30 dagen
         self._cleanup_old_uploaded()
