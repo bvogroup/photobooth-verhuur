@@ -13176,13 +13176,14 @@ class PhotoboothWindow(QMainWindow):
         sep2.setStyleSheet("background: rgba(255,255,255,0.1);")
         sidebar.addWidget(sep2)
 
-        # --- Background image button ---
+        # --- Background image button (verborgen in verhuur: design uit cloud) ---
         bg_btn = QPushButton(t("editor_change_bg"))
         bg_btn.setCursor(Qt.PointingHandCursor)
         bg_btn.setFont(QFont("DM Sans", 11, QFont.Bold))
         bg_btn.setStyleSheet(dark_btn_style)
         bg_btn.clicked.connect(self._editor_change_background)
         sidebar.addWidget(bg_btn)
+        bg_btn.setVisible(False)  # verhuur: design altijd uit clixibo, niet aanpasbaar
 
         # Separator
         sep3 = QLabel("")
@@ -13472,17 +13473,21 @@ class PhotoboothWindow(QMainWindow):
 
         # Save custom layout to templates dir
         t = canvas.template
+        is_triple = bool(getattr(t, 'is_triple_strip', False))
         custom_name = self._editor_name_input.text().strip()
         if not custom_name:
-            custom_name = f"{t.name} (aangepast)"
+            # Behoud "Event xxx (N foto's)" naam voor linked-templates zodat ze
+            # in de Layout-grid blijven verschijnen (filter zoekt op " foto's)")
+            custom_name = t.name
 
-        # Derive cut_default from is_double_strip (double strip = snijden)
-        cut_default = not t.is_double_strip
+        # Derive cut_default from strip type. Triple = altijd snijden.
+        cut_default = is_triple or (not t.is_double_strip)
 
         data = {
             "name": custom_name,
             "background_path": t.background_path or "",
             "is_double_strip": t.is_double_strip,
+            "is_triple_strip": is_triple,  # ← was vergeten! → veroorzaakte Canon-mirror in editor
             "cut_default": cut_default,
             "frames": [{"x": f.x, "y": f.y, "width": f.width, "height": f.height,
                          "rotation": getattr(f, 'rotation', 0.0)}
