@@ -1280,21 +1280,17 @@ class PhotoboothWindow(QMainWindow):
         """Bij opstart: als Linked-modus actief met booking_id → re-verify + start uploader.
 
         Async via QTimer zodat UI eerst toont. Faalt graceful bij offline.
-        Repareert ook inconsistente state (booking_id zonder booth_mode='linked').
+        Forceert booth_mode='linked' want verhuur-versie kent geen Standalone.
         """
         ev = self.active_event
         if not ev:
             return
 
-        # Repair-step: alleen forceren naar 'linked' als er een booking gekoppeld
-        # is maar de modus ergens op standalone is blijven hangen. Andersom NIET
-        # forceren — een gebruiker mag in linked-modus blijven staan zonder
-        # booking (toont dan "Koppel event"-knop op de kaart) tot ze klaar zijn
-        # om een nieuwe te koppelen.
-        if getattr(ev, 'linked_booking_id', '') and getattr(ev, 'booth_mode', '') != 'linked':
+        # Verhuur is ALTIJD Linked. Forceer + save als nog niet zo.
+        if getattr(ev, 'booth_mode', '') != 'linked':
             ev.booth_mode = 'linked'
             ev.save(config.EVENTS_DIR)
-            print("[LINKED] State-repair: booth_mode gezet op 'linked' (booking gekoppeld)")
+            print("[LINKED] booth_mode geforceerd naar 'linked' (verhuur)")
 
         if getattr(ev, 'booth_mode', 'standalone') != 'linked':
             return
@@ -7311,6 +7307,7 @@ class PhotoboothWindow(QMainWindow):
         open_photos_btn.setVisible(False)
 
         tab0_lay.addWidget(card_event)
+        self._card_event = card_event  # voor verbergen in verhuur (alleen Gekoppeld-kaart op deze tab)
 
         # Card: Idle background
         card_bg, card_bg_lay = self._settings_card(t("card_idle_bg"))
@@ -11863,9 +11860,12 @@ class PhotoboothWindow(QMainWindow):
         # Verhuur is altijd linked — geen toggle meer
         is_linked = True
 
-        # Standalone-Event-tab widgets altijd verbergen
+        # Standalone-Event-tab widgets altijd verbergen — verhuur toont alleen
+        # de Gekoppeld-kaart op het Event-tab.
         if hasattr(self, '_event_picker_row'):
             self._event_picker_row.setVisible(False)
+        if hasattr(self, '_card_event'):
+            self._card_event.setVisible(False)
         if hasattr(self, '_card_idle_bg'):
             self._card_idle_bg.setVisible(False)
         # Canon bg-management UI op Layout-tab verbergen
