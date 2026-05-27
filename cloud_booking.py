@@ -224,7 +224,7 @@ def validate_design_format(image_path: str, printer_mode: str) -> Tuple[bool, st
         return False, (
             f"Design-formaat klopt niet voor {printer_mode}-printer.\n"
             f"Verwacht ~{target:.2f}:1 (h:b), gekregen {actual:.2f}:1.\n"
-            f"Klant moet nieuwe design uploaden in het Clixibo portaal."
+            f"Klant moet nieuwe design uploaden in het portaal."
         )
 
     return True, ""

@@ -1238,16 +1238,15 @@ class PhotoboothWindow(QMainWindow):
         if not ev:
             return
 
-        # Repair-step: linked_booking_id maar booth_mode niet linked → mismatch
-        # uit een oudere bug. Forceer state consistent.
+        # Repair-step: alleen forceren naar 'linked' als er een booking gekoppeld
+        # is maar de modus ergens op standalone is blijven hangen. Andersom NIET
+        # forceren — een gebruiker mag in linked-modus blijven staan zonder
+        # booking (toont dan "Koppel event"-knop op de kaart) tot ze klaar zijn
+        # om een nieuwe te koppelen.
         if getattr(ev, 'linked_booking_id', '') and getattr(ev, 'booth_mode', '') != 'linked':
             ev.booth_mode = 'linked'
             ev.save(config.EVENTS_DIR)
-            print("[LINKED] State-repair: booth_mode gezet op 'linked' (booking was gekoppeld)")
-        elif not getattr(ev, 'linked_booking_id', '') and getattr(ev, 'booth_mode', '') == 'linked':
-            ev.booth_mode = 'standalone'
-            ev.save(config.EVENTS_DIR)
-            print("[LINKED] State-repair: booth_mode gezet op 'standalone' (geen booking)")
+            print("[LINKED] State-repair: booth_mode gezet op 'linked' (booking gekoppeld)")
 
         if getattr(ev, 'booth_mode', 'standalone') != 'linked':
             return
@@ -8690,7 +8689,7 @@ class PhotoboothWindow(QMainWindow):
         self._booth_mode_group = _BG2(self)
         self._booth_mode_standalone_radio = QRadioButton("Standalone (huidige flow)")
         self._booth_mode_standalone_radio.setFont(QFont("DM Sans", 13))
-        self._booth_mode_linked_radio = QRadioButton("Gekoppeld (event uit Clixibo)")
+        self._booth_mode_linked_radio = QRadioButton("Gekoppeld (event)")
         self._booth_mode_linked_radio.setFont(QFont("DM Sans", 13))
         self._booth_mode_group.addButton(self._booth_mode_standalone_radio)
         self._booth_mode_group.addButton(self._booth_mode_linked_radio)
@@ -12087,7 +12086,7 @@ class PhotoboothWindow(QMainWindow):
         elif err_msg == "geen design":
             QMessageBox.information(self, "Geen design",
                 "Booking gekoppeld, maar er is nog geen design geüpload "
-                "in het Clixibo-portaal.")
+                "in het portaal.")
 
         self._update_linked_card_visibility()
         self._start_linked_uploader()

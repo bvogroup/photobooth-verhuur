@@ -366,7 +366,7 @@ class CouplingWorker(QThread):
     def run(self):
         from cloud_booking import fetch_booking, fetch_design
 
-        self.progress.emit("Event ophalen uit Clixibo…")
+        self.progress.emit("Event ophalen…")
         b, err = fetch_booking(self.token, use_cache_on_offline=False)
         if not b:
             self.done.emit(None, "", err or "Booking niet gevonden")

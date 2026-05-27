@@ -190,8 +190,27 @@ class BoothSettings:
 
 # ── Field-set helper voor event_model integratie ──────────────────────
 
+# Velden die WEL in BoothSettings staan maar NIET booth-wide moeten worden
+# behandeld — per-event state die niet via overlay/propagatie tussen events
+# heen moet "lekken". Met name de linked_* familie: anders kan een leeg
+# event de gekoppelde state van een ander event wissen via de booth-wide
+# overlay-route.
+_EVENT_ONLY_FIELDS: Set[str] = {
+    "linked_booking_id",
+    "linked_token",
+    "linked_booking_label",
+    "linked_design_path",
+    "linked_photo_count",
+    "booth_mode",  # Mode is ook per-event keuze, niet booth-wide.
+}
+
+
 def field_names() -> Set[str]:
     """Verzameling veldnamen die booth-wide zijn. Wordt gebruikt in
     event_model.Event.load/save om overlay + propagatie te doen.
+
+    Excludeert per-event velden zoals de linked_* familie om te voorkomen
+    dat één event's lege state de gekoppelde state van een ander event wist.
     """
-    return {f.name for f in BoothSettings.__dataclass_fields__.values()}
+    return {f.name for f in BoothSettings.__dataclass_fields__.values()
+            if f.name not in _EVENT_ONLY_FIELDS}
