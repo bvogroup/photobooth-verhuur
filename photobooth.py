@@ -681,7 +681,9 @@ class LayoutEditorCanvas(QWidget):
             painter.setPen(QPen(QColor("#888888"), 1))
             painter.drawLine(int(fx), int(fy), int(fx + fw), int(fy + fh))
             painter.drawLine(int(fx + fw), int(fy), int(fx), int(fy + fh))
-            if not self.template.is_double_strip:
+            # Mirror-X alleen tekenen voor klassieke single-strip Canon — NIET
+            # voor triple_strip (daar bestaat fx2 niet) of double_strip.
+            if not self.template.is_double_strip and not is_triple:
                 painter.drawLine(int(fx2), int(fy), int(fx2 + fw), int(fy + fh))
                 painter.drawLine(int(fx2 + fw), int(fy), int(fx2), int(fy + fh))
 
