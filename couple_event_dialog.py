@@ -6,13 +6,13 @@ We extracten in alle gevallen de 40-tekens token zelf.
 """
 
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap, QImage, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QSizePolicy, QMessageBox, QWidget,
+    QLineEdit, QSizePolicy, QMessageBox, QWidget, QProgressBar,
 )
 
 try:
@@ -345,3 +345,94 @@ class ManualTokenDialog(QDialog):
         if d.exec_() == QDialog.Accepted:
             return d._token
         return ""
+
+
+# ── Background worker voor de cloud-calls + loading-dialoog ────────
+
+class CouplingWorker(QThread):
+    """Background-thread die de booking-metadata en design ophaalt.
+
+    Houdt de UI responsive tijdens de (mogelijk trage) HTTP-calls.
+    Resultaat wordt teruggegeven via 'finished' signal.
+    """
+
+    progress = pyqtSignal(str)
+    done = pyqtSignal(object, str, str)  # (booking_data dict|None, design_local_path, error_msg)
+
+    def __init__(self, token: str, parent=None):
+        super().__init__(parent)
+        self.token = token
+
+    def run(self):
+        from cloud_booking import fetch_booking, fetch_design
+
+        self.progress.emit("Event ophalen uit Clixibo…")
+        b, err = fetch_booking(self.token, use_cache_on_offline=False)
+        if not b:
+            self.done.emit(None, "", err or "Booking niet gevonden")
+            return
+
+        booking = b.get("booking", {}) or {}
+        booking_id = booking.get("id", "")
+        design_path = booking.get("photostrip_design_url", "") or ""
+
+        if not design_path:
+            self.done.emit(b, "", "geen design")  # niet-fataal — booking is wel OK
+            return
+
+        self.progress.emit("Strip-design downloaden…")
+        local, derr = fetch_design(self.token, design_path, booking_id)
+        if not local:
+            self.done.emit(b, "", derr or "Design download mislukt")
+            return
+
+        self.done.emit(b, local, "")
+
+
+class CouplingLoadingDialog(QDialog):
+    """Modal 'Bezig met laden…' dialoog tijdens de cloud-calls.
+
+    Heeft alleen status-tekst + indeterminate progress bar. Geen sluitknop
+    omdat de worker zelf het dialoog sluit zodra klaar.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bezig met koppelen")
+        self.setMinimumSize(420, 160)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint
+                            & ~Qt.WindowContextHelpButtonHint)
+        self.setModal(True)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(16)
+        lay.setContentsMargins(28, 24, 28, 24)
+
+        title = QLabel("Event wordt gekoppeld")
+        title.setFont(QFont("DM Sans", 14, QFont.Bold))
+        title.setStyleSheet(f"color: {config.COLOR_TEXT};")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+
+        self._status = QLabel("Bezig met laden…")
+        self._status.setFont(QFont("DM Sans", 11))
+        self._status.setAlignment(Qt.AlignCenter)
+        self._status.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        self._status.setWordWrap(True)
+        lay.addWidget(self._status)
+
+        # Indeterminate progress bar — toont aan dat-ie bezig is
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # indeterminate
+        bar.setMinimumHeight(8)
+        bar.setTextVisible(False)
+        bar.setStyleSheet(
+            "QProgressBar { border: none; border-radius: 4px; "
+            f"background: {config.COLOR_BORDER}; }}"
+            f"QProgressBar::chunk {{ background: {config.COLOR_PRIMARY}; "
+            "border-radius: 4px; }"
+        )
+        lay.addWidget(bar)
+
+    def set_status(self, msg: str):
+        self._status.setText(msg)

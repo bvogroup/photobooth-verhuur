@@ -11886,28 +11886,34 @@ class PhotoboothWindow(QMainWindow):
         self._show_couple_event_dialog()
 
     def _on_refresh_event_clicked(self):
-        """Re-fetch booking metadata + design uit cloud."""
+        """Re-fetch booking metadata + design uit cloud — async via worker."""
         ev = self.active_event
         token = getattr(ev, 'linked_token', '') if ev else ''
         if not token:
             return
-        from cloud_booking import fetch_booking
-        b, err = fetch_booking(token, use_cache_on_offline=True)
-        if err and not b:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Ververs mislukt", err)
-            return
-        # Update event metadata + design
-        if b and self.active_event:
-            self._apply_linked_booking(b)
-            ok, fetch_err = self._fetch_and_apply_linked_design()
-            if not ok:
-                from PyQt5.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "Design probleem",
-                    fetch_err or "Onbekende fout bij design-fetch")
-            self._update_linked_card_visibility()
-        if err:
-            print(f"[LINKED] Ververs waarschuwing: {err}")
+
+        from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
+        loading = CouplingLoadingDialog(self)
+        worker = CouplingWorker(token, self)
+        self._coupling_worker = worker
+
+        def _on_progress(msg):
+            loading.set_status(msg)
+
+        def _on_done(booking_data, design_local_path, err_msg):
+            loading.accept()
+            # Hergebruik dezelfde finished-flow als bij coupling
+            self._on_coupling_finished(token, booking_data, design_local_path, err_msg)
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            self._coupling_worker = None
+
+        worker.progress.connect(_on_progress)
+        worker.done.connect(_on_done)
+        worker.start()
+        loading.exec_()
 
     def _on_unlink_event_clicked(self):
         """Loskoppelen — clear linked_* velden + stop uploader."""
@@ -11984,11 +11990,10 @@ class PhotoboothWindow(QMainWindow):
     def _show_couple_event_dialog(self):
         """Open de event-koppel modal: webcam QR-scan + handmatige fallback.
 
-        Geeft tijdelijk de webcam vrij zodat de QR-scanner exclusief toegang
-        krijgt. Reconnect daarna zodat de capture-flow weer kan werken.
+        QR-scan en API-calls draaien op aparte threads zodat de UI nooit
+        bevriest. Tijdens cloud-calls wordt een loading-dialoog getoond.
         """
         from couple_event_dialog import CoupleEventDialog
-        # Bepaal welke webcam te gebruiken (zelfde als capture-webcam)
         wc_idx = 0
         wc_res = ""
         wc_name = ""
@@ -11997,7 +12002,7 @@ class PhotoboothWindow(QMainWindow):
             wc_res = getattr(self.active_event, 'webcam_resolution', '') or ""
             wc_name = getattr(self.active_event, 'webcam_name', '') or ""
 
-        # Webcam tijdelijk loslaten — QR-scanner kan anders niet openen
+        # Webcam tijdelijk vrijgeven voor de QR-scanner
         cam_was_connected = False
         try:
             if hasattr(self, 'camera') and self.camera and self.camera.is_connected():
@@ -12011,7 +12016,6 @@ class PhotoboothWindow(QMainWindow):
             dlg = CoupleEventDialog(self, webcam_index=wc_idx)
             result = dlg.exec_()
         finally:
-            # Reconnect altijd, ook als dialog gecanceld werd
             if cam_was_connected:
                 try:
                     self.camera.connect(wc_idx, wc_res, wc_name)
@@ -12025,33 +12029,110 @@ class PhotoboothWindow(QMainWindow):
         if not token:
             return
 
-        # Booking ophalen
-        from cloud_booking import fetch_booking
-        b, err = fetch_booking(token, use_cache_on_offline=False)
-        if not b:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Koppelen mislukt", err or "Onbekende fout")
+        # Cloud calls op background-thread — UI blijft responsive met loading-dialoog
+        from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
+        loading = CouplingLoadingDialog(self)
+        worker = CouplingWorker(token, self)
+        # Bewaren als attr zodat de QThread niet ge-garbage-collect wordt
+        self._coupling_worker = worker
+
+        def _on_progress(msg):
+            loading.set_status(msg)
+
+        def _on_done(booking_data, design_local_path, err_msg):
+            # Sluit loading-dialog op de main thread (we zitten al op main via Qt signal)
+            loading.accept()
+            self._on_coupling_finished(token, booking_data, design_local_path, err_msg)
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            self._coupling_worker = None
+
+        worker.progress.connect(_on_progress)
+        worker.done.connect(_on_done)
+        worker.start()
+
+        # Modal — blokkeert tot worker .accept() doet via done-signal
+        loading.exec_()
+
+    def _on_coupling_finished(self, token, booking_data, design_local_path, err_msg):
+        """Op main thread aangeroepen na cloud-calls. Past data toe op event."""
+        from PyQt5.QtWidgets import QMessageBox
+
+        if booking_data is None:
+            QMessageBox.warning(self, "Koppelen mislukt", err_msg or "Onbekende fout")
             return
 
-        # Metadata + design fetchen
-        self._apply_linked_booking(b)
+        # Metadata toepassen
+        self._apply_linked_booking(booking_data)
         if self.active_event:
             self.active_event.linked_token = token
             self.active_event.save(config.EVENTS_DIR)
 
-        # Design ophalen + valideren + template plaatsen
-        ok, fetch_err = self._fetch_and_apply_linked_design()
-        if not ok:
-            from PyQt5.QtWidgets import QMessageBox
+        # Design verwerken indien aanwezig
+        if design_local_path:
+            # Format validatie + template aanmaken (lokaal, snel)
+            ok, fetch_err = self._apply_design_to_template(design_local_path)
+            if not ok:
+                QMessageBox.warning(self, "Design probleem",
+                    f"{fetch_err}\n\nKlik OK en scan opnieuw met een nieuw design.")
+                self.active_event.linked_design_path = ""
+                self.active_event.save(config.EVENTS_DIR)
+        elif err_msg and err_msg != "geen design":
+            # Booking OK maar design fetch faalde
             QMessageBox.warning(self, "Design probleem",
-                f"{fetch_err}\n\nKlik OK en scan opnieuw met een nieuw design.")
-            # Loskoppel state — design klopt niet
-            self.active_event.linked_design_path = ""
-            self.active_event.save(config.EVENTS_DIR)
+                f"Booking is gekoppeld, maar design kon niet opgehaald worden:\n{err_msg}\n\n"
+                "Klik 'Ververs' zodra er internet is.")
+        elif err_msg == "geen design":
+            QMessageBox.information(self, "Geen design",
+                "Booking gekoppeld, maar er is nog geen design geüpload "
+                "in het Clixibo-portaal.")
 
         self._update_linked_card_visibility()
         self._start_linked_uploader()
-        print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
+        if self.active_event:
+            print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
+
+    def _apply_design_to_template(self, local_design_path):
+        """Synchroon (lokaal) — valideer formaat + maak template aan.
+
+        Equivalent van _fetch_and_apply_linked_design maar zonder de
+        netwerk-stappen (die zijn al in de worker gebeurd).
+        """
+        ev = self.active_event
+        if not ev:
+            return False, "Geen actief event"
+        booking_id = ev.linked_booking_id
+        if not booking_id:
+            return False, "Geen booking_id"
+        if not local_design_path or not os.path.isfile(local_design_path):
+            return False, "Design-bestand niet gevonden"
+
+        from cloud_booking import validate_design_format
+        pm = ev.printer_mode
+        cloud_check_mode = "premium" if pm == "dnp" else "standard"
+        ok, vmsg = validate_design_format(local_design_path, cloud_check_mode)
+        if not ok:
+            return False, vmsg
+
+        from template_model import make_linked_template
+        tmpl = make_linked_template(pm, ev.linked_photo_count, local_design_path, booking_id)
+        os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
+        tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}.json")
+        try:
+            tmpl.save(tmpl_path)
+        except Exception as e:
+            return False, f"Template opslaan mislukt: {e}"
+
+        ev.template_name = tmpl.name
+        ev.save(config.EVENTS_DIR)
+        if hasattr(self, '_layout_categories_container'):
+            try:
+                self._load_settings_templates()
+            except Exception as e:
+                print(f"[LINKED] Layout refresh waarschuwing: {e}")
+        return True, ""
 
     def _fetch_and_apply_linked_design(self) -> tuple[bool, str]:
         """Download het design uit cloud, valideer formaat, maak Template + activeer.
