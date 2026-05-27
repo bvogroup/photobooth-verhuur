@@ -320,29 +320,21 @@ def get_preset_layouts() -> List[Template]:
     TRIPLE_W = 600    # portrait canvas width (= 2" = 5 cm @ 300 DPI)
     TRIPLE_H = 1200   # portrait canvas height (= 4" = 10 cm)
 
-    # --- Triple strip: 2 foto's onder elkaar (vierkante foto's, max grootte) ---
+    # --- Triple strip: 2 foto's onder elkaar (vierkant) ---
     presets.append(Template(
         name="DNP strip — 2 foto's",
         background_path="",
-        frames=_make_triple_frames(
-            2, TRIPLE_W, TRIPLE_H,
-            aspect=_triple_aspect_for(2),
-            spacing=_triple_spacing_for(2),
-        ),
+        frames=_make_triple_frames(2, TRIPLE_W, TRIPLE_H, aspect=_triple_aspect_for(2)),
         is_double_strip=False,
         cut_default=True,
         is_triple_strip=True,
     ))
 
-    # --- Triple strip: 3 foto's onder elkaar (3:2 landscape, Surface Pro aspect) ---
+    # --- Triple strip: 3 foto's onder elkaar (3:2) ---
     presets.append(Template(
         name="DNP strip — 3 foto's",
         background_path="",
-        frames=_make_triple_frames(
-            3, TRIPLE_W, TRIPLE_H,
-            aspect=_triple_aspect_for(3),
-            spacing=_triple_spacing_for(3),
-        ),
+        frames=_make_triple_frames(3, TRIPLE_W, TRIPLE_H, aspect=_triple_aspect_for(3)),
         is_double_strip=False,
         cut_default=True,
         is_triple_strip=True,
@@ -368,12 +360,11 @@ def make_linked_template(printer_mode: str, photo_count: int,
     AR = 3.0 / 2.0  # Canon camera aspect
 
     if printer_mode == "dnp":
-        # 600x1200 portrait — frames maximaal groot, aspect-ratio per fotoaantal
-        # (2 foto's = vierkant, 3 foto's = 3:2 zoals Surface Pro)
+        # 600x1200 portrait — frames op ~75% van canvas, gelijke marges + spacing
+        # aspect: 2 foto's = vierkant, 3 foto's = 3:2 (Surface Pro)
         frames = _make_triple_frames(
             photo_count, 600, 1200,
             aspect=_triple_aspect_for(photo_count),
-            spacing=_triple_spacing_for(photo_count),
         )
         is_triple = True
         is_double = False
@@ -396,39 +387,42 @@ def make_linked_template(printer_mode: str, photo_count: int,
 
 def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
                          aspect: float = 3.0 / 2.0,
-                         side_margin: int = 20,
-                         vert_margin: int = 20,
-                         spacing: int = 20) -> List[PhotoFrame]:
-    """Frames voor DNP 5x10cm triple strip — zo groot mogelijk binnen marges.
+                         coverage: float = 0.75) -> List[PhotoFrame]:
+    """Frames voor DNP 5x10cm triple strip.
 
-    Het frame-blok wordt verticaal gecentreerd in het canvas. Margins en
-    spacing zijn configureerbaar; de frame-grootte wordt vervolgens
-    maximaal gemaakt binnen die ruimte rekening houdend met het aspect-
-    ratio (breedte:hoogte = aspect → bijv. 1.0 voor vierkant, 1.5 voor 3:2).
+    Vult ~coverage van het canvas met foto's en verdeelt de resterende
+    ruimte gelijk over de marges en spacing zodat alles symmetrisch oogt:
+       top-margin = spacing tussen frames = bottom-margin.
+
+    aspect: breedte:hoogte ratio van een frame (1.0 = vierkant, 1.5 = 3:2).
+    coverage: doelvulgraad. Default 0.75 (= 75% van canvas wordt foto).
     """
-    usable_w = canvas_w - 2 * side_margin
-    usable_h = canvas_h - 2 * vert_margin - (num - 1) * spacing
+    canvas_area = canvas_w * canvas_h
+    target_area_per_frame = (canvas_area * coverage) / num
 
-    # Probeer eerst breedte-maximaal
-    frame_w = usable_w
+    # area = frame_w * frame_h, frame_h = frame_w / aspect
+    # → area = frame_w² / aspect → frame_w = sqrt(area * aspect)
+    frame_w = int((target_area_per_frame * aspect) ** 0.5)
     frame_h = int(frame_w / aspect)
 
-    # Past niet in hoogte? Schaal terug op basis van hoogte
-    if num * frame_h > usable_h:
-        frame_h = usable_h // num
-        frame_w = int(frame_h * aspect)
-        if frame_w > usable_w:
-            frame_w = usable_w
-            frame_h = int(frame_w / aspect)
+    # Veiligheid: niet breder dan canvas - kleine marge
+    side_margin_min = 20
+    max_w = canvas_w - 2 * side_margin_min
+    if frame_w > max_w:
+        frame_w = max_w
+        frame_h = int(frame_w / aspect)
 
-    # Block-centrering in volledige canvas
-    block_h = num * frame_h + (num - 1) * spacing
-    y_start = (canvas_h - block_h) // 2
+    # Verticale verdeling: gelijke spacing top + (num-1) gaps + bottom
+    # → (num + 1) gaps van gelijke grootte
+    block_h = num * frame_h
+    total_gap = canvas_h - block_h
+    gap = total_gap // (num + 1)
+    y_start = gap
     x_offset = (canvas_w - frame_w) // 2
 
     frames = []
     for i in range(num):
-        y = y_start + i * (frame_h + spacing)
+        y = y_start + i * (frame_h + gap)
         frames.append(PhotoFrame(x=x_offset, y=y, width=frame_w, height=frame_h))
     return frames
 
@@ -445,9 +439,7 @@ def _triple_aspect_for(num: int) -> float:
 
 
 def _triple_spacing_for(num: int) -> int:
-    """Spacing tussen frames in DNP strip — iets meer ruimte bij 2-foto."""
-    if num == 2:
-        return 40
+    """LEGACY — niet meer gebruikt sinds _make_triple_frames gelijke gaps berekent."""
     return 20
 
 

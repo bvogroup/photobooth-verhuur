@@ -540,28 +540,31 @@ class LayoutEditorCanvas(QWidget):
         """
         return _layout_display_rotation(self.template)
 
+    def _canvas_size(self):
+        """Canvas dimensies op basis van template type (triple vs gewoon)."""
+        if self.template and getattr(self.template, 'is_triple_strip', False):
+            return 600, 1200
+        return 1200, 1800
+
     def _calc_transform(self):
-        """Calculate scale/offset to fit 1200x1800 canvas in widget.
+        """Calculate scale/offset to fit canvas in widget.
+
+        Canvas-grootte hangt af van template type:
+          triple_strip (DNP) → 600x1200 portrait
+          anders             → 1200x1800
 
         Voor display-rotatie 90/270 worden de effectieve widget-dimensies
-        gewisseld (W↔H) bij het bepalen van scale, zodat het portrait canvas
-        na rotatie netjes in de gedraaide weergave past. De _offset_x/_offset_y
-        blijven gebaseerd op de oorspronkelijke widget (we roteren via de
-        painter rond het centrum, dus het canvas-centrum valt samen met het
-        widget-centrum — daarvoor moeten de offsets in original coords blijven).
+        gewisseld (W↔H) bij het bepalen van scale.
         """
         rot = self._display_rotation()
         if rot in (90, 270):
-            # Effectief gewisselde widget-afmetingen voor scale-berekening
             w, h = self.height(), self.width()
         else:
             w, h = self.width(), self.height()
-        canvas_w, canvas_h = 1200, 1800
+        canvas_w, canvas_h = self._canvas_size()
         sx = w / canvas_w
         sy = h / canvas_h
         self._scale = min(sx, sy) * 0.94
-        # Offsets in originele widget-coords zodat canvas-centrum samenvalt
-        # met widget-centrum (waarrond de painter geroteerd wordt).
         self._offset_x = (self.width() - canvas_w * self._scale) / 2
         self._offset_y = (self.height() - canvas_h * self._scale) / 2
 
@@ -620,8 +623,10 @@ class LayoutEditorCanvas(QWidget):
             painter.translate(-cx, -cy)
 
         # Page background - prefer event bg, then template bg, otherwise white
+        canvas_w, canvas_h = self._canvas_size()
+        is_triple = getattr(self.template, 'is_triple_strip', False)
         page_rect_x, page_rect_y = int(ox), int(oy)
-        page_rect_w, page_rect_h = int(1200 * s), int(1800 * s)
+        page_rect_w, page_rect_h = int(canvas_w * s), int(canvas_h * s)
         _active_bg = self._event_bg_pixmap if self._event_bg_pixmap else self._bg_pixmap
         if _active_bg:
             scaled_bg = _active_bg.scaled(
@@ -641,11 +646,13 @@ class LayoutEditorCanvas(QWidget):
             painter.setBrush(QBrush(QColor("#ffffff")))
             painter.drawRect(page_rect_x, page_rect_y, page_rect_w, page_rect_h)
 
-        # Cut line for double strip (frames on left half, mirrored to right)
-        if not self.template.is_double_strip:
+        # Cut line voor single-strip (klassieke Canon dubbele strip):
+        # Triple strip heeft GEEN cut-lijn op x=600 (canvas is maar 600 breed),
+        # double strip heeft 'm ook niet (de cut zit alleen in single).
+        if not self.template.is_double_strip and not is_triple:
             cut_x = int(ox + 600 * s)
             painter.setPen(QPen(QColor("#cc8888"), 2, Qt.DashLine))
-            painter.drawLine(cut_x, int(oy), cut_x, int(oy + 1800 * s))
+            painter.drawLine(cut_x, int(oy), cut_x, int(oy + canvas_h * s))
 
         # Draw frames
         for i, frame in enumerate(self.template.frames):
@@ -659,8 +666,8 @@ class LayoutEditorCanvas(QWidget):
             fw, fh = frame.width * s, frame.height * s
             painter.drawRect(int(fx), int(fy), int(fw), int(fh))
 
-            # Mirror for double strip
-            if not self.template.is_double_strip:
+            # Mirror only voor single-strip (Canon dubbele). Triple = geen mirror.
+            if not self.template.is_double_strip and not is_triple:
                 fx2 = ox + (frame.x + 600) * s
                 painter.drawRect(int(fx2), int(fy), int(fw), int(fh))
 
@@ -1694,6 +1701,13 @@ class PhotoboothWindow(QMainWindow):
                 if saved_printer:
                     config.PRINTER_NAME = saved_printer
                     print(f"[PRINTER] Hersteld: {saved_printer}")
+                    # Direct label updaten — _printer_name_label is op dit moment
+                    # al gebouwd in __init__ met de oude hardcoded default.
+                    if hasattr(self, '_printer_name_label'):
+                        try:
+                            self._printer_name_label.setText(saved_printer)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -9472,17 +9486,20 @@ class PhotoboothWindow(QMainWindow):
         pm = getattr(self.active_event, 'printer_mode', 'dnp') if self.active_event else 'dnp'
 
         # Linked-modus: linked template gaat ALS EERSTE in de juiste categorie.
-        # Zo ziet operator direct de event-design met achtergrond.
+        # Filter ook op printer_mode — DNP-design hoort niet in Canon-grid en v.v.
         booth_mode = getattr(self.active_event, 'booth_mode', 'standalone') if self.active_event else 'standalone'
         linked_booking_id = getattr(self.active_event, 'linked_booking_id', '') if self.active_event else ''
         linked_tmpl = None
         if booth_mode == 'linked' and linked_booking_id:
             for tmpl in custom:
                 if tmpl.name == f"Event {linked_booking_id[:8]}":
-                    linked_tmpl = tmpl
+                    # Match alleen als triple_strip status klopt met huidige modus
+                    if (pm == 'dnp' and tmpl.is_triple_strip) or \
+                       (pm != 'dnp' and not tmpl.is_triple_strip):
+                        linked_tmpl = tmpl
                     break
         if linked_tmpl:
-            cat_cut.append(linked_tmpl)
+            cat_cut.insert(0, linked_tmpl)  # bovenaan
 
         for layout in self._preset_layouts:
             if pm == 'dnp':
