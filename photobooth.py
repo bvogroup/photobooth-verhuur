@@ -1202,6 +1202,7 @@ class PhotoboothWindow(QMainWindow):
         """Verhuur-versie: licentie is altijd geldig, plan = professional.
 
         Geen login-flow, geen banner, geen online verificatie.
+        Triggert ook auto-couple bij Linked-modus als event al gekoppeld is.
         """
         lang = load_language()
         if not lang:
@@ -1216,6 +1217,48 @@ class PhotoboothWindow(QMainWindow):
         self._apply_live_view_alignment()
         self._rebuild_idle_page()
         self._go_idle()
+
+        # Auto-couple bij Linked-modus
+        QTimer.singleShot(500, self._auto_recouple_on_startup)
+
+    def _auto_recouple_on_startup(self):
+        """Bij opstart: als Linked-modus actief met booking_id → re-verify + start uploader.
+
+        Async via QTimer zodat UI eerst toont. Faalt graceful bij offline.
+        """
+        ev = self.active_event
+        if not ev:
+            return
+        if getattr(ev, 'booth_mode', 'standalone') != 'linked':
+            return
+        booking_id = getattr(ev, 'linked_booking_id', '')
+        token = getattr(ev, 'linked_token', '')
+        if not booking_id or not token:
+            print("[LINKED] Auto-couple overgeslagen — geen booking opgeslagen")
+            return
+
+        print(f"[LINKED] Auto-couple voor booking {booking_id}")
+
+        # Re-verify via cloud (met cache fallback)
+        from cloud_booking import fetch_booking
+        b, err = fetch_booking(token, use_cache_on_offline=True)
+        if b:
+            self._apply_linked_booking(b)
+            if err:
+                print(f"[LINKED] Re-verify: {err}")
+        else:
+            print(f"[LINKED] Re-verify mislukt: {err}")
+            # Geen halt — uploader kan nog wel runnen voor pending uploads
+
+        # Design re-fetchen (gebruikt cache als offline)
+        if ev.linked_design_path:
+            ok, ferr = self._fetch_and_apply_linked_design()
+            if not ok:
+                print(f"[LINKED] Design re-fetch: {ferr}")
+
+        # Uploader starten voor pending queue (alleen als token + booking_id geldig)
+        self._start_linked_uploader()
+        self._update_linked_card_visibility()
 
     def _background_auth_verify(self):
         """Background thread: verify session online, update plan if needed.
@@ -4876,6 +4919,9 @@ class PhotoboothWindow(QMainWindow):
         self.photos.append(dest)
         self._update_thumbnail(self.current_photo_num, dest)
 
+        # Linked-modus: enqueue voor cloud upload
+        self._maybe_enqueue_linked(dest)
+
         # Pre-process photo for strip building
         self._process_photo_for_strip(dest, self.current_photo_num)
 
@@ -5072,9 +5118,33 @@ class PhotoboothWindow(QMainWindow):
         if self.strip_path:
             self._create_boomerang()
             self._start_cloud_upload()  # Start upload early for max time
+            # Linked-modus: enqueue strip image (en evt. portrait-versie)
+            self._maybe_enqueue_linked(self.strip_path, prefix="strip_")
+            if self._display_strip_path and self._display_strip_path != self.strip_path:
+                self._maybe_enqueue_linked(self._display_strip_path, prefix="strip_portrait_")
             self._go_review()
         else:
             self._show_error(t("error_cannot_make_strip"))
+
+    def _maybe_enqueue_linked(self, file_path: str, prefix: str = "") -> None:
+        """Voeg foto toe aan upload-queue als Linked-modus actief en gekoppeld."""
+        ev = self.active_event
+        if not ev:
+            return
+        if getattr(ev, 'booth_mode', 'standalone') != 'linked':
+            return
+        booking_id = getattr(ev, 'linked_booking_id', '')
+        if not booking_id or not file_path or not os.path.isfile(file_path):
+            return
+        try:
+            from cloud_uploader import enqueue
+            # Optioneel prefix om strip vs raw te onderscheiden in R2
+            if prefix:
+                # Stub: queue-naam gebruikt origineel filename — prefix is voor logging
+                pass
+            enqueue(booking_id, file_path)
+        except Exception as e:
+            print(f"[LINKED] Enqueue fout: {e}")
 
     def _create_boomerang(self):
         """Create boomerang GIF from buffered frames (non-blocking)."""
@@ -11695,39 +11765,56 @@ class PhotoboothWindow(QMainWindow):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Ververs mislukt", err)
             return
-        # Update event metadata
+        # Update event metadata + design
         if b and self.active_event:
             self._apply_linked_booking(b)
+            ok, fetch_err = self._fetch_and_apply_linked_design()
+            if not ok:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Design probleem",
+                    fetch_err or "Onbekende fout bij design-fetch")
             self._update_linked_card_visibility()
         if err:
             print(f"[LINKED] Ververs waarschuwing: {err}")
 
     def _on_unlink_event_clicked(self):
-        """Loskoppelen — clear linked_* velden."""
+        """Loskoppelen — clear linked_* velden + stop uploader."""
         from PyQt5.QtWidgets import QMessageBox
         if QMessageBox.question(self, "Loskoppelen",
             "Loskoppelen van het event? Foto's blijven in de queue tot ze geüpload zijn."
             ) != QMessageBox.Yes:
             return
         ev = self.active_event
+        old_booking_id = ev.linked_booking_id if ev else ""
         if ev:
             ev.linked_booking_id = ""
             ev.linked_token = ""
             ev.linked_booking_label = ""
             ev.linked_design_path = ""
             ev.save(config.EVENTS_DIR)
+        # Stop uploader (queue blijft op disk staan; bij re-koppeling pakt-ie weer op)
+        if old_booking_id:
+            try:
+                from cloud_uploader import stop_worker
+                stop_worker(old_booking_id)
+            except Exception as e:
+                print(f"[LINKED] Uploader stop fout: {e}")
         self._update_linked_card_visibility()
         print("[LINKED] Event losgekoppeld")
 
     def _on_linked_count_changed(self, value):
-        """Aantal foto's per strip aangepast (operator-keuze)."""
+        """Aantal foto's per strip aangepast — regenereer template-frames."""
         ev = self.active_event
         if not ev:
             return
         ev.linked_photo_count = int(value)
         ev.save(config.EVENTS_DIR)
         print(f"[LINKED] Foto-aantal: {value}")
-        # Fase 4 zal hier template-frames opnieuw genereren
+        # Als gekoppeld: regenereer template met nieuwe count + default frames
+        if ev.linked_booking_id and ev.linked_design_path:
+            ok, err = self._fetch_and_apply_linked_design()
+            if not ok:
+                print(f"[LINKED] Template-regen waarschuwing: {err}")
 
     def _apply_linked_booking(self, booking_data: dict):
         """Schrijf booking-metadata naar active_event (na coupling of refresh)."""
@@ -11755,25 +11842,107 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
-        """Placeholder — wordt in Fase 3 ingevuld met QR-scan + handmatig."""
-        from PyQt5.QtWidgets import QInputDialog
-        token, ok = QInputDialog.getText(
-            self, "Event koppelen",
-            "QR-scan komt in volgende update.\nVoor nu: plak de event-token (40 chars uit /offerte/<id>):",
-        )
-        if not ok or not token.strip():
+        """Open de event-koppel modal: webcam QR-scan + handmatige fallback."""
+        from couple_event_dialog import CoupleEventDialog
+        # Bepaal welke webcam te gebruiken (zelfde als capture-webcam)
+        wc_idx = 0
+        if self.active_event and getattr(self.active_event, 'webcam_index', None) is not None:
+            wc_idx = self.active_event.webcam_index
+        dlg = CoupleEventDialog(self, webcam_index=wc_idx)
+        if dlg.exec_() != dlg.Accepted:
             return
-        token = token.strip()
+        token = dlg.selected_token
+        if not token:
+            return
+
+        # Booking ophalen
         from cloud_booking import fetch_booking
         b, err = fetch_booking(token, use_cache_on_offline=False)
         if not b:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Koppelen mislukt", err or "Onbekende fout")
             return
+
+        # Metadata + design fetchen
         self._apply_linked_booking(b)
+        if self.active_event:
+            self.active_event.linked_token = token
+            self.active_event.save(config.EVENTS_DIR)
+
+        # Design ophalen + valideren + template plaatsen
+        ok, fetch_err = self._fetch_and_apply_linked_design()
+        if not ok:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Design probleem",
+                f"{fetch_err}\n\nKlik OK en scan opnieuw met een nieuw design.")
+            # Loskoppel state — design klopt niet
+            self.active_event.linked_design_path = ""
+            self.active_event.save(config.EVENTS_DIR)
+
         self._update_linked_card_visibility()
-        # Fase 4: trigger design fetch + start uploader
+        self._start_linked_uploader()
         print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
+
+    def _fetch_and_apply_linked_design(self) -> tuple[bool, str]:
+        """Download het design uit cloud, valideer formaat, maak Template + activeer.
+
+        Returns (success, error_message).
+        """
+        ev = self.active_event
+        if not ev:
+            return False, "Geen actief event"
+        token = ev.linked_token
+        booking_id = ev.linked_booking_id
+        design_path = ev.linked_design_path
+        if not token or not booking_id:
+            return False, "Geen geldige koppeling"
+        if not design_path:
+            return False, "Booking heeft nog geen design — klant moet er één uploaden in het portaal."
+
+        from cloud_booking import fetch_design, validate_design_format
+        local, err = fetch_design(token, design_path, booking_id)
+        if not local:
+            return False, err or "Design fetch mislukt"
+
+        # Map cloud printer_mode → onze interne naam
+        pm = ev.printer_mode  # al gemapped in _apply_linked_booking
+        cloud_check_mode = "premium" if pm == "dnp" else "standard"
+        ok, vmsg = validate_design_format(local, cloud_check_mode)
+        if not ok:
+            return False, vmsg
+
+        # Template bouwen + opslaan
+        from template_model import make_linked_template
+        tmpl = make_linked_template(pm, ev.linked_photo_count, local, booking_id)
+        # Persist als JSON in templates/
+        os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
+        tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}.json")
+        try:
+            tmpl.save(tmpl_path)
+        except Exception as e:
+            return False, f"Template opslaan mislukt: {e}"
+
+        # Aan event koppelen + refresh layout-lijst
+        ev.template_name = tmpl.name
+        ev.save(config.EVENTS_DIR)
+        if hasattr(self, '_layout_categories_container'):
+            try:
+                self._load_settings_templates()
+            except Exception as e:
+                print(f"[LINKED] Layout refresh waarschuwing: {e}")
+        return True, ""
+
+    def _start_linked_uploader(self):
+        """Start upload-worker voor het gekoppelde event."""
+        ev = self.active_event
+        if not ev or not ev.linked_booking_id or not ev.linked_token:
+            return
+        try:
+            from cloud_uploader import start_worker
+            w = start_worker(ev.linked_booking_id, ev.linked_token)
+            w.progress_changed.connect(lambda _s: self._update_linked_progress())
+        except Exception as e:
+            print(f"[LINKED] Uploader start fout: {e}")
 
     def _on_printer_mode_changed(self, checked):
         """Persisteer printer-modus (canon|dnp) booth-wide via active_event.

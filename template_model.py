@@ -343,6 +343,44 @@ def get_preset_layouts() -> List[Template]:
     return presets
 
 
+def make_linked_template(printer_mode: str, photo_count: int,
+                          design_path: str, booking_id: str) -> Template:
+    """Bouw een Template voor een Linked-modus event.
+
+    printer_mode: 'canon' = dubbele strip 600x1800, 'dnp' = triple 600x1200.
+    photo_count:  aantal frames verticaal in de strip.
+    design_path:  lokaal pad naar het uit-cloud-gehaalde design (PNG/JPG).
+    booking_id:   gebruikt in naam.
+
+    Frames zijn standaard-posities. Operator kan ze achteraf bewerken via de
+    editor; bij count-wijziging worden ze opnieuw op default gezet.
+    """
+    M = 30
+    S = 30
+    AR = 3.0 / 2.0  # Canon camera aspect
+
+    if printer_mode == "dnp":
+        # 600x1200 portrait — gebruik triple-frames helper voor gecentreerde layout
+        frames = _make_triple_frames(photo_count, 600, 1200, AR)
+        is_triple = True
+        is_double = False
+    else:
+        # Canon: 600x1800 single strip (gedupliceerd naar 1200 bij print)
+        frames = _make_strip_frames_ar(photo_count, 600, M, S, AR, canvas_h=1800)
+        is_triple = False
+        is_double = False
+
+    short_id = booking_id[:8] if booking_id else "linked"
+    return Template(
+        name=f"Event {short_id}",
+        background_path=design_path,
+        frames=frames,
+        is_double_strip=is_double,
+        cut_default=True,
+        is_triple_strip=is_triple,
+    )
+
+
 def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
                          aspect: float = 3.0 / 2.0) -> List[PhotoFrame]:
     """Frames voor DNP 5x10cm triple strip, verticaal gecentreerd met ademruimte.
