@@ -1228,6 +1228,54 @@ class PhotoboothWindow(QMainWindow):
         # Auto-couple bij Linked-modus
         QTimer.singleShot(500, self._auto_recouple_on_startup)
 
+        # Wifi-monitor starten — polt elke 3s op de achtergrond
+        self._start_wifi_monitor()
+
+    def _start_wifi_monitor(self):
+        """Start een achtergrond-poll naar internet-connectiviteit (1.1.1.1:53).
+
+        Update self._wifi_connected en triggert UI-refresh bij state-verandering.
+        Voorkomt dat de operator een event probeert te koppelen zonder wifi.
+        """
+        self._wifi_connected = False
+        self._wifi_monitor_timer = QTimer(self)
+        self._wifi_monitor_timer.timeout.connect(self._poll_wifi_async)
+        self._wifi_monitor_timer.start(3000)  # elke 3 sec
+        # Eerste check direct
+        QTimer.singleShot(100, self._poll_wifi_async)
+
+    def _poll_wifi_async(self):
+        """Trigger een background-check (non-blocking)."""
+        if getattr(self, '_wifi_poll_pending', False):
+            return  # vorige check loopt nog
+        self._wifi_poll_pending = True
+        threading.Thread(target=self._poll_wifi_worker, daemon=True).start()
+
+    def _poll_wifi_worker(self):
+        """Achtergrond-thread: probeer TCP-verbinding naar Cloudflare DNS (1.1.1.1:53).
+
+        Snel, betrouwbaar, geen DNS-lookup nodig. Faalt binnen 2s als geen wifi.
+        """
+        import socket
+        try:
+            with socket.create_connection(("1.1.1.1", 53), timeout=2):
+                connected = True
+        except OSError:
+            connected = False
+        # UI-update op main thread
+        QTimer.singleShot(0, lambda c=connected: self._on_wifi_state(c))
+
+    def _on_wifi_state(self, connected: bool):
+        """Update interne state + UI bij wijziging."""
+        self._wifi_poll_pending = False
+        if connected != getattr(self, '_wifi_connected', None):
+            self._wifi_connected = connected
+            print(f"[WIFI] Status: {'verbonden' if connected else 'geen verbinding'}")
+            try:
+                self._update_linked_card_visibility()
+            except Exception as e:
+                print(f"[WIFI] UI-update fout: {e}")
+
     def _auto_recouple_on_startup(self):
         """Bij opstart: als Linked-modus actief met booking_id → re-verify + start uploader.
 
@@ -8707,11 +8755,53 @@ class PhotoboothWindow(QMainWindow):
 
         # ── Card: Gekoppeld event (alleen zichtbaar in Linked-modus) ──
         self._card_linked, card_linked_lay = self._settings_card("Gekoppeld event")
+
+        # ── No-wifi paneel — getoond bovenin als er geen internet is ──
+        self._no_wifi_widget = QWidget()
+        nw_lay = QVBoxLayout(self._no_wifi_widget)
+        nw_lay.setSpacing(14)
+        nw_lay.setContentsMargins(8, 12, 8, 12)
+        nw_title = QLabel("👋  Welkom!")
+        nw_title.setFont(QFont("DM Sans", 18, QFont.Bold))
+        nw_title.setAlignment(Qt.AlignCenter)
+        nw_title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        nw_lay.addWidget(nw_title)
+        nw_msg = QLabel("Verbind eerst je tablet met WiFi voordat\nje een event kunt koppelen.")
+        nw_msg.setFont(QFont("DM Sans", 13))
+        nw_msg.setAlignment(Qt.AlignCenter)
+        nw_msg.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        nw_msg.setWordWrap(True)
+        nw_lay.addWidget(nw_msg)
+        nw_arrow = QLabel("↘")
+        nw_arrow.setFont(QFont("DM Sans", 64, QFont.Bold))
+        nw_arrow.setAlignment(Qt.AlignRight)
+        nw_arrow.setStyleSheet(f"color: {config.COLOR_PRIMARY}; background: transparent;")
+        nw_lay.addWidget(nw_arrow)
+        nw_hint = QLabel("Klik rechtsonder op het WiFi-icoon van Windows")
+        nw_hint.setFont(QFont("DM Sans", 11))
+        nw_hint.setAlignment(Qt.AlignRight)
+        nw_hint.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        nw_hint.setWordWrap(True)
+        nw_lay.addWidget(nw_hint)
+        nw_polling = QLabel("● Wacht op verbinding…")
+        nw_polling.setFont(QFont("DM Sans", 10))
+        nw_polling.setAlignment(Qt.AlignCenter)
+        nw_polling.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent; margin-top: 8px;")
+        nw_lay.addWidget(nw_polling)
+        card_linked_lay.addWidget(self._no_wifi_widget)
+        self._no_wifi_widget.setVisible(False)  # alleen tonen als geen wifi
+
+        # ── Normale event-content (verborgen tijdens no-wifi) ──
+        self._linked_content_widget = QWidget()
+        content_lay = QVBoxLayout(self._linked_content_widget)
+        content_lay.setSpacing(10)
+        content_lay.setContentsMargins(0, 0, 0, 0)
         self._linked_status_label = QLabel("Geen event gekoppeld")
         self._linked_status_label.setFont(QFont("DM Sans", 13))
         self._linked_status_label.setStyleSheet(label_style)
         self._linked_status_label.setWordWrap(True)
-        card_linked_lay.addWidget(self._linked_status_label)
+        content_lay.addWidget(self._linked_status_label)
+        card_linked_lay.addWidget(self._linked_content_widget)
 
         # Knoppen-rij
         linked_btn_row = QHBoxLayout()
@@ -8755,7 +8845,7 @@ class PhotoboothWindow(QMainWindow):
         self._btn_unlink_event.setVisible(False)
         linked_btn_row.addWidget(self._btn_unlink_event)
         linked_btn_row.addStretch()
-        card_linked_lay.addLayout(linked_btn_row)
+        content_lay.addLayout(linked_btn_row)
 
         # Foto-aantal selectie verborgen — de layout/template bepaalt aantal foto's.
         # Widget bestaat nog voor backwards compat van handlers/event-veld.
@@ -8769,7 +8859,7 @@ class PhotoboothWindow(QMainWindow):
         )
         self._linked_count_row.addWidget(self._linked_count_spin)
         self._linked_count_row.addStretch()
-        card_linked_lay.addLayout(self._linked_count_row)
+        content_lay.addLayout(self._linked_count_row)
         self._linked_count_label.setVisible(False)
         self._linked_count_spin.setVisible(False)
 
@@ -8778,7 +8868,7 @@ class PhotoboothWindow(QMainWindow):
         self._linked_progress_label.setFont(QFont("DM Sans", 11))
         self._linked_progress_label.setStyleSheet(dim_label_style)
         self._linked_progress_label.setWordWrap(True)
-        card_linked_lay.addWidget(self._linked_progress_label)
+        content_lay.addWidget(self._linked_progress_label)
         self._linked_progress_label.setVisible(False)
 
         tab5_lay.addWidget(self._card_linked)
@@ -11797,6 +11887,13 @@ class PhotoboothWindow(QMainWindow):
                 self._tab0_lay.insertWidget(0, self._card_linked)
 
         self._card_linked.setVisible(True)
+
+        # No-wifi paneel vs normale content
+        no_wifi = not getattr(self, '_wifi_connected', True)
+        if hasattr(self, '_no_wifi_widget'):
+            self._no_wifi_widget.setVisible(no_wifi)
+        if hasattr(self, '_linked_content_widget'):
+            self._linked_content_widget.setVisible(not no_wifi)
 
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
         label = getattr(ev, 'linked_booking_label', '') if ev else ''
