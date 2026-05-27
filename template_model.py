@@ -387,44 +387,41 @@ def make_linked_template(printer_mode: str, photo_count: int,
 
 def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
                          aspect: float = 16.0 / 9.0) -> List[PhotoFrame]:
-    """Frames voor DNP 5x10cm triple strip op basis van Surface Pro 7 webcam.
+    """Frames voor DNP 5x10cm triple strip — top-anchored.
 
-    Aspect-ratio = 4:3 landscape (1920x1440 webcam) → frame_w / frame_h = 4/3.
+    Spec per fotoaantal (gebruiker-wens):
+      - 3 foto's: 16:9 landscape, top-anchored met kleine top-margin,
+        ruimte onderin behouden voor design/tekst.
+      - 2 foto's: 3:2 (tussen 16:9 en vierkant), iets langer dan voorheen,
+        ook top-anchored met meer ademruimte onderin.
 
-    Spec per fotoaantal:
-      - 3 foto's: foto's nemen samen 75% van canvas-HOOGTE in. Frames worden
-        gecentreerd horizontaal met gelijke gaps top + tussen + bottom.
-      - 2 foto's: elke foto neemt 85% van canvas-BREEDTE. Beide frames
-        verticaal gecentreerd met gelijke gaps top/middel/bottom.
-
-    Verschillende strategie omdat 3 foto's hoogte-limited zijn en 2 foto's
-    breedte-limited (de natuurlijke vorm bij dit aspect).
+    Aspect parameter wordt voor 2-foto overruled naar 3:2 ongeacht meegegeven
+    waarde, voor consistente UX.
     """
-    if num >= 3:
-        # 3-foto: 75% verticaal opvullen
-        total_photo_h = int(canvas_h * 0.75)
-        frame_h = total_photo_h // num
-        frame_w = int(frame_h * aspect)
-        # Zorg dat het in de breedte past
-        max_w = canvas_w - 40  # min 20px marge links + rechts
-        if frame_w > max_w:
-            frame_w = max_w
-            frame_h = int(frame_w / aspect)
-    else:
-        # 1-2 foto's: 85% horizontaal opvullen
-        frame_w = int(canvas_w * 0.85)
-        frame_h = int(frame_w / aspect)
+    TOP_MARGIN = 50
+    SIDE_MARGIN_MIN = 20
+    SPACING = 30
 
-    # Verticale verdeling: gelijke gaps (num+1 totaal)
-    block_h = num * frame_h
-    total_gap = canvas_h - block_h
-    gap = total_gap // (num + 1)
-    y_start = gap
+    # Voor 2-foto: gebruikerseis 'tussen 16:9 en vierkant'. Override naar 3:2.
+    effective_aspect = (3.0 / 2.0) if num == 2 else aspect
+
+    # Bepaal frame-grootte: vul breedte maximaal binnen marges
+    frame_w = canvas_w - 2 * SIDE_MARGIN_MIN
+    frame_h = int(frame_w / effective_aspect)
+
+    # Zorg dat alles in de hoogte past (top-margin + frames + spacings)
+    total_block = TOP_MARGIN + num * frame_h + (num - 1) * SPACING
+    if total_block > canvas_h:
+        # Schaal terug op hoogte
+        available_h = canvas_h - TOP_MARGIN - (num - 1) * SPACING
+        frame_h = available_h // num
+        frame_w = int(frame_h * effective_aspect)
+
     x_offset = (canvas_w - frame_w) // 2
 
     frames = []
     for i in range(num):
-        y = y_start + i * (frame_h + gap)
+        y = TOP_MARGIN + i * (frame_h + SPACING)
         frames.append(PhotoFrame(x=x_offset, y=y, width=frame_w, height=frame_h))
     return frames
 
