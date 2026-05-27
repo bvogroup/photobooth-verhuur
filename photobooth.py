@@ -777,30 +777,32 @@ class LayoutEditorCanvas(QWidget):
         dy = int(dy_px / self._scale)
         ox, oy, ow, oh = self._drag_frame_orig
         frame = self.template.frames[self.selected_frame]
+        canvas_w, canvas_h = self._canvas_size()
 
         if self._drag_mode == "move":
-            frame.x = max(0, ox + dx)
-            frame.y = max(0, oy + dy)
+            new_x = max(0, min(canvas_w - frame.width, ox + dx))
+            new_y = max(0, min(canvas_h - frame.height, oy + dy))
+            frame.x, frame.y = new_x, new_y
         elif self._drag_mode == "resize_br":
-            frame.width = max(self.MIN_FRAME, ow + dx)
-            frame.height = max(self.MIN_FRAME, oh + dy)
+            frame.width = max(self.MIN_FRAME, min(canvas_w - ox, ow + dx))
+            frame.height = max(self.MIN_FRAME, min(canvas_h - oy, oh + dy))
         elif self._drag_mode == "resize_tl":
-            new_w = max(self.MIN_FRAME, ow - dx)
-            new_h = max(self.MIN_FRAME, oh - dy)
-            frame.x = ox + ow - new_w
-            frame.y = oy + oh - new_h
+            new_w = max(self.MIN_FRAME, min(ox + ow, ow - dx))
+            new_h = max(self.MIN_FRAME, min(oy + oh, oh - dy))
+            frame.x = max(0, ox + ow - new_w)
+            frame.y = max(0, oy + oh - new_h)
             frame.width = new_w
             frame.height = new_h
         elif self._drag_mode == "resize_tr":
-            frame.width = max(self.MIN_FRAME, ow + dx)
-            new_h = max(self.MIN_FRAME, oh - dy)
-            frame.y = oy + oh - new_h
+            frame.width = max(self.MIN_FRAME, min(canvas_w - ox, ow + dx))
+            new_h = max(self.MIN_FRAME, min(oy + oh, oh - dy))
+            frame.y = max(0, oy + oh - new_h)
             frame.height = new_h
         elif self._drag_mode == "resize_bl":
-            new_w = max(self.MIN_FRAME, ow - dx)
-            frame.x = ox + ow - new_w
+            new_w = max(self.MIN_FRAME, min(ox + ow, ow - dx))
+            frame.x = max(0, ox + ow - new_w)
             frame.width = new_w
-            frame.height = max(self.MIN_FRAME, oh + dy)
+            frame.height = max(self.MIN_FRAME, min(canvas_h - oy, oh + dy))
 
         self.update()
         self.frameChanged.emit()  # Update XY fields in real-time while dragging
@@ -12049,6 +12051,16 @@ class PhotoboothWindow(QMainWindow):
         date = (b.get("event_date") or b.get("event_start_date")
                 or q.get("event_date") or q.get("event_start_date") or "")
         label = f"{name}" + (f" · {date}" if date else "")
+        # Re-couple cleanup: oude uploader stoppen als we naar een ANDERE booking
+        # switchen, anders blijft die op de oude queue draaien.
+        old_id = self.active_event.linked_booking_id
+        if old_id and old_id != str(bid):
+            try:
+                from cloud_uploader import stop_worker
+                stop_worker(old_id)
+                print(f"[LINKED] Oude uploader gestopt voor {old_id} (re-couple naar {bid})")
+            except Exception as e:
+                print(f"[LINKED] Stop oude uploader fout (niet kritiek): {e}")
         self.active_event.linked_booking_id = str(bid)
         self.active_event.linked_token = q.get("token", self.active_event.linked_token)
         self.active_event.linked_booking_label = label
@@ -12232,9 +12244,14 @@ class PhotoboothWindow(QMainWindow):
             except Exception as e:
                 return False, f"Template opslaan mislukt: {e}"
 
-        # Default actief: variant met linked_photo_count (default 3)
-        default_count = ev.linked_photo_count or 3
-        ev.template_name = f"Event {booking_id[:8]} ({default_count} foto's)"
+        # Template-keuze: alleen overschrijven als er nog niets gekozen is
+        # OF als de huidige keuze geen linked-variant van DEZE booking is.
+        # Anders respecteert het de user-keuze tussen 2/3 foto.
+        expected_prefix = f"Event {booking_id[:8]} ("
+        current = ev.template_name or ""
+        if not current.startswith(expected_prefix) or not current.endswith(" foto's)"):
+            default_count = ev.linked_photo_count or 3
+            ev.template_name = f"Event {booking_id[:8]} ({default_count} foto's)"
         # Belangrijk: clear event.background_path zodat template-bg uit cloud wint
         ev.background_path = ""
         ev.save(config.EVENTS_DIR)
@@ -13434,20 +13451,27 @@ class PhotoboothWindow(QMainWindow):
             return
         from template_model import PhotoFrame
         t = canvas.template
-        # Default 3:2 landscape frame, positioned below existing frames
-        strip_w = 600 if not t.is_double_strip else 1200
+        # Canvas-grootte op basis van type (triple_strip = 600x1200)
+        canvas_w, canvas_h = canvas._canvas_size()
+        is_triple = getattr(t, 'is_triple_strip', False)
+        # Strip-breedte voor frame-berekening (single strip = 600, double = 1200,
+        # triple = 600 want canvas IS al 600 breed)
+        strip_w = canvas_w if (is_triple or t.is_double_strip) else 600
         margin = 30
         frame_w = strip_w - 2 * margin
-        frame_h = int(frame_w / 1.5)  # 3:2 aspect ratio
-        # Find lowest frame to place below it
+        # Aspect: 16:9 voor triple (Surface widescreen), anders 3:2 (Canon)
+        aspect = (16.0 / 9.0) if is_triple else (3.0 / 2.0)
+        frame_h = int(frame_w / aspect)
+        # Vind onderste frame om eronder te plaatsen
         max_y = margin
         for f in t.frames:
             bottom = f.y + f.height
             if bottom > max_y:
                 max_y = bottom
         y = max_y + 30  # spacing
-        if y + frame_h > 1800:
-            y = max(30, 1800 - frame_h - 30)
+        # Clamp tegen canvas-hoogte (NIET hardcoded 1800)
+        if y + frame_h > canvas_h:
+            y = max(margin, canvas_h - frame_h - margin)
         t.frames.append(PhotoFrame(x=margin, y=y, width=frame_w, height=frame_h))
         canvas.selected_frame = len(t.frames) - 1
         canvas.update()
