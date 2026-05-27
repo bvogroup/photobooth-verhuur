@@ -5190,10 +5190,16 @@ class PhotoboothWindow(QMainWindow):
         if self.strip_path:
             self._create_boomerang()
             self._start_cloud_upload()  # Start upload early for max time
-            # Linked-modus: enqueue strip image (en evt. portrait-versie)
-            self._maybe_enqueue_linked(self.strip_path, prefix="strip_")
+            # Linked-modus: bij DNP triple is strip_path het 3-up print-vel
+            # (alleen intern voor de printer, niet voor de gast) en
+            # _display_strip_path de echte portrait strip. Upload alleen de
+            # versie die voor de gast bedoeld is.
             if self._display_strip_path and self._display_strip_path != self.strip_path:
+                # DNP flow → alleen portrait uploaden, NIET de 3-up print sheet
                 self._maybe_enqueue_linked(self._display_strip_path, prefix="strip_portrait_")
+            else:
+                # Canon flow → strip_path is de single strip
+                self._maybe_enqueue_linked(self.strip_path, prefix="strip_")
             self._go_review()
         else:
             self._show_error(t("error_cannot_make_strip"))
