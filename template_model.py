@@ -32,6 +32,10 @@ class Template:
     frames: List[PhotoFrame] = field(default_factory=list)
     is_double_strip: bool = False  # True = full 1200x1800, False = 600x1800 duplicated
     cut_default: bool = True     # Default cut setting for this layout
+    # Verhuur DNP-modus: True = 5x10 cm strip-ontwerp in 600x1200 portrait canvas
+    # dat bij printen 90° gedraaid en 3x gestapeld wordt op het 1200x1800 vel.
+    # Bij triple strip wordt is_double_strip genegeerd.
+    is_triple_strip: bool = False
 
     @property
     def num_photos(self):
@@ -45,6 +49,7 @@ class Template:
             "frames": [asdict(f) for f in self.frames],
             "is_double_strip": self.is_double_strip,
             "cut_default": self.cut_default,
+            "is_triple_strip": self.is_triple_strip,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -61,6 +66,7 @@ class Template:
             frames=frames,
             is_double_strip=data.get("is_double_strip", False),
             cut_default=data.get("cut_default", True),
+            is_triple_strip=data.get("is_triple_strip", False),
         )
 
     @classmethod
@@ -305,6 +311,50 @@ def get_preset_layouts() -> List[Template]:
         frames=[PhotoFrame(x=M, y=single_y, width=single_w, height=single_h)],
         is_double_strip=True,
         cut_default=False,
+    ))
+
+    # ===== TRIPLE STRIPS (DNP 2-inch cut, 5x10 cm portrait per strip) =====
+    # Design canvas: 600x1200 portrait. Print: 3x gestapeld (90° gedraaid)
+    # op 1200x1800. DNP-driver snijdt elke 2" = 3 fysieke strips van 5x10 cm.
+    TRIPLE_W = 600    # portrait canvas width (= 2" = 5 cm @ 300 DPI)
+    TRIPLE_H = 1200   # portrait canvas height (= 4" = 10 cm)
+    TM = 24           # iets krappere marge dan 30 vanwege smaller canvas
+    TS = 20           # spacing tussen frames
+
+    # --- Triple strip: 2 foto's onder elkaar ---
+    triple2_usable_h = TRIPLE_H - 2 * TM - TS
+    triple2_frame_h = triple2_usable_h // 2
+    triple2_frame_w = TRIPLE_W - 2 * TM
+    triple2_frames = []
+    for i in range(2):
+        y = TM + i * (triple2_frame_h + TS)
+        triple2_frames.append(PhotoFrame(
+            x=TM, y=y, width=triple2_frame_w, height=triple2_frame_h))
+    presets.append(Template(
+        name="DNP strip — 2 foto's",
+        background_path="",
+        frames=triple2_frames,
+        is_double_strip=False,
+        cut_default=True,
+        is_triple_strip=True,
+    ))
+
+    # --- Triple strip: 3 foto's onder elkaar ---
+    triple3_usable_h = TRIPLE_H - 2 * TM - 2 * TS
+    triple3_frame_h = triple3_usable_h // 3
+    triple3_frame_w = TRIPLE_W - 2 * TM
+    triple3_frames = []
+    for i in range(3):
+        y = TM + i * (triple3_frame_h + TS)
+        triple3_frames.append(PhotoFrame(
+            x=TM, y=y, width=triple3_frame_w, height=triple3_frame_h))
+    presets.append(Template(
+        name="DNP strip — 3 foto's",
+        background_path="",
+        frames=triple3_frames,
+        is_double_strip=False,
+        cut_default=True,
+        is_triple_strip=True,
     ))
 
     return presets

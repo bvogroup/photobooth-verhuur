@@ -5295,6 +5295,10 @@ class PhotoboothWindow(QMainWindow):
                 print("[STRIP] FOUT: Geen template geselecteerd")
                 return None
 
+            # DNP verhuur-flow: triple strip → portrait 5x10cm, 3x gestapeld op vel.
+            if getattr(template, 'is_triple_strip', False):
+                return self._build_triple_strip_image(template)
+
             # Wait briefly for any pending photo processing (max 500ms)
             # Use short sleeps with processEvents to keep UI responsive
             for _wait in range(10):
@@ -5458,6 +5462,128 @@ class PhotoboothWindow(QMainWindow):
         except Exception as e:
             print(f"[STRIP] FOUT bij maken strip: {e}")
             # Still try to free memory on error
+            with self._processed_lock:
+                self._processed_photos.clear()
+            self._strip_bg = None
+            gc.collect()
+            return None
+
+    def _build_triple_strip_image(self, template):
+        """Bouw DNP triple-strip output.
+
+        Strip-ontwerp: 600x1200 portrait canvas (= 2x4 inch = 5x10 cm).
+        Print vel: 1200x1800 met 3x gedraaide strip gestapeld (y=0, 600, 1200).
+        DNP-driver met 2-inch cut snijdt het vel in 3 fysieke strips.
+
+        Sla 2 files op:
+        - <ts>_portrait.jpg → 600x1200 strip voor review/QR/sharing
+        - <ts>.jpg          → 1200x1800 print sheet voor de printer
+        """
+        try:
+            from PIL import Image, ImageOps
+            import time as _time
+
+            STRIP_W = 600
+            STRIP_H = 1200
+            PRINT_W = 1200
+            PRINT_H = 1800
+
+            # Wacht kort op pending photo processing (zelfde patroon als hoofd-build)
+            for _wait in range(10):
+                with self._processed_lock:
+                    ready = len(self._processed_photos) >= self.num_photos
+                if ready:
+                    break
+                _time.sleep(0.03)
+
+            # Achtergrond laden (event-specifiek of template-specifiek)
+            bg_path = ""
+            if self.active_event and self.active_event.background_path:
+                bg_path = self.active_event.background_path
+            elif template.background_path:
+                bg_path = template.background_path
+
+            if bg_path and os.path.isfile(bg_path):
+                with Image.open(bg_path) as bg_raw:
+                    bg = bg_raw.convert("RGB")
+                strip = bg.resize((STRIP_W, STRIP_H), Image.LANCZOS)
+                del bg
+                print(f"[DNP-STRIP] Achtergrond geladen: {bg_path}")
+            else:
+                strip = Image.new("RGB", (STRIP_W, STRIP_H), (255, 255, 255))
+                print("[DNP-STRIP] Geen achtergrond — wit gebruikt")
+
+            # Foto's in frames pasten (zelfde transformatielogica als hoofd-build)
+            with self._processed_lock:
+                processed = {idx: img for idx, img in self._processed_photos}
+
+            for i, frame in enumerate(template.frames):
+                if i in processed:
+                    img = processed[i]
+                elif i < len(self.photos) and os.path.isfile(self.photos[i]):
+                    with Image.open(self.photos[i]) as raw_img:
+                        img = ImageOps.exif_transpose(raw_img).convert("RGB")
+                    ev = self.active_event
+                    if ev and ev.camera_mirror:
+                        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    if ev and ev.camera_rotation:
+                        img = img.rotate(-ev.camera_rotation, expand=True)
+                    if getattr(frame, 'rotation', 0) != 0:
+                        img = img.rotate(-frame.rotation, expand=True)
+                    img = ImageOps.fit(img, (frame.width, frame.height), Image.LANCZOS)
+                else:
+                    continue
+                strip.paste(img, (frame.x, frame.y))
+
+            # Portrait variant opslaan voor review/QR/sharing
+            strip_dir = self._get_strips_dir()
+            portrait_path = os.path.join(
+                strip_dir,
+                self._timestamp_filename(ext=".jpg", suffix="portrait"),
+            )
+            try:
+                strip.save(portrait_path, "JPEG", quality=95)
+            except OSError as disk_err:
+                print(f"[DNP-STRIP] FOUT bij opslaan portrait (disk vol?): {disk_err}")
+                return None
+            print(f"[DNP-STRIP] Portrait strip opgeslagen: {portrait_path}")
+
+            # 90° draaien → 1200x600 landscape
+            landscape = strip.rotate(-90, expand=True)
+
+            # Print vel bouwen: 1200x1800 wit, 3x landscape strip gestapeld
+            print_sheet = Image.new("RGB", (PRINT_W, PRINT_H), (255, 255, 255))
+            for row in range(3):
+                print_sheet.paste(landscape, (0, row * STRIP_W))  # y = 0, 600, 1200
+
+            # Print sheet opslaan (dit is wat de printer krijgt)
+            print_path = os.path.join(
+                strip_dir,
+                self._timestamp_filename(ext=".jpg"),
+            )
+            try:
+                print_sheet.save(print_path, "JPEG", quality=95)
+            except OSError as disk_err:
+                print(f"[DNP-STRIP] FOUT bij opslaan print-sheet: {disk_err}")
+                return None
+            print(f"[DNP-STRIP] Print-sheet opgeslagen: {print_path}")
+
+            # Display + sharing pad zetten naar portrait variant
+            self._display_strip_path = portrait_path
+            self._display_single_strip_path = portrait_path
+            self._single_strip_path = portrait_path
+
+            # Geheugen vrijgeven
+            with self._processed_lock:
+                self._processed_photos.clear()
+            self._strip_bg = None
+            del strip, landscape, print_sheet, processed
+            gc.collect()
+
+            return print_path
+
+        except Exception as e:
+            print(f"[DNP-STRIP] FOUT bij maken triple strip: {e}")
             with self._processed_lock:
                 self._processed_photos.clear()
             self._strip_bg = None
@@ -8412,6 +8538,28 @@ class PhotoboothWindow(QMainWindow):
         card_lang_lay.addLayout(lang_row)
         tab5_lay.addWidget(card_lang)
 
+        # Card: Printer-modus (verhuur)
+        card_pmode, card_pmode_lay = self._settings_card("Printer-modus")
+        pmode_row = QHBoxLayout()
+        pmode_row.setSpacing(20)
+        from PyQt5.QtWidgets import QButtonGroup as _BG
+        self._printer_mode_group = _BG(self)
+        self._printer_mode_canon_radio = QRadioButton("Canon (huidige flow)")
+        self._printer_mode_canon_radio.setFont(QFont("DM Sans", 13))
+        self._printer_mode_dnp_radio = QRadioButton("DNP (3-strip 5x10cm)")
+        self._printer_mode_dnp_radio.setFont(QFont("DM Sans", 13))
+        self._printer_mode_group.addButton(self._printer_mode_canon_radio)
+        self._printer_mode_group.addButton(self._printer_mode_dnp_radio)
+        # Default: DNP (verhuur)
+        self._printer_mode_dnp_radio.setChecked(True)
+        self._printer_mode_canon_radio.toggled.connect(self._on_printer_mode_changed)
+        self._printer_mode_dnp_radio.toggled.connect(self._on_printer_mode_changed)
+        pmode_row.addWidget(self._printer_mode_canon_radio)
+        pmode_row.addWidget(self._printer_mode_dnp_radio)
+        pmode_row.addStretch()
+        card_pmode_lay.addLayout(pmode_row)
+        tab5_lay.addWidget(card_pmode)
+
         # Card: Lock icon
         card_lock, card_lock_lay = self._settings_card(t("card_lock"))
         lock_row = QHBoxLayout()
@@ -8935,6 +9083,18 @@ class PhotoboothWindow(QMainWindow):
             self._save_photos_toggle.setChecked(getattr(ev, 'save_photos_locally', True))
             self._save_photos_toggle.blockSignals(False)
 
+        # Update printer-modus radio (verhuur)
+        if hasattr(self, '_printer_mode_dnp_radio') and ev:
+            mode = getattr(ev, 'printer_mode', 'dnp')
+            self._printer_mode_canon_radio.blockSignals(True)
+            self._printer_mode_dnp_radio.blockSignals(True)
+            if mode == 'canon':
+                self._printer_mode_canon_radio.setChecked(True)
+            else:
+                self._printer_mode_dnp_radio.setChecked(True)
+            self._printer_mode_canon_radio.blockSignals(False)
+            self._printer_mode_dnp_radio.blockSignals(False)
+
         # Update payment settings
         if hasattr(self, '_payment_toggle') and ev:
             self._payment_toggle.blockSignals(True)
@@ -9092,7 +9252,15 @@ class PhotoboothWindow(QMainWindow):
         cat_cut = []      # Snijden (dubbele strips)
         cat_nocut = []    # Niet snijden (enkele strips / volledig)
 
+        # Filter op printer-modus: canon → geen triple strips, dnp → alleen triple
+        pm = getattr(self.active_event, 'printer_mode', 'dnp') if self.active_event else 'dnp'
         for layout in self._preset_layouts:
+            if pm == 'dnp':
+                if not layout.is_triple_strip:
+                    continue
+            else:  # canon
+                if layout.is_triple_strip:
+                    continue
             # If user edited this preset, use the custom version for preview
             display_layout = custom_by_name.get(layout.name, layout)
             if layout.cut_default:
@@ -11301,6 +11469,27 @@ class PhotoboothWindow(QMainWindow):
             QMessageBox.information(self, "Language / Taal",
                 "Language changed. Please restart the application.\n"
                 "Taal gewijzigd. Herstart de applicatie.")
+
+    def _on_printer_mode_changed(self, checked):
+        """Persisteer printer-modus (canon|dnp) booth-wide via active_event.
+
+        Wordt in event_model.Event.save() automatisch naar booth_settings.json
+        gepropageerd zodat het over alle events geldt. Ververst de layout-lijst
+        zodat de gebruiker meteen de juiste templates ziet.
+        """
+        if not checked:
+            return  # ignore the unchecking signal of the other radio
+        mode = "canon" if self._printer_mode_canon_radio.isChecked() else "dnp"
+        if self.active_event:
+            self.active_event.printer_mode = mode
+            self.active_event.save(config.EVENTS_DIR)
+        print(f"[SETTINGS] Printer-modus: {mode}")
+        # Ververs layout-lijst zodat juiste presets zichtbaar worden
+        if hasattr(self, '_layout_categories_container'):
+            try:
+                self._load_settings_templates()
+            except Exception as ex:
+                print(f"[SETTINGS] Layout-refresh overgeslagen: {ex}")
 
     def _on_pin_button_clicked(self):
         """Open touchscreen PIN keypad to set a new PIN code."""

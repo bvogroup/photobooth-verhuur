@@ -97,6 +97,9 @@ class BoothSettings:
     # ── Geavanceerd ────────────────────────────────────────────
     lock_icon_size: int = 60
     pin_code: str = ""
+    # Printer-modus: "canon" = oude flow (single/double strip op HiTi),
+    # "dnp" = nieuwe flow (triple strip 5x10cm op DNP QW410 met 2-inch cut).
+    printer_mode: str = "dnp"
 
     # ── Persistence ────────────────────────────────────────────
 

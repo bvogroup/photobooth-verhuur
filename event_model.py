@@ -99,6 +99,8 @@ class Event:
     custom_choice_timeout: int = 30       # seconden voor keuzescherm
     custom_payment_timeout: int = 120     # seconden voor betaalscherm
     save_photos_locally: bool = True   # Save photos to local disk
+    # Printer-modus (verhuur-versie): "canon" = oude flow, "dnp" = triple strip.
+    printer_mode: str = "dnp"
     session_count: int = 0           # Number of sessions run
     photo_count: int = 0             # Total photos taken
     # Print-quotum per event — onafhankelijk van auto_print_copies/max_prints

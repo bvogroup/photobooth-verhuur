@@ -204,6 +204,7 @@ class TemplateEditorWindow(QMainWindow):
         self._frame_items = []
         self._template_name = "Nieuw template"
         self._is_double_strip = False
+        self._is_triple_strip = False
 
         self._build_ui()
 
@@ -407,6 +408,7 @@ class TemplateEditorWindow(QMainWindow):
             background_path=self._bg_path,
             frames=frames,
             is_double_strip=self._is_double_strip,
+            is_triple_strip=getattr(self, '_is_triple_strip', False),
         )
 
         # Save as JSON
@@ -463,11 +465,20 @@ class TemplateEditorWindow(QMainWindow):
 
         self._template_name = template.name
         self._is_double_strip = template.is_double_strip
+        self._is_triple_strip = getattr(template, 'is_triple_strip', False)
 
-        # Resize canvas based on double strip setting
-        new_w = 1200 if template.is_double_strip else CANVAS_W
-        self.scene.setSceneRect(0, 0, new_w, CANVAS_H)
-        self._canvas_rect.setRect(0, 0, new_w, CANVAS_H)
+        # Resize canvas based on strip type:
+        # triple_strip (DNP)  = 600x1200 portrait (5x10 cm)
+        # double_strip        = 1200x1800 (volledige print)
+        # single (default)    = 600x1800 (halve print, gedupliceerd)
+        if self._is_triple_strip:
+            new_w, new_h = 600, 1200
+        elif template.is_double_strip:
+            new_w, new_h = 1200, CANVAS_H
+        else:
+            new_w, new_h = CANVAS_W, CANVAS_H
+        self.scene.setSceneRect(0, 0, new_w, new_h)
+        self._canvas_rect.setRect(0, 0, new_w, new_h)
 
         # Load background
         if template.background_path and os.path.isfile(template.background_path):
@@ -478,7 +489,7 @@ class TemplateEditorWindow(QMainWindow):
                 for item in self.scene.items():
                     if isinstance(item, QGraphicsPixmapItem):
                         self.scene.removeItem(item)
-                scaled = pixmap.scaled(new_w, CANVAS_H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                scaled = pixmap.scaled(new_w, new_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
                 bg_item = self.scene.addPixmap(scaled)
                 bg_item.setZValue(-5)
         else:
