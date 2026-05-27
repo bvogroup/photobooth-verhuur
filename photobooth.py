@@ -1232,10 +1232,23 @@ class PhotoboothWindow(QMainWindow):
         """Bij opstart: als Linked-modus actief met booking_id → re-verify + start uploader.
 
         Async via QTimer zodat UI eerst toont. Faalt graceful bij offline.
+        Repareert ook inconsistente state (booking_id zonder booth_mode='linked').
         """
         ev = self.active_event
         if not ev:
             return
+
+        # Repair-step: linked_booking_id maar booth_mode niet linked → mismatch
+        # uit een oudere bug. Forceer state consistent.
+        if getattr(ev, 'linked_booking_id', '') and getattr(ev, 'booth_mode', '') != 'linked':
+            ev.booth_mode = 'linked'
+            ev.save(config.EVENTS_DIR)
+            print("[LINKED] State-repair: booth_mode gezet op 'linked' (booking was gekoppeld)")
+        elif not getattr(ev, 'linked_booking_id', '') and getattr(ev, 'booth_mode', '') == 'linked':
+            ev.booth_mode = 'standalone'
+            ev.save(config.EVENTS_DIR)
+            print("[LINKED] State-repair: booth_mode gezet op 'standalone' (geen booking)")
+
         if getattr(ev, 'booth_mode', 'standalone') != 'linked':
             return
         booking_id = getattr(ev, 'linked_booking_id', '')
@@ -11733,13 +11746,46 @@ class PhotoboothWindow(QMainWindow):
                 "Taal gewijzigd. Herstart de applicatie.")
 
     def _on_booth_mode_changed(self, checked):
-        """Wissel tussen Standalone en Linked-modus."""
+        """Wissel tussen Standalone en Linked-modus.
+
+        Bij switch naar Standalone wordt een eventueel gekoppeld event
+        ontkoppeld (linked_* velden gewist) zodat state en radio
+        100% consistent zijn — gebruiker-eis.
+        """
         if not checked:
             return
         mode = "linked" if self._booth_mode_linked_radio.isChecked() else "standalone"
-        if self.active_event:
-            self.active_event.booth_mode = mode
-            self.active_event.save(config.EVENTS_DIR)
+        if not self.active_event:
+            return
+
+        # Switch naar Standalone terwijl er een event gekoppeld is → loskoppelen
+        if mode == "standalone" and self.active_event.linked_booking_id:
+            from PyQt5.QtWidgets import QMessageBox
+            ans = QMessageBox.question(self, "Modus wisselen",
+                "Naar Standalone schakelen ontkoppelt het huidige event.\n"
+                "Wachtende uploads blijven in de queue. Doorgaan?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                # Zet radio terug naar linked zonder signal-loop
+                self._booth_mode_linked_radio.blockSignals(True)
+                self._booth_mode_linked_radio.setChecked(True)
+                self._booth_mode_linked_radio.blockSignals(False)
+                return
+            # Stop uploader, wis linked_* velden (queue blijft)
+            old_id = self.active_event.linked_booking_id
+            self.active_event.linked_booking_id = ""
+            self.active_event.linked_token = ""
+            self.active_event.linked_booking_label = ""
+            self.active_event.linked_design_path = ""
+            if old_id:
+                try:
+                    from cloud_uploader import stop_worker
+                    stop_worker(old_id)
+                except Exception:
+                    pass
+
+        self.active_event.booth_mode = mode
+        self.active_event.save(config.EVENTS_DIR)
         print(f"[SETTINGS] Booth-modus: {mode}")
         self._update_linked_card_visibility()
 
@@ -11877,6 +11923,8 @@ class PhotoboothWindow(QMainWindow):
             ev.linked_token = ""
             ev.linked_booking_label = ""
             ev.linked_design_path = ""
+            # Loskoppelen impliceert booth_mode='standalone' — radio matcht state
+            ev.booth_mode = "standalone"
             ev.save(config.EVENTS_DIR)
         # Stop uploader (queue blijft op disk staan; bij re-koppeling pakt-ie weer op)
         if old_booking_id:
@@ -11922,6 +11970,8 @@ class PhotoboothWindow(QMainWindow):
         # Gebruiker-keuze: altijd 3 foto's voor DNP linked-modus (kan later
         # variabel via UI). Cloud-DB-default is 2 — die negeren we.
         self.active_event.linked_photo_count = 3
+        # Coupling impliceert booth_mode='linked' — UI moet matchen met state
+        self.active_event.booth_mode = "linked"
         # Printer-mode: alleen overschrijven bij EXPLICIETE 'premium' upgrade.
         # 'standard' kan ook de fallback-default zijn — dan laten we de lokaal
         # gekozen modus staan i.p.v. die te resetten. Operator kan altijd
