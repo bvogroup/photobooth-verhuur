@@ -386,7 +386,7 @@ def make_linked_template(printer_mode: str, photo_count: int,
 
 
 def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
-                         aspect: float = 4.0 / 3.0) -> List[PhotoFrame]:
+                         aspect: float = 16.0 / 9.0) -> List[PhotoFrame]:
     """Frames voor DNP 5x10cm triple strip op basis van Surface Pro 7 webcam.
 
     Aspect-ratio = 4:3 landscape (1920x1440 webcam) → frame_w / frame_h = 4/3.
@@ -430,8 +430,13 @@ def _make_triple_frames(num: int, canvas_w: int = 600, canvas_h: int = 1200,
 
 
 def _triple_aspect_for(num: int) -> float:
-    """Photo aspect-ratio voor DNP strip: altijd 4:3 (Surface Pro 7 webcam 1920x1440)."""
-    return 4.0 / 3.0
+    """Photo aspect-ratio voor DNP strip: 16:9 widescreen.
+
+    Bredere foto's vullen de strip mooier dan 4:3 (vorige). Surface Pro 7
+    webcam kan 1920x1080 capturen — die aspect ratio matcht 16:9 exact, dus
+    geen crop bij capture. Bij 4:3 capture wordt top/bottom iets weggesneden.
+    """
+    return 16.0 / 9.0
 
 
 def _triple_spacing_for(num: int) -> int:

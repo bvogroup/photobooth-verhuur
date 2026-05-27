@@ -1228,8 +1228,8 @@ class PhotoboothWindow(QMainWindow):
         # Auto-couple bij Linked-modus
         QTimer.singleShot(500, self._auto_recouple_on_startup)
 
-        # Wifi-monitor starten — polt elke 3s op de achtergrond
-        self._start_wifi_monitor()
+        # Wifi-monitor uitgeschakeld — gebruiker wil deze flow niet meer zien.
+        # Methodes blijven bestaan voor backwards compat maar starten niet.
 
     def _start_wifi_monitor(self):
         """Start een achtergrond-poll naar internet-connectiviteit (1.1.1.1:53).
@@ -11896,12 +11896,11 @@ class PhotoboothWindow(QMainWindow):
 
         self._card_linked.setVisible(True)
 
-        # No-wifi paneel vs normale content
-        no_wifi = not getattr(self, '_wifi_connected', True)
+        # Wifi-paneel definitief uit — content altijd zichtbaar
         if hasattr(self, '_no_wifi_widget'):
-            self._no_wifi_widget.setVisible(no_wifi)
+            self._no_wifi_widget.setVisible(False)
         if hasattr(self, '_linked_content_widget'):
-            self._linked_content_widget.setVisible(not no_wifi)
+            self._linked_content_widget.setVisible(True)
 
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
         label = getattr(ev, 'linked_booking_label', '') if ev else ''
