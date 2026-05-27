@@ -7190,6 +7190,7 @@ class PhotoboothWindow(QMainWindow):
         new_event_btn.setStyleSheet(btn_style_primary)
         new_event_btn.clicked.connect(self._on_event_create_new)
         event_row.addWidget(new_event_btn)
+        self._new_event_btn = new_event_btn  # voor verbergen in Linked-modus
 
         del_event_btn = QPushButton(t("delete").upper())
         del_event_btn.setCursor(Qt.PointingHandCursor)
@@ -7197,8 +7198,15 @@ class PhotoboothWindow(QMainWindow):
         del_event_btn.setStyleSheet(btn_style_danger)
         del_event_btn.clicked.connect(self._on_event_delete)
         event_row.addWidget(del_event_btn)
+        self._del_event_btn = del_event_btn  # voor verbergen in Linked-modus
+        # Wrap event_row in een QWidget zodat we 'm als geheel kunnen hide()
+        self._event_picker_row = QWidget()
+        self._event_picker_row.setLayout(event_row)
+        card_event_lay.addWidget(self._event_picker_row)
 
-        card_event_lay.addLayout(event_row)
+        # Originele addLayout vervangen door addWidget hierboven — voorkomt
+        # dubbele toevoeging. (volgende regel die addLayout(event_row) was
+        # blijft hieronder als no-op verwijderd door deze patch).
 
         # Photo storage toggle + open folder button
         photo_storage_row = QHBoxLayout()
@@ -7322,6 +7330,9 @@ class PhotoboothWindow(QMainWindow):
         self._idle_radio_custom.toggled.connect(self._on_idle_mode_changed)
 
         tab0_lay.addWidget(card_bg)
+        self._card_idle_bg = card_bg  # voor verbergen in Linked-modus
+        # tab0_lay zelf onthouden voor het verplaatsen van Gekoppeld-kaart
+        self._tab0_lay = tab0_lay
 
         # Card: Intro screen (shown before countdown)
         card_intro, card_intro_lay = self._settings_card(t("card_intro"))
@@ -7450,6 +7461,7 @@ class PhotoboothWindow(QMainWindow):
             __import__('PyQt5.QtCore', fromlist=['QUrl']).QUrl("https://www.canva.com")
         ))
         bg_row.addWidget(canva_btn)
+        self._canva_btn = canva_btn  # voor verbergen in Linked-modus
         bg_row.addStretch()
         card_layout_lay.addLayout(bg_row)
 
@@ -8585,6 +8597,7 @@ class PhotoboothWindow(QMainWindow):
         # TAB 6: Geavanceerd
         # ════════════════════════════════════════════
         tab5_scroll, tab5_lay = self._settings_tab_scroll()
+        self._tab5_lay = tab5_lay  # voor verplaatsen Gekoppeld-kaart
 
         # Card: Language
         card_lang, card_lang_lay = self._settings_card(t("language_label").rstrip(":"))
@@ -8715,7 +8728,8 @@ class PhotoboothWindow(QMainWindow):
         linked_btn_row.addStretch()
         card_linked_lay.addLayout(linked_btn_row)
 
-        # Foto-aantal selectie (alleen relevant als gekoppeld)
+        # Foto-aantal selectie verborgen — de layout/template bepaalt aantal foto's.
+        # Widget bestaat nog voor backwards compat van handlers/event-veld.
         self._linked_count_row = QHBoxLayout()
         self._linked_count_label = QLabel("Foto's per strip:")
         self._linked_count_label.setFont(QFont("DM Sans", 12))
@@ -8727,13 +8741,16 @@ class PhotoboothWindow(QMainWindow):
         self._linked_count_row.addWidget(self._linked_count_spin)
         self._linked_count_row.addStretch()
         card_linked_lay.addLayout(self._linked_count_row)
+        self._linked_count_label.setVisible(False)
+        self._linked_count_spin.setVisible(False)
 
-        # Upload-voortgang
+        # Upload-voortgang — alleen tonen als er al iets in queue zit
         self._linked_progress_label = QLabel("")
         self._linked_progress_label.setFont(QFont("DM Sans", 11))
         self._linked_progress_label.setStyleSheet(dim_label_style)
         self._linked_progress_label.setWordWrap(True)
         card_linked_lay.addWidget(self._linked_progress_label)
+        self._linked_progress_label.setVisible(False)
 
         tab5_lay.addWidget(self._card_linked)
         self._card_linked.setVisible(False)  # initieel verborgen (Standalone default)
@@ -9453,6 +9470,20 @@ class PhotoboothWindow(QMainWindow):
 
         # Filter op printer-modus: canon → geen triple strips, dnp → alleen triple
         pm = getattr(self.active_event, 'printer_mode', 'dnp') if self.active_event else 'dnp'
+
+        # Linked-modus: linked template gaat ALS EERSTE in de juiste categorie.
+        # Zo ziet operator direct de event-design met achtergrond.
+        booth_mode = getattr(self.active_event, 'booth_mode', 'standalone') if self.active_event else 'standalone'
+        linked_booking_id = getattr(self.active_event, 'linked_booking_id', '') if self.active_event else ''
+        linked_tmpl = None
+        if booth_mode == 'linked' and linked_booking_id:
+            for tmpl in custom:
+                if tmpl.name == f"Event {linked_booking_id[:8]}":
+                    linked_tmpl = tmpl
+                    break
+        if linked_tmpl:
+            cat_cut.append(linked_tmpl)
+
         for layout in self._preset_layouts:
             if pm == 'dnp':
                 if not layout.is_triple_strip:
@@ -11690,14 +11721,44 @@ class PhotoboothWindow(QMainWindow):
         self._update_linked_card_visibility()
 
     def _update_linked_card_visibility(self):
-        """Toon/verberg de Gekoppeld-event-kaart en knoppen-state."""
+        """Toon/verberg de Gekoppeld-event-kaart en knoppen-state.
+
+        Verplaatst de kaart bij Linked-modus naar de Event-tab (waar het
+        thuishoort), en verbergt event-picker/new/delete/idle-bg uit de
+        Standalone-flow. Bij Standalone weer omgekeerd.
+        """
         if not hasattr(self, '_card_linked'):
             return
         ev = self.active_event
         mode = getattr(ev, 'booth_mode', 'standalone') if ev else 'standalone'
-        self._card_linked.setVisible(mode == 'linked')
+        is_linked = (mode == 'linked')
 
-        if mode != 'linked':
+        # Standalone-Event-tab widgets verbergen in Linked-modus
+        if hasattr(self, '_event_picker_row'):
+            self._event_picker_row.setVisible(not is_linked)
+        if hasattr(self, '_card_idle_bg'):
+            self._card_idle_bg.setVisible(not is_linked)
+        if hasattr(self, '_canva_btn'):
+            self._canva_btn.setVisible(not is_linked)
+
+        # Gekoppeld-kaart fysiek verplaatsen tussen tabs
+        if is_linked and hasattr(self, '_tab0_lay'):
+            # Move naar Event-tab (top) als nog niet daar
+            current = self._card_linked.parentWidget()
+            tab0_widget = self._tab0_lay.parentWidget()
+            if current is not tab0_widget:
+                self._card_linked.setParent(None)
+                self._tab0_lay.insertWidget(0, self._card_linked)
+        elif not is_linked and hasattr(self, '_tab5_lay'):
+            current = self._card_linked.parentWidget()
+            tab5_widget = self._tab5_lay.parentWidget() if hasattr(self, '_tab5_lay') else None
+            if tab5_widget and current is not tab5_widget:
+                self._card_linked.setParent(None)
+                self._tab5_lay.addWidget(self._card_linked)
+
+        self._card_linked.setVisible(is_linked)
+
+        if not is_linked:
             return
 
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
@@ -11708,8 +11769,7 @@ class PhotoboothWindow(QMainWindow):
             self._btn_couple_event.setVisible(False)
             self._btn_refresh_event.setVisible(True)
             self._btn_unlink_event.setVisible(True)
-            self._linked_count_label.setVisible(True)
-            self._linked_count_spin.setVisible(True)
+            # Foto-aantal selector blijft verborgen (layout bepaalt aantal)
             self._touch_spin_set(self._linked_count_spin, getattr(ev, 'linked_photo_count', 2))
             self._update_linked_progress()
         else:
@@ -11717,23 +11777,25 @@ class PhotoboothWindow(QMainWindow):
             self._btn_couple_event.setVisible(True)
             self._btn_refresh_event.setVisible(False)
             self._btn_unlink_event.setVisible(False)
-            self._linked_count_label.setVisible(False)
-            self._linked_count_spin.setVisible(False)
             self._linked_progress_label.setText("")
+            self._linked_progress_label.setVisible(False)
 
     def _update_linked_progress(self):
-        """Werk de upload-voortgang regel bij."""
+        """Werk de upload-voortgang regel bij — alleen tonen als er iets in queue zit."""
         ev = self.active_event
         if not ev or not getattr(ev, 'linked_booking_id', ''):
             self._linked_progress_label.setText("")
+            self._linked_progress_label.setVisible(False)
             return
         try:
             from cloud_uploader import get_status
             s = get_status(ev.linked_booking_id)
         except Exception:
+            self._linked_progress_label.setVisible(False)
             return
         if s["total"] == 0:
-            self._linked_progress_label.setText("Nog geen foto's geüpload.")
+            self._linked_progress_label.setText("")
+            self._linked_progress_label.setVisible(False)
             return
         pct = int(100 * s["uploaded"] / max(1, s["total"]))
         msg = f"Upload: {s['uploaded']}/{s['total']} foto's ({pct}%)"
@@ -11742,6 +11804,7 @@ class PhotoboothWindow(QMainWindow):
         if s["failed"] > 0:
             msg += f" — {s['failed']} mislukt"
         self._linked_progress_label.setText(msg)
+        self._linked_progress_label.setVisible(True)
 
     def _on_couple_event_clicked(self):
         """Open de event-koppel modal — implementatie in Fase 3."""
