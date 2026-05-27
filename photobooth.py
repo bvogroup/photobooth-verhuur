@@ -12146,8 +12146,8 @@ class PhotoboothWindow(QMainWindow):
 
         # Design verwerken indien aanwezig
         if design_local_path:
-            # Format validatie + template aanmaken (lokaal, snel)
-            ok, fetch_err = self._apply_design_to_template(design_local_path)
+            # User-initiated action (eerste coupling of Ververs) → regen forceren
+            ok, fetch_err = self._apply_design_to_template(design_local_path, force_regen=True)
             if not ok:
                 QMessageBox.warning(self, "Design probleem",
                     f"{fetch_err}\n\nKlik OK en scan opnieuw met een nieuw design.")
@@ -12168,13 +12168,17 @@ class PhotoboothWindow(QMainWindow):
         if self.active_event:
             print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
 
-    def _apply_design_to_template(self, local_design_path):
+    def _apply_design_to_template(self, local_design_path, force_regen=False):
         """Synchroon (lokaal) — valideer formaat + genereer 2 én 3 foto-variant.
 
         Maakt 'Event <id> (2)' en 'Event <id> (3)' templates aan met het cloud-
         design als achtergrond. Operator kan tussen 2/3 foto's wisselen door op
         de variant te klikken in de Layout-grid.
-        Ook: clear event.background_path zodat de cloud-design altijd wint.
+
+        Args:
+            force_regen: True = altijd overschrijven (Ververs-knop, eerste
+                         coupling). False = bestaande templates met user-
+                         edits behouden (auto-couple bij startup).
         """
         ev = self.active_event
         if not ev:
@@ -12204,15 +12208,21 @@ class PhotoboothWindow(QMainWindow):
             except OSError:
                 pass
 
-        # Genereer beide varianten zodat operator kan kiezen
+        # Genereer beide varianten zodat operator kan kiezen.
+        # BEHOUD bestaande templates als ze al bestaan (= user edits) tenzij
+        # expliciet force_regen aan staat (Ververs-knop of eerste coupling).
         variants_created = []
         for count in (2, 3):
+            tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}_{count}foto.json")
+            if os.path.isfile(tmpl_path) and not force_regen:
+                print(f"[LINKED] Template bestaat al — behoud user-edits: linked_{booking_id}_{count}foto.json")
+                continue
             tmpl = make_linked_template(pm, count, local_design_path, booking_id)
             tmpl.name = f"Event {booking_id[:8]} ({count} foto's)"
-            tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}_{count}foto.json")
             try:
                 tmpl.save(tmpl_path)
                 variants_created.append(tmpl)
+                print(f"[LINKED] Template gegenereerd: linked_{booking_id}_{count}foto.json")
             except Exception as e:
                 return False, f"Template opslaan mislukt: {e}"
 
