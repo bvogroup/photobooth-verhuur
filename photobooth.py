@@ -2498,45 +2498,52 @@ class PhotoboothWindow(QMainWindow):
         # via _maybe_route_after_coupling naar de juiste idle-modus.
 
     def _welcome_check_connectivity(self):
-        """Check WiFi + internet status via direct TCP-socket (bypass DNS).
+        """Check internet via Windows' eigen ping-command. Simpelst en
+        meest foolproof: ICMP packet naar 8.8.8.8 met 1 sec timeout.
 
-        Probeert meerdere host:port combinaties zodat we niet falen door
-        één geblokkeerde poort (sommige firewalls blokkeren uitgaand 53):
-          - 8.8.8.8:53     Google DNS
-          - 1.1.1.1:53     Cloudflare DNS
-          - 8.8.8.8:443    Google DNS over HTTPS (vrijwel altijd open)
-          - 1.1.1.1:443    Cloudflare DNS over HTTPS (vrijwel altijd open)
+        Waarom NIET socket of urllib:
+        - Sommige firewalls blokkeren outbound TCP naar specifieke poorten
+        - urllib DNS-lookup kan minuten hangen op Windows
+        - Python socket-module kan door Windows Firewall geblokkeerd worden
 
-        Logt de exact gefaalde pogingen zodat netwerk-issues debugbaar zijn.
+        Waarom WEL Windows ping:
+        - Built-in command, eigen firewall-exemptie
+        - ICMP wordt zelden geblokkeerd
+        - Exit code 0 = success, anders fail
+        - CREATE_NO_WINDOW voorkomt zwart cmd-venster bij elke check
         """
         import threading
         def _bg():
-            import socket
+            import subprocess
             online = False
-            failures = []
-            targets = [
-                ("8.8.8.8", 53),
-                ("1.1.1.1", 53),
-                ("8.8.8.8", 443),
-                ("1.1.1.1", 443),
-            ]
-            for host, port in targets:
+            stderr_msg = ""
+            # Probeer 8.8.8.8 eerst, dan 1.1.1.1 als fallback
+            for ip in ("8.8.8.8", "1.1.1.1"):
                 try:
-                    s = socket.create_connection((host, port), timeout=1.5)
-                    s.close()
-                    online = True
-                    break
-                except OSError as e:
-                    failures.append(f"{host}:{port}={type(e).__name__}({e})")
+                    # -n 1   = 1 ping packet
+                    # -w 1500 = 1.5 sec timeout per packet (ms)
+                    # CREATE_NO_WINDOW = geen flikkerend cmd-venster
+                    result = subprocess.run(
+                        ["ping", ip, "-n", "1", "-w", "1500"],
+                        capture_output=True, text=True, timeout=3,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                    )
+                    if result.returncode == 0:
+                        online = True
+                        used_ip = ip
+                        break
+                    else:
+                        stderr_msg = f"{ip}: exit={result.returncode}, " \
+                                     f"out={result.stdout[:80]!r}"
+                except Exception as e:
+                    stderr_msg = f"{ip}: {type(e).__name__}({e})"
                     continue
             from PyQt5.QtCore import QTimer as _T
             _T.singleShot(0, lambda: self._welcome_apply_connectivity(online))
             if online:
-                print(f"[WELCOME] Connectivity check: online (via {host}:{port})")
+                print(f"[WELCOME] Ping OK — online via {used_ip}")
             else:
-                # Alle pogingen mislukt — log waarom
-                print(f"[WELCOME] Connectivity check: OFFLINE — alle pogingen "
-                      f"faalden: {' | '.join(failures)}")
+                print(f"[WELCOME] Ping mislukt — offline ({stderr_msg})")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
