@@ -896,6 +896,10 @@ class PhotoboothWindow(QMainWindow):
     # Cross-thread signals for SumUp payment loop (daemon thread → main thread)
     _sumup_payment_signal = pyqtSignal()
     _sumup_status_signal = pyqtSignal(str)
+    # Welcome connectivity check (bg-thread → main thread)
+    _welcome_connectivity_signal = pyqtSignal(bool)
+    # Periodic booking-refresh result (bg-thread → main thread)
+    _periodic_refresh_signal = pyqtSignal(object, str)
 
     def __init__(self):
         super().__init__()
@@ -992,6 +996,10 @@ class PhotoboothWindow(QMainWindow):
         # Connect cross-thread SumUp signals (daemon thread → main thread)
         self._sumup_payment_signal.connect(self._sumup_auto_start_session)
         self._sumup_status_signal.connect(self._sumup_update_idle)
+        # Welcome connectivity signal (ping bg-thread → main thread)
+        self._welcome_connectivity_signal.connect(self._welcome_apply_connectivity)
+        # Periodic refresh result (bg-thread → main thread)
+        self._periodic_refresh_signal.connect(self._periodic_refresh_apply)
         self.photos = []           # List of captured photo paths
         self.current_photo_num = 0
         self.strip_path = None
@@ -1391,8 +1399,8 @@ class PhotoboothWindow(QMainWindow):
                     local, _derr = fetch_design(token, design_path, booking_id)
                     if local:
                         local_path = local
-                from PyQt5.QtCore import QTimer as _T
-                _T.singleShot(0, lambda: self._periodic_refresh_apply(b, local_path))
+                # Cross-thread via pyqtSignal (singleShot in bg-thread werkt niet)
+                self._periodic_refresh_signal.emit(b, local_path)
             except Exception as e:
                 print(f"[PERIODIC-REFRESH] Achtergrond-fout: {e}")
         threading.Thread(target=_bg, daemon=True).start()
@@ -2538,12 +2546,9 @@ class PhotoboothWindow(QMainWindow):
             import subprocess
             online = False
             stderr_msg = ""
-            # Probeer 8.8.8.8 eerst, dan 1.1.1.1 als fallback
+            used_ip = ""
             for ip in ("8.8.8.8", "1.1.1.1"):
                 try:
-                    # -n 1   = 1 ping packet
-                    # -w 1500 = 1.5 sec timeout per packet (ms)
-                    # CREATE_NO_WINDOW = geen flikkerend cmd-venster
                     result = subprocess.run(
                         ["ping", ip, "-n", "1", "-w", "1500"],
                         capture_output=True, text=True, timeout=3,
@@ -2559,8 +2564,12 @@ class PhotoboothWindow(QMainWindow):
                 except Exception as e:
                     stderr_msg = f"{ip}: {type(e).__name__}({e})"
                     continue
-            from PyQt5.QtCore import QTimer as _T
-            _T.singleShot(0, lambda: self._welcome_apply_connectivity(online))
+            # KRITIEK: emit via pyqtSignal i.p.v. QTimer.singleShot. Dat laatste
+            # werkt NIET vanuit een Python-bg-thread zonder Qt event loop —
+            # de lambda wordt nooit aangeroepen op de main thread.
+            # Signal/slot met auto-connection gebruikt Qt.QueuedConnection
+            # cross-thread, wat de slot WEL netjes op main thread aanroept.
+            self._welcome_connectivity_signal.emit(online)
             if online:
                 print(f"[WELCOME] Ping OK — online via {used_ip}")
             else:
