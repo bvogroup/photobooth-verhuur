@@ -5583,10 +5583,21 @@ class PhotoboothWindow(QMainWindow):
             if getattr(template, 'is_triple_strip', False):
                 return self._build_triple_strip_image(template)
 
-            # 4x3 paper modus: 1200x900 landscape, vol vel, geen mirror.
+            # Detecteer landscape canvas (cloud template kan 1800x1200 zijn voor
+            # liggend 4x6 ontwerp). We bouwen het composiet op de cloud-canvas-
+            # afmetingen, en bij landscape roteren we het eindbeeld 90° voor de
+            # printer (die print altijd portrait 4x6).
+            _frames = list(template.frames) if template and template.frames else []
+            cloud_w = max((f.x + f.width) for f in _frames) if _frames else 0
+            cloud_h = max((f.y + f.height) for f in _frames) if _frames else 0
+            is_landscape = cloud_w > cloud_h and cloud_w >= 1500  # heuristic: landscape 4x6
             if getattr(template, 'is_4x3_strip', False):
                 PRINT_W = 1200
                 PRINT_H = 900
+            elif is_landscape:
+                # Landscape 4x6: bouw op 1800x1200 canvas, roteer 90° voor print
+                PRINT_W = 1800
+                PRINT_H = 1200
             else:
                 PRINT_W = 1200
                 PRINT_H = 1800
@@ -5699,6 +5710,14 @@ class PhotoboothWindow(QMainWindow):
                     print("[STRIP] Watermerk toegevoegd (niet ingelogd)")
                 except Exception as wm_err:
                     print(f"[STRIP] Watermerk fout: {wm_err}")
+
+            # Landscape canvas (bv. 1800x1200) → 90° draaien voor printen
+            # op portrait 4x6 paper. De share-versie blijft landscape voor de
+            # gast (zie _maybe_create_rotated_display_strips verderop).
+            if is_landscape:
+                strip = strip.rotate(-90, expand=True)
+                print(f"[STRIP] Landscape canvas → 90° gedraaid voor portrait print "
+                      f"(eindgrootte {strip.size})")
 
             # Strip-composiet naar photos/<event>/strips/
             strip_dir = self._get_strips_dir()
