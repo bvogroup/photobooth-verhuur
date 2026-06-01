@@ -4595,87 +4595,234 @@ class PhotoboothWindow(QMainWindow):
         return results
 
     def _show_template_picker(self, choices):
-        """Toon fullscreen overlay om uit meerdere linked templates te kiezen.
+        """Carousel-style fullscreen template-picker met touch swipe support.
 
-        Elke kaart toont:
-          - Grote preview-thumbnail (canvas met frames als grijze rechthoeken)
-          - Template-naam
-          - Aantal foto's
-        Cards zijn klikbaar via mousePressEvent.
+        Layout:
+          - Grote centrale kaart toont huidige selectie
+          - Pijlen [<-] en [->] links/rechts
+          - Page-indicator dots onderaan
+          - Touch swipe links/rechts om door te bladeren
+          - "Gebruik dit ontwerp" knop onderaan om te bevestigen
         """
         from PyQt5.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout,
-            QFrame, QSizePolicy
+            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+            QStackedWidget, QFrame
         )
 
-        # Bouw overlay op de huidige page
         current_page = self.stack.currentWidget()
         if current_page is None:
             current_page = self
         self._tmpl_picker_overlay = QWidget(current_page)
         self._tmpl_picker_overlay.setGeometry(0, 0, current_page.width(), current_page.height())
-        self._tmpl_picker_overlay.setStyleSheet("background: rgba(26,26,26,0.97);")
+        self._tmpl_picker_overlay.setStyleSheet("background: rgba(20,20,22,0.97);")
+        self._tmpl_picker_choices = list(choices)
+        self._tmpl_picker_index = 0
+
         lay = QVBoxLayout(self._tmpl_picker_overlay)
-        lay.setContentsMargins(40, 40, 40, 40)
+        lay.setContentsMargins(40, 32, 40, 32)
         lay.setSpacing(16)
 
-        title = QLabel("Kies een ontwerp")
+        # ── Header ────────────────────────────────────────────────────
+        title = QLabel("Kies je ontwerp")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("DM Sans", 36, QFont.Bold))
+        title.setFont(QFont("DM Sans", 42, QFont.Bold))
         title.setStyleSheet("color: white; background: transparent;")
         lay.addWidget(title)
 
-        subtitle = QLabel("Tik op het ontwerp dat je wilt gebruiken")
+        subtitle = QLabel("Swipe of tik op de pijlen om te bladeren")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setFont(QFont("DM Sans", 16))
-        subtitle.setStyleSheet("color: rgba(255,255,255,0.7); background: transparent;")
+        subtitle.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
         lay.addWidget(subtitle)
         lay.addSpacing(8)
 
-        # Bepaal thumbnail-grootte op basis van screen + aantal templates
+        # ── Carousel area ────────────────────────────────────────────
         screen = self.screen()
         screen_w = screen.geometry().width() if screen else 1920
         screen_h = screen.geometry().height() if screen else 1080
-        cols = min(len(choices), 3)
-        # Zorg dat 2-3 cards naast elkaar passen met marge
-        max_card_w = max(280, (screen_w - 200) // cols - 40)
-        max_card_h = max(380, screen_h - 320)
-        # Thumbnail: 80% van de kaart-hoogte, breedte bepaalt aspect later
-        thumb_h = min(560, int(max_card_h * 0.75))
-        thumb_w = min(420, max_card_w - 32)
+        # Maak de kaart écht groot — ~70% van scherm hoogte, max 700px breed
+        card_w = min(700, screen_w - 360)
+        card_h = min(800, screen_h - 360)
+        thumb_pad = 40
+        thumb_w = card_w - 2 * thumb_pad
+        thumb_h = card_h - 180  # ruimte voor naam + foto-aantal
 
-        # Grid van template-kaarten
-        grid_widget = QWidget()
-        grid_widget.setStyleSheet("background: transparent;")
-        grid = QGridLayout(grid_widget)
-        grid.setSpacing(24)
-        for i, tmpl in enumerate(choices):
+        carousel_row = QHBoxLayout()
+        carousel_row.setSpacing(20)
+        carousel_row.setContentsMargins(0, 0, 0, 0)
+
+        # Linker pijl
+        self._tmpl_picker_prev_btn = QPushButton("‹")
+        self._tmpl_picker_prev_btn.setCursor(Qt.PointingHandCursor)
+        self._tmpl_picker_prev_btn.setFont(QFont("DM Sans", 56, QFont.Bold))
+        self._tmpl_picker_prev_btn.setFixedSize(80, 200)
+        self._tmpl_picker_prev_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
+            "border: none; border-radius: 18px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.28); }"
+            "QPushButton:disabled { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.25); }"
+        )
+        self._tmpl_picker_prev_btn.clicked.connect(self._tmpl_picker_prev)
+        carousel_row.addWidget(self._tmpl_picker_prev_btn, alignment=Qt.AlignVCenter)
+
+        # Stacked widget met 1 card per template
+        self._tmpl_picker_stack = QStackedWidget()
+        self._tmpl_picker_stack.setStyleSheet("background: transparent;")
+        self._tmpl_picker_stack.setFixedSize(card_w, card_h)
+        for tmpl in self._tmpl_picker_choices:
             card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
-            grid.addWidget(card, i // cols, i % cols, Qt.AlignCenter)
-        lay.addWidget(grid_widget, alignment=Qt.AlignCenter)
+            self._tmpl_picker_stack.addWidget(card)
+        # Touch-swipe support op het stack-widget + tap-to-confirm
+        self._install_swipe_on(self._tmpl_picker_stack,
+                                self._tmpl_picker_prev,
+                                self._tmpl_picker_next,
+                                self._tmpl_picker_confirm)
+        carousel_row.addWidget(self._tmpl_picker_stack, alignment=Qt.AlignCenter)
 
-        # Annuleer-knop
+        # Rechter pijl
+        self._tmpl_picker_next_btn = QPushButton("›")
+        self._tmpl_picker_next_btn.setCursor(Qt.PointingHandCursor)
+        self._tmpl_picker_next_btn.setFont(QFont("DM Sans", 56, QFont.Bold))
+        self._tmpl_picker_next_btn.setFixedSize(80, 200)
+        self._tmpl_picker_next_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
+            "border: none; border-radius: 18px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.28); }"
+            "QPushButton:disabled { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.25); }"
+        )
+        self._tmpl_picker_next_btn.clicked.connect(self._tmpl_picker_next)
+        carousel_row.addWidget(self._tmpl_picker_next_btn, alignment=Qt.AlignVCenter)
+
+        carousel_wrap = QHBoxLayout()
+        carousel_wrap.addStretch()
+        carousel_wrap.addLayout(carousel_row)
+        carousel_wrap.addStretch()
+        lay.addLayout(carousel_wrap, stretch=1)
+
+        # ── Page-indicator dots ──────────────────────────────────────
+        self._tmpl_picker_dots = []
+        dots_row = QHBoxLayout()
+        dots_row.setSpacing(10)
+        dots_row.addStretch()
+        for i in range(len(self._tmpl_picker_choices)):
+            dot = QLabel()
+            dot.setFixedSize(14, 14)
+            dot.setStyleSheet(
+                f"background: {'white' if i == 0 else 'rgba(255,255,255,0.3)'}; "
+                f"border-radius: 7px;"
+            )
+            self._tmpl_picker_dots.append(dot)
+            dots_row.addWidget(dot)
+        dots_row.addStretch()
+        lay.addLayout(dots_row)
+
+        # ── Bevestig + Annuleer knoppen ──────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(16)
+        btn_row.addStretch()
+
         cancel_btn = QPushButton("✕  Annuleer")
         cancel_btn.setCursor(Qt.PointingHandCursor)
-        cancel_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
-        cancel_btn.setFixedHeight(48)
+        cancel_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        cancel_btn.setFixedHeight(56)
         cancel_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.1); color: white; "
-            "border: 1px solid rgba(255,255,255,0.25); border-radius: 12px; "
+            "border: 1px solid rgba(255,255,255,0.25); border-radius: 14px; "
             "padding: 8px 32px; }"
             "QPushButton:hover { background: rgba(255,255,255,0.18); }"
         )
         cancel_btn.clicked.connect(self._on_template_picker_cancel)
-        cancel_row = QHBoxLayout()
-        cancel_row.addStretch()
-        cancel_row.addWidget(cancel_btn)
-        cancel_row.addStretch()
-        lay.addLayout(cancel_row)
+        btn_row.addWidget(cancel_btn)
+
+        confirm_btn = QPushButton("✓  Gebruik dit ontwerp")
+        confirm_btn.setCursor(Qt.PointingHandCursor)
+        confirm_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        confirm_btn.setFixedHeight(56)
+        confirm_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 14px; padding: 8px 36px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #3A8B5E; }}"
+        )
+        confirm_btn.clicked.connect(self._tmpl_picker_confirm)
+        btn_row.addWidget(confirm_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
 
         self._tmpl_picker_overlay.show()
         self._tmpl_picker_overlay.raise_()
-        print(f"[TEMPLATE-PICKER] Geopend met {len(choices)} keuzes "
-              f"(thumb: {thumb_w}x{thumb_h})")
+        self._tmpl_picker_update_buttons()
+        print(f"[TEMPLATE-PICKER] Carousel geopend met {len(choices)} keuzes "
+              f"(card: {card_w}x{card_h})")
+
+    # ── Carousel navigation helpers ───────────────────────────────────
+
+    def _tmpl_picker_update_buttons(self):
+        """Update prev/next disable state + dot-indicator op huidige index."""
+        idx = self._tmpl_picker_index
+        n = len(self._tmpl_picker_choices)
+        if hasattr(self, '_tmpl_picker_prev_btn'):
+            self._tmpl_picker_prev_btn.setEnabled(idx > 0)
+            self._tmpl_picker_next_btn.setEnabled(idx < n - 1)
+        for i, dot in enumerate(self._tmpl_picker_dots):
+            dot.setStyleSheet(
+                f"background: {'white' if i == idx else 'rgba(255,255,255,0.3)'}; "
+                f"border-radius: 7px;"
+            )
+
+    def _tmpl_picker_prev(self):
+        if self._tmpl_picker_index > 0:
+            self._tmpl_picker_index -= 1
+            self._tmpl_picker_stack.setCurrentIndex(self._tmpl_picker_index)
+            self._tmpl_picker_update_buttons()
+
+    def _tmpl_picker_next(self):
+        if self._tmpl_picker_index < len(self._tmpl_picker_choices) - 1:
+            self._tmpl_picker_index += 1
+            self._tmpl_picker_stack.setCurrentIndex(self._tmpl_picker_index)
+            self._tmpl_picker_update_buttons()
+
+    def _tmpl_picker_confirm(self):
+        """Bevestig huidige selectie en start sessie."""
+        tmpl = self._tmpl_picker_choices[self._tmpl_picker_index]
+        self._on_template_picked(tmpl)
+
+    def _install_swipe_on(self, widget, on_swipe_right, on_swipe_left, on_tap=None):
+        """Voeg touch/mouse-drag swipe-gestures + optionele tap-handler toe.
+
+        Swipe naar RECHTS (vinger gaat rechts) → on_swipe_right (= vorige)
+        Swipe naar LINKS (vinger gaat links)   → on_swipe_left (= volgende)
+        Tap (geen significante x-beweging)     → on_tap
+        """
+        widget._swipe_start_x = None
+        widget._swipe_threshold = 50  # px
+
+        original_press = widget.mousePressEvent
+        original_release = widget.mouseReleaseEvent
+
+        def press(e):
+            widget._swipe_start_x = e.x()
+            if original_press:
+                original_press(e)
+
+        def release(e):
+            if widget._swipe_start_x is not None:
+                dx = e.x() - widget._swipe_start_x
+                if dx > widget._swipe_threshold:
+                    on_swipe_right()
+                elif dx < -widget._swipe_threshold:
+                    on_swipe_left()
+                elif on_tap is not None:
+                    # Geen swipe → tap detected
+                    on_tap()
+                widget._swipe_start_x = None
+            if original_release:
+                original_release(e)
+
+        widget.mousePressEvent = press
+        widget.mouseReleaseEvent = release
 
     def _build_template_picker_card(self, tmpl, thumb_w, thumb_h):
         """Bouw één klikbare template-kaart voor de picker."""
@@ -4719,10 +4866,8 @@ class PhotoboothWindow(QMainWindow):
         info_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
         card_lay.addWidget(info_lbl)
 
-        # Click handler via mousePressEvent
-        def _on_click(_event, t=tmpl):
-            self._on_template_picked(t)
-        card.mousePressEvent = _on_click
+        # Géén directe mousePressEvent op de card zelf — clicks worden door
+        # de carousel-stack widget afgehandeld (swipe vs tap detectie).
         return card
 
     def _on_template_picked(self, tmpl):
