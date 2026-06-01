@@ -2919,12 +2919,12 @@ TRANSLATIONS = {
 
     # ── Welcome page (geen event gekoppeld) ─────────────────────────────
     "welcome_title": {
-        "nl": "Welkom bij de fotobooth",
-        "en": "Welcome to the photo booth",
-        "de": "Willkommen bei der Fotobooth",
-        "fr": "Bienvenue à la cabine photo",
-        "es": "Bienvenido a la fotomatón",
-        "it": "Benvenuto al fotomaton",
+        "nl": "Welkom bij de photobooth",
+        "en": "Welcome to the photobooth",
+        "de": "Willkommen bei der Photobooth",
+        "fr": "Bienvenue à la photobooth",
+        "es": "Bienvenido a la photobooth",
+        "it": "Benvenuto alla photobooth",
     },
     "welcome_lang_label": {
         "nl": "Kies een taal",
@@ -2959,12 +2959,12 @@ TRANSLATIONS = {
         "it": "Apri impostazioni WiFi",
     },
     "welcome_wifi_hint": {
-        "nl": "Verbind je tablet met WiFi om verder te gaan.",
-        "en": "Connect your tablet to WiFi to continue.",
-        "de": "Verbinde dein Tablet mit WiFi, um fortzufahren.",
-        "fr": "Connectez votre tablette au WiFi pour continuer.",
-        "es": "Conecta tu tableta a WiFi para continuar.",
-        "it": "Collega il tablet al WiFi per continuare.",
+        "nl": "Verbind je photobooth met WiFi om verder te gaan.",
+        "en": "Connect your photobooth to WiFi to continue.",
+        "de": "Verbinde deine Photobooth mit WiFi, um fortzufahren.",
+        "fr": "Connectez votre photobooth au WiFi pour continuer.",
+        "es": "Conecta tu photobooth a WiFi para continuar.",
+        "it": "Collega la photobooth al WiFi per continuare.",
     },
     "welcome_couple_title": {
         "nl": "Pak de QR-code van je booking",
@@ -2975,12 +2975,12 @@ TRANSLATIONS = {
         "it": "Prendi il codice QR dalla tua prenotazione",
     },
     "welcome_couple_hint": {
-        "nl": "Scan de QR-code om het event te koppelen aan deze fotobooth.",
-        "en": "Scan the QR code to link the event to this photo booth.",
-        "de": "Scanne den QR-Code, um das Event mit dieser Fotobooth zu verknüpfen.",
-        "fr": "Scannez le QR code pour associer l'événement à cette cabine.",
-        "es": "Escanea el código QR para vincular el evento a esta fotomatón.",
-        "it": "Scansiona il QR per collegare l'evento a questa fotobooth.",
+        "nl": "Scan de QR-code om het event te koppelen aan deze photobooth.",
+        "en": "Scan the QR code to link the event to this photobooth.",
+        "de": "Scanne den QR-Code, um das Event mit dieser Photobooth zu verknüpfen.",
+        "fr": "Scannez le QR code pour associer l'événement à cette photobooth.",
+        "es": "Escanea el código QR para vincular el evento a esta photobooth.",
+        "it": "Scansiona il QR per collegare l'evento a questa photobooth.",
     },
     "welcome_scan_btn": {
         "nl": "Scan QR-code",
