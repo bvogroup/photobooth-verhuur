@@ -2220,19 +2220,32 @@ class PhotoboothWindow(QMainWindow):
         return card
 
     def _build_welcome_checking_card(self):
-        """Korte placeholder tijdens initial wifi-check (max ~1 sec)."""
+        """Tijdelijke 'aan het laden' placeholder tijdens eerste wifi-check.
+
+        Wordt verborgen zodra _welcome_apply_connectivity de stack switcht
+        naar wifi-card of qr-card.
+        """
         from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
         card = QWidget()
         card.setStyleSheet(
             f"QWidget {{ background: {config.COLOR_INPUT_BG}; border-radius: 24px; }}"
         )
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(48, 60, 48, 60)
-        lay.setSpacing(12)
-        h = QLabel("…")
+        lay.setContentsMargins(48, 40, 48, 40)
+        lay.setSpacing(14)
+
+        icon = QLabel("⏳")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setFont(QFont("DM Sans", 48))
+        icon.setStyleSheet("background: transparent;")
+        lay.addWidget(icon)
+
+        h = QLabel(t("welcome_internet_checking"))
         h.setAlignment(Qt.AlignCenter)
-        h.setFont(QFont("DM Sans", 32))
+        h.setFont(QFont("DM Sans", 20, QFont.Bold))
         h.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        h.setWordWrap(True)
+        self._welcome_checking_label = h
         lay.addWidget(h)
         return card
 
@@ -2481,19 +2494,25 @@ class PhotoboothWindow(QMainWindow):
         # via _maybe_route_after_coupling naar de juiste idle-modus.
 
     def _welcome_check_connectivity(self):
-        """Check WiFi + internet status, update de UI."""
+        """Check WiFi + internet status, update de UI. Snelle 1.5s timeout
+        zodat de gebruiker niet lang naar 'controleren' kijkt.
+        """
         import threading
         def _bg():
             import urllib.request
-            try:
-                # Lichte ping naar google's "no content" endpoint
-                urllib.request.urlopen("https://www.google.com/generate_204", timeout=3)
-                online = True
-            except Exception:
-                online = False
-            # Update UI op main thread via Qt signal-vrij invoking via QTimer
+            online = False
+            # Probeer 2 endpoints met korte timeout zodat we niet vasthangen
+            for url in ("http://www.gstatic.com/generate_204",
+                        "https://www.google.com/generate_204"):
+                try:
+                    urllib.request.urlopen(url, timeout=1.5)
+                    online = True
+                    break
+                except Exception:
+                    continue
             from PyQt5.QtCore import QTimer as _T
             _T.singleShot(0, lambda: self._welcome_apply_connectivity(online))
+            print(f"[WELCOME] Connectivity check: {'online' if online else 'offline'}")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
@@ -2504,8 +2523,15 @@ class PhotoboothWindow(QMainWindow):
         self._has_internet = online
         if not hasattr(self, '_welcome_action_stack'):
             return
+        # Stop fallback-timer omdat we nu een echt resultaat hebben
+        if hasattr(self, '_welcome_checking_fallback'):
+            try:
+                self._welcome_checking_fallback.stop()
+            except Exception:
+                pass
         # Page 0 = wifi-setup card, Page 1 = qr-scan card
         self._welcome_action_stack.setCurrentIndex(1 if online else 0)
+        print(f"[WELCOME] UI switched naar {'qr-card' if online else 'wifi-card'}")
 
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
@@ -4908,11 +4934,23 @@ class PhotoboothWindow(QMainWindow):
         ev = self.active_event
         no_booking = not ev or not getattr(ev, 'linked_booking_id', '')
         if no_booking and "welcome" in self.pages:
+            # Reset stack naar checking-card terwijl we de check doen
+            if hasattr(self, '_welcome_action_stack'):
+                self._welcome_action_stack.setCurrentIndex(2)
             self.stack.setCurrentIndex(self.pages["welcome"])
             # Start de wifi/internet check-timer
             if hasattr(self, '_welcome_wifi_timer'):
                 self._welcome_check_connectivity()
                 self._welcome_wifi_timer.start()
+            # Fallback: als de check binnen 4 sec geen resultaat geeft, val
+            # terug op qr-card (assume online — user kan retry via swipe terug)
+            if not hasattr(self, '_welcome_checking_fallback'):
+                self._welcome_checking_fallback = QTimer(self)
+                self._welcome_checking_fallback.setSingleShot(True)
+                self._welcome_checking_fallback.timeout.connect(
+                    lambda: self._welcome_apply_connectivity(True)
+                )
+            self._welcome_checking_fallback.start(4000)
             # Sync active language to button highlight
             try:
                 from translations import get_language
