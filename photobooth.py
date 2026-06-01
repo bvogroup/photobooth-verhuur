@@ -552,14 +552,12 @@ class LayoutEditorCanvas(QWidget):
             return 600, 1200
         if self.template and getattr(self.template, 'is_4x3_strip', False):
             return 1200, 900
-        # Detecteer landscape via frame-extents. Eerder gebruikten we
-        # `_max_x >= 1500` als heuristic, maar dat brak als de operator
-        # de frames kleiner schaalde. Nu pure aspect + is_double_strip:
-        # landscape canvas hoort altijd bij vol-vel templates.
+        # Landscape-detectie via pure frame-positie. Als frames buiten 1200px
+        # portrait-breedte vallen, moet canvas wel landscape zijn (1800×1200).
         if self.template and self.template.frames:
             _max_x = max(f.x + f.width for f in self.template.frames)
             _max_y = max(f.y + f.height for f in self.template.frames)
-            if _max_x > _max_y and bool(getattr(self.template, 'is_double_strip', False)):
+            if _max_x > 1200 and _max_x > _max_y:
                 return 1800, 1200
         return 1200, 1800
 
@@ -6940,13 +6938,13 @@ class PhotoboothWindow(QMainWindow):
             _frames = list(template.frames) if template and template.frames else []
             cloud_w = max((f.x + f.width) for f in _frames) if _frames else 0
             cloud_h = max((f.y + f.height) for f in _frames) if _frames else 0
-            # Landscape als frames breder dan hoog zijn EN het een 'vol vel'
-            # template is (is_double_strip=True; canvas 1200×… of 1800×1200).
-            # NIET de smalle 600-px Canon mirror-templates.
-            is_landscape = (
-                cloud_w > cloud_h
-                and bool(template.is_double_strip)
-            )
+            # Landscape-detectie: als frames buiten de 1200-px portrait-breedte
+            # vallen, MOET het canvas landscape zijn (1800×1200). We checken
+            # NIET op is_double_strip — die flag bleek in oude DB-rijen niet
+            # consistent gezet, met als gevolg dat 4-foto landscape templates
+            # ten onrechte als portrait gerenderd werden (helft eraf, lege
+            # ruimte onder). Pure positie-check is fool-proof.
+            is_landscape = cloud_w > 1200 and cloud_w > cloud_h
             print(f"[STRIP] Canvas-detect: max_xy=({cloud_w},{cloud_h}), "
                   f"is_double={template.is_double_strip}, "
                   f"is_triple={getattr(template,'is_triple_strip',False)}, "
@@ -7037,9 +7035,13 @@ class PhotoboothWindow(QMainWindow):
                 else:
                     continue
 
-                if template.is_double_strip:
-                    # 1200px canvas — frames are positioned on the full print,
-                    # background already contains both strips. Just paste directly.
+                # Bij landscape (vol-vel) of expliciete is_double_strip is
+                # het canvas één geheel — gewoon één keer pasten. Anders
+                # (smal 600-px Canon mirror-template) dupliceren naar rechter
+                # helft. is_landscape detecteerden we eerder via frame-extents
+                # (cloud_w > 1200) — die overschrijft de is_double_strip flag
+                # omdat die in oudere DB-rijen onbetrouwbaar bleek.
+                if template.is_double_strip or is_landscape:
                     strip.paste(img, (frame.x, frame.y))
                 else:
                     # 600px canvas — frames fit in one half, duplicate to other half
@@ -11793,15 +11795,14 @@ class PhotoboothWindow(QMainWindow):
             canvas_w = 1200
             canvas_h = 900
         else:
-            # Detecteer landscape via frame-extents. Eerder gebruikten we
-            # `_max_x >= 1500` als heuristic, maar dat brak wanneer de
-            # operator de frames kleiner schaalde. Nu pure aspect-ratio +
-            # is_double_strip flag — landscape canvas hoort altijd bij een
-            # vol-vel-template, nooit bij de smalle 600 Canon mirror-templates.
+            # Landscape-detectie via pure frame-positie. Als frames buiten de
+            # 1200px portrait-breedte vallen, moet canvas wel landscape zijn.
+            # is_double_strip flag wordt NIET gebruikt — bleek niet consistent
+            # gezet in oudere DB-rijen.
             _fr = layout.frames or []
             _max_x = max((f.x + f.width for f in _fr), default=0)
             _max_y = max((f.y + f.height for f in _fr), default=0)
-            if _max_x > _max_y and bool(getattr(layout, 'is_double_strip', False)):
+            if _max_x > 1200 and _max_x > _max_y:
                 canvas_w = 1800
                 canvas_h = 1200
             else:
