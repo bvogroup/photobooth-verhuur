@@ -541,16 +541,23 @@ class LayoutEditorCanvas(QWidget):
         return _layout_display_rotation(self.template)
 
     def _canvas_size(self):
-        """Canvas dimensies op basis van template type.
+        """Canvas dimensies op basis van template type + frame-extents.
 
-        triple_strip → 600x1200 (DNP 5x10cm strip)
-        4x3_strip    → 1200x900 (4x3 paper, landscape)
+        triple_strip → 600x1200  (DNP 5x10cm strip)
+        4x3_strip    → 1200x900  (4x3 paper, landscape)
+        landscape    → 1800x1200 (cloud '4 foto's op een vel')
         anders       → 1200x1800 (4x6 paper, portrait)
         """
         if self.template and getattr(self.template, 'is_triple_strip', False):
             return 600, 1200
         if self.template and getattr(self.template, 'is_4x3_strip', False):
             return 1200, 900
+        # Detecteer landscape via frame-extents (cloud templates)
+        if self.template and self.template.frames:
+            _max_x = max(f.x + f.width for f in self.template.frames)
+            _max_y = max(f.y + f.height for f in self.template.frames)
+            if _max_x > _max_y and _max_x >= 1500:
+                return 1800, 1200
         return 1200, 1800
 
     def _calc_transform(self):
@@ -4504,9 +4511,21 @@ class PhotoboothWindow(QMainWindow):
         except Exception:
             pass  # Don't block session if check fails
 
+        # ── Linked-modus: meerdere templates? → picker tonen ─────────────
+        # Als er >1 linked templates beschikbaar zijn voor de actieve booking,
+        # laat de gast eerst kiezen. Anders direct door met enige beschikbare.
+        linked_choices = self._get_linked_templates_for_booking()
+        if len(linked_choices) > 1:
+            self._show_template_picker(linked_choices)
+            return  # _show_template_picker zal _go_direct_capture aanroepen na keuze
+
         # Check for pre-selected template from active event
         saved_name = self.active_event.template_name if self.active_event else ""
         match = self._find_template_by_name(saved_name) if saved_name else None
+
+        # Als er precies 1 linked template is, gebruik die (overschrijf saved_name)
+        if len(linked_choices) == 1:
+            match = linked_choices[0]
 
         # Fallback: als er geen template gekozen is (of de gekozen naam niet
         # meer bestaat), pak automatisch de EERSTE preset uit de lijst en sla
@@ -4546,6 +4565,152 @@ class PhotoboothWindow(QMainWindow):
         self.state = State.SELECT_TEMPLATE
         self._load_templates()
         self.stack.setCurrentIndex(self.pages["select_template"])
+
+    def _get_linked_templates_for_booking(self):
+        """Geef lijst van linked Template-objecten voor de actieve booking.
+
+        Linked templates worden herkend aan de filename-prefix
+        'linked_<booking_id>_' OF de naam-prefixes 'Event <id> — ' / 'Event <id> (...)'.
+        Returns een lege lijst als geen actieve booking of geen linked templates.
+        """
+        ev = self.active_event
+        if not ev:
+            return []
+        booking_id = getattr(ev, 'linked_booking_id', '') or ''
+        if not booking_id:
+            return []
+        from template_model import Template
+        results = []
+        if not os.path.isdir(config.TEMPLATES_DIR):
+            return []
+        prefix = f"linked_{booking_id}_"
+        for fname in sorted(os.listdir(config.TEMPLATES_DIR)):
+            if not (fname.startswith(prefix) and fname.endswith(".json")):
+                continue
+            try:
+                t = Template.load(os.path.join(config.TEMPLATES_DIR, fname))
+                results.append(t)
+            except Exception as e:
+                print(f"[TEMPLATE-PICKER] Kon {fname} niet laden: {e}")
+        return results
+
+    def _show_template_picker(self, choices):
+        """Toon fullscreen overlay om uit meerdere linked templates te kiezen.
+
+        Bij keuze → set selected_template + active_event.template_name +
+        ga door naar _go_direct_capture.
+        """
+        from PyQt5.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout
+        )
+        # Bouw overlay op de huidige page
+        current_page = self.stack.currentWidget()
+        if current_page is None:
+            current_page = self
+        self._tmpl_picker_overlay = QWidget(current_page)
+        self._tmpl_picker_overlay.setGeometry(0, 0, current_page.width(), current_page.height())
+        self._tmpl_picker_overlay.setStyleSheet(
+            f"background: rgba(26,26,26,0.97);"
+        )
+        lay = QVBoxLayout(self._tmpl_picker_overlay)
+        lay.setContentsMargins(40, 40, 40, 40)
+        lay.setSpacing(20)
+
+        title = QLabel("Kies een ontwerp")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 36, QFont.Bold))
+        title.setStyleSheet("color: white; background: transparent;")
+        lay.addWidget(title)
+
+        subtitle = QLabel("Tik op het ontwerp dat je wilt gebruiken")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(QFont("DM Sans", 16))
+        subtitle.setStyleSheet("color: rgba(255,255,255,0.7); background: transparent;")
+        lay.addWidget(subtitle)
+        lay.addSpacing(16)
+
+        # Grid van template-kaarten
+        grid_widget = QWidget()
+        grid_widget.setStyleSheet("background: transparent;")
+        grid = QGridLayout(grid_widget)
+        grid.setSpacing(24)
+        cols = min(len(choices), 3)
+        thumb_w, thumb_h = 280, 360
+        for i, tmpl in enumerate(choices):
+            card = QPushButton()
+            card.setCursor(Qt.PointingHandCursor)
+            card.setFixedSize(thumb_w + 24, thumb_h + 70)
+            card.setStyleSheet(
+                f"QPushButton {{ background: white; border: 4px solid transparent; "
+                f"border-radius: 16px; padding: 12px; text-align: center; }}"
+                f"QPushButton:hover {{ border-color: {config.COLOR_PRIMARY}; }}"
+                f"QPushButton:pressed {{ background: #f0f0f0; }}"
+            )
+            # Thumbnail in de knop via QLabel-icon
+            from PyQt5.QtGui import QIcon
+            pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
+            card.setIcon(QIcon(pix))
+            from PyQt5.QtCore import QSize
+            card.setIconSize(QSize(thumb_w, thumb_h))
+            # Naam onderaan
+            display_name = self._translate_template_name(tmpl.name) if hasattr(self, '_translate_template_name') else tmpl.name
+            card.setText("\n" + display_name)
+            card.setFont(QFont("DM Sans", 12, QFont.Bold))
+            card.clicked.connect(lambda _c, t=tmpl: self._on_template_picked(t))
+            grid.addWidget(card, i // cols, i % cols, Qt.AlignCenter)
+        lay.addWidget(grid_widget, alignment=Qt.AlignCenter)
+
+        # Annuleer-knop
+        cancel_btn = QPushButton("✕  Annuleer")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
+        cancel_btn.setFixedHeight(48)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.1); color: white; "
+            "border: 1px solid rgba(255,255,255,0.25); border-radius: 12px; "
+            "padding: 8px 24px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+        )
+        cancel_btn.clicked.connect(self._on_template_picker_cancel)
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        cancel_row.addWidget(cancel_btn)
+        cancel_row.addStretch()
+        lay.addLayout(cancel_row)
+
+        self._tmpl_picker_overlay.show()
+        self._tmpl_picker_overlay.raise_()
+        print(f"[TEMPLATE-PICKER] Geopend met {len(choices)} keuzes")
+
+    def _on_template_picked(self, tmpl):
+        """User heeft een template gekozen uit de picker → start sessie."""
+        print(f"[TEMPLATE-PICKER] Gekozen: '{tmpl.name}'")
+        if hasattr(self, '_tmpl_picker_overlay') and self._tmpl_picker_overlay:
+            self._tmpl_picker_overlay.deleteLater()
+            self._tmpl_picker_overlay = None
+        self.selected_template = tmpl
+        if self.active_event:
+            self.active_event.template_name = tmpl.name
+            self.active_event.save(config.EVENTS_DIR)
+        # Track session for active event
+        if self.active_event:
+            self.active_event.increment_session(config.EVENTS_DIR)
+        self._preload_background()
+        # Check data collection (zelfde als _go_select_template)
+        ev = self.active_event
+        if (ev and getattr(ev, 'data_collect_enabled', False)
+                and getattr(ev, 'data_collect_timing', 'after') == 'before'
+                and self._is_pro_feature("data_collection")):
+            self._show_data_collection("before")
+            return
+        self._go_direct_capture()
+
+    def _on_template_picker_cancel(self):
+        """User klikt Annuleer in de picker → terug naar idle."""
+        print("[TEMPLATE-PICKER] Geannuleerd")
+        if hasattr(self, '_tmpl_picker_overlay') and self._tmpl_picker_overlay:
+            self._tmpl_picker_overlay.deleteLater()
+            self._tmpl_picker_overlay = None
 
     def _check_internet_bg(self):
         """Check internet connectivity in background thread."""
@@ -10140,10 +10305,11 @@ class PhotoboothWindow(QMainWindow):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Canvas size hangt af van strip-type:
+        # Canvas size hangt af van strip-type + frame-extents:
         #  triple_strip → 600x1200 portrait (5x10 cm DNP strip)
         #  4x3_strip    → 1200x900 landscape (4x3 paper)
-        #  anders       → 1200x1800 (4x6 vel)
+        #  landscape    → 1800x1200 (cloud template '4 foto's op een vel')
+        #  anders       → 1200x1800 (4x6 vel portrait)
         if getattr(layout, 'is_triple_strip', False):
             canvas_w = 600
             canvas_h = 1200
@@ -10151,8 +10317,17 @@ class PhotoboothWindow(QMainWindow):
             canvas_w = 1200
             canvas_h = 900
         else:
-            canvas_w = 1200
-            canvas_h = 1800
+            # Detecteer landscape via frame-extents (cloud templates kunnen
+            # landscape zijn zonder expliciete flag)
+            _fr = layout.frames or []
+            _max_x = max((f.x + f.width for f in _fr), default=0)
+            _max_y = max((f.y + f.height for f in _fr), default=0)
+            if _max_x > _max_y and _max_x >= 1500:
+                canvas_w = 1800
+                canvas_h = 1200
+            else:
+                canvas_w = 1200
+                canvas_h = 1800
         scale_x = w / canvas_w
         scale_y = h / canvas_h
         scale = min(scale_x, scale_y) * 0.92
