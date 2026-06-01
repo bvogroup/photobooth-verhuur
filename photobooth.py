@@ -12798,7 +12798,15 @@ class PhotoboothWindow(QMainWindow):
         # ── Pad A: cloud templates beschikbaar? ──────────────────────────
         cloud_templates = self._get_cloud_templates_for_booking(booking_id)
         if cloud_templates:
+            print(f"[LINKED] {len(cloud_templates)} cloud template(s) gevonden in booking-cache "
+                  f"— gebruik Pad A (cloud-template flow)")
             return self._apply_cloud_templates(cloud_templates, force_regen)
+        else:
+            print(f"[LINKED] Geen cloud templates in booking-cache — val terug op "
+                  f"Pad B (legacy auto-gen). Mogelijke oorzaken:\n"
+                  f"  1. Edge function get-photobooth-booking is nog niet v2 (geen 'templates' veld)\n"
+                  f"  2. Booking-cache is verouderd — klik 'Ververs' om opnieuw te fetchen\n"
+                  f"  3. Klant heeft nog geen templates in portaal gemaakt")
 
         # ── Pad B: legacy auto-gen ───────────────────────────────────────
         pm = ev.printer_mode
@@ -12904,9 +12912,47 @@ class PhotoboothWindow(QMainWindow):
                 except OSError:
                     pass
 
+        # Verwijder ook cloud-template files die NIET meer in de cloud-lijst
+        # voorkomen (klant heeft 'm verwijderd in portaal).
+        valid_template_ids = {ct.get("id", "") for ct in cloud_templates if ct.get("id")}
+        try:
+            for fname in os.listdir(config.TEMPLATES_DIR):
+                if not fname.startswith(f"linked_{booking_id}_tmpl_") or not fname.endswith(".json"):
+                    continue
+                # Extract tmpl_id uit filename
+                middle = fname[len(f"linked_{booking_id}_tmpl_"):-len(".json")]
+                # safe_id mapping: original uuid wordt sanitized — vergelijk dus
+                # tegen safe_id van elke valid id
+                still_valid = any(
+                    "".join(c if c.isalnum() or c in "-_" else "_" for c in vid) == middle
+                    for vid in valid_template_ids
+                )
+                if not still_valid:
+                    try:
+                        os.remove(os.path.join(config.TEMPLATES_DIR, fname))
+                        print(f"[LINKED-CLOUD] Verwijderd (niet meer in cloud): {fname}")
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+        # Sorteer templates: is_default eerst, dan sort_order, dan naam
+        sorted_templates = sorted(
+            [ct for ct in cloud_templates if ct.get("id")],
+            key=lambda c: (
+                not c.get("is_default", False),   # default eerst (False < True)
+                c.get("sort_order", 0),
+                c.get("name", ""),
+            )
+        )
+
         first_template_name = None
         default_template_name = None
-        for ct in cloud_templates:
+        applied_count = 0
+        skipped_count = 0
+        print(f"[LINKED-CLOUD] Verwerken van {len(sorted_templates)} cloud templates "
+              f"(force_regen={force_regen})")
+        for ct in sorted_templates:
             tmpl_id = ct.get("id", "")
             if not tmpl_id:
                 continue
@@ -12915,7 +12961,9 @@ class PhotoboothWindow(QMainWindow):
                 config.TEMPLATES_DIR, f"linked_{booking_id}_tmpl_{safe_id}.json"
             )
             if os.path.isfile(local_path) and not force_regen:
-                print(f"[LINKED-CLOUD] Behoud user-edit: linked_{booking_id}_tmpl_{safe_id}.json")
+                print(f"[LINKED-CLOUD] Behoud lokale versie (force_regen=False): "
+                      f"linked_{booking_id}_tmpl_{safe_id}.json")
+                skipped_count += 1
                 # Toch de naam onthouden voor default-selectie
                 try:
                     existing = Template.load(local_path)
@@ -12950,7 +12998,10 @@ class PhotoboothWindow(QMainWindow):
             tmpl.name = f"Event {booking_id[:8]} — {display_name}"
             try:
                 tmpl.save(local_path)
-                print(f"[LINKED-CLOUD] Template opgeslagen: {os.path.basename(local_path)}")
+                applied_count += 1
+                print(f"[LINKED-CLOUD] Template opgeslagen: {os.path.basename(local_path)} "
+                      f"({len(tmpl.frames)} frames, is_default={ct.get('is_default')}, "
+                      f"sort_order={ct.get('sort_order', 0)})")
             except Exception as e:
                 print(f"[LINKED-CLOUD] Save fout voor {tmpl_id}: {e}")
                 continue
@@ -12960,12 +13011,16 @@ class PhotoboothWindow(QMainWindow):
             if ct.get("is_default") and default_template_name is None:
                 default_template_name = tmpl.name
 
+        print(f"[LINKED-CLOUD] Klaar: {applied_count} opgeslagen, {skipped_count} overgeslagen "
+              f"(default='{default_template_name}', first='{first_template_name}')")
+
         # Set active template_name als hij nog niet bij een cloud template hoort
         chosen = default_template_name or first_template_name
         current = ev.template_name or ""
         prefix = f"Event {booking_id[:8]} — "
         if chosen and not current.startswith(prefix):
             ev.template_name = chosen
+            print(f"[LINKED-CLOUD] Active template_name → '{chosen}'")
         ev.background_path = ""  # cloud-template wint
         ev.save(config.EVENTS_DIR)
         if hasattr(self, '_layout_categories_container'):
