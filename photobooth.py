@@ -1160,6 +1160,8 @@ class PhotoboothWindow(QMainWindow):
         self.pages["custom_payment"] = 15
         self._build_welcome_page()
         self.pages["welcome"] = 16
+        self._build_qr_scan_page()
+        self.pages["scan_qr"] = 17
 
     # ── Auth / Login ──────────────────────────
 
@@ -2001,41 +2003,48 @@ class PhotoboothWindow(QMainWindow):
     def _build_welcome_page(self):
         """Welcome / setup-pagina — getoond wanneer geen event gekoppeld is.
 
-        Toont:
-          - Grote titel "Welkom bij de fotobooth"
-          - Taalkeuze (6 vlaggen-knoppen)
-          - WiFi status met knop naar Windows wifi flyout
-          - QR-code scan knop voor event-koppeling
-        Geen PIN of slotje vereist — alles zit direct op het scherm.
+        Strakke Clixibo-stijl layout. Toont:
+          - Grote titel
+          - Taalkeuze (6 vlag-knoppen)
+          - EÉN action-card: wifi-instellen OF QR-scan (afhankelijk van internet)
+          - Slotje rechts-onder voor PIN → settings
         """
-        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget
         page = QWidget()
         page.setStyleSheet(f"background: {config.COLOR_BG};")
         self._welcome_page = page
 
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(60, 50, 60, 50)
-        outer.setSpacing(20)
+        outer.setContentsMargins(80, 60, 80, 60)
+        outer.setSpacing(28)
 
-        # ── Titel ──────────────────────────────────────────────────────
+        outer.addStretch(1)
+
+        # ── Hero titel ─────────────────────────────────────────────────
         title = QLabel(t("welcome_title"))
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("DM Sans", 48, QFont.Bold))
-        title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        title.setFont(QFont("DM Sans", 56, QFont.Bold))
+        title.setStyleSheet(
+            f"color: {config.COLOR_TEXT}; background: transparent; "
+            f"letter-spacing: -1px;"
+        )
         title.setWordWrap(True)
         self._welcome_title_label = title
         outer.addWidget(title)
 
-        # ── Taalkeuze ─────────────────────────────────────────────────
-        lang_label = QLabel(t("welcome_lang_label"))
-        lang_label.setAlignment(Qt.AlignCenter)
-        lang_label.setFont(QFont("DM Sans", 14))
-        lang_label.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-        self._welcome_lang_label = lang_label
-        outer.addWidget(lang_label)
+        # ── Subtle subtitel ────────────────────────────────────────────
+        subtitle = QLabel(t("welcome_lang_label"))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(QFont("DM Sans", 16))
+        subtitle.setStyleSheet(
+            f"color: {config.COLOR_TEXT_DIM}; background: transparent;"
+        )
+        self._welcome_lang_label = subtitle
+        outer.addWidget(subtitle)
 
+        # ── Taalkeuze (pill-style knoppen) ─────────────────────────────
         lang_row = QHBoxLayout()
-        lang_row.setSpacing(10)
+        lang_row.setSpacing(12)
         lang_row.addStretch()
         self._welcome_lang_btns = {}
         for code, flag, name in [
@@ -2048,112 +2057,355 @@ class PhotoboothWindow(QMainWindow):
         ]:
             btn = QPushButton(f"{flag}  {name}")
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setFont(QFont("DM Sans", 14, QFont.Bold))
-            btn.setFixedHeight(54)
-            btn.setMinimumWidth(110)
+            btn.setFont(QFont("DM Sans", 13, QFont.Bold))
+            btn.setFixedHeight(50)
+            btn.setMinimumWidth(96)
             btn.setStyleSheet(self._welcome_lang_btn_style(active=False))
             btn.clicked.connect(lambda _c, lc=code: self._on_welcome_lang_pick(lc))
             self._welcome_lang_btns[code] = btn
             lang_row.addWidget(btn)
         lang_row.addStretch()
         outer.addLayout(lang_row)
-        outer.addSpacing(10)
+        outer.addSpacing(12)
 
-        # ── WiFi-status card ──────────────────────────────────────────
-        wifi_card = QWidget()
-        wifi_card.setStyleSheet(
-            f"background: {config.COLOR_INPUT_BG}; "
-            f"border: 2px solid {config.COLOR_BORDER}; "
-            f"border-radius: 16px;"
+        # ── Action stack: ÉÉN van de twee cards (wifi OF qr) ──────────
+        # We renderen tijdens initial paint één placeholder; _welcome_apply_connectivity
+        # bouwt de juiste card op het juiste moment.
+        self._welcome_action_container = QWidget()
+        self._welcome_action_container.setStyleSheet("background: transparent;")
+        action_lay = QHBoxLayout(self._welcome_action_container)
+        action_lay.setContentsMargins(0, 0, 0, 0)
+        action_lay.addStretch()
+        self._welcome_action_stack = QStackedWidget()
+        self._welcome_action_stack.setStyleSheet("background: transparent;")
+        self._welcome_action_stack.setMaximumWidth(640)
+        # Page 0: wifi-card
+        self._welcome_action_stack.addWidget(self._build_welcome_wifi_card())
+        # Page 1: qr-card
+        self._welcome_action_stack.addWidget(self._build_welcome_qr_card())
+        # Page 2: checking placeholder (alleen kort getoond bij eerste laad)
+        self._welcome_action_stack.addWidget(self._build_welcome_checking_card())
+        # Start: checking — wordt onmiddellijk overschreven door initial check
+        self._welcome_action_stack.setCurrentIndex(2)
+        action_lay.addWidget(self._welcome_action_stack)
+        action_lay.addStretch()
+        outer.addWidget(self._welcome_action_container)
+
+        outer.addStretch(2)
+
+        # ── Slotje rechts-onder ───────────────────────────────────────
+        # Maakt direct PIN-prompt en opent settings (geen info-dialog).
+        self._welcome_lock_btn = QPushButton("🔒", page)
+        self._welcome_lock_btn.setFixedSize(60, 60)
+        self._welcome_lock_btn.setCursor(Qt.PointingHandCursor)
+        self._welcome_lock_btn.setStyleSheet(
+            f"QPushButton {{ background: rgba(0,0,0,0.06); color: {config.COLOR_TEXT_DIM}; "
+            f"border: none; border-radius: 30px; font-size: 26px; }}"
+            f"QPushButton:hover {{ background: rgba(0,0,0,0.12); color: {config.COLOR_TEXT}; }}"
         )
-        wifi_lay = QVBoxLayout(wifi_card)
-        wifi_lay.setContentsMargins(28, 22, 28, 22)
-        wifi_lay.setSpacing(12)
-
-        wifi_top = QHBoxLayout()
-        wifi_top.setSpacing(14)
-        self._welcome_wifi_icon = QLabel("📶")
-        self._welcome_wifi_icon.setFont(QFont("DM Sans", 32))
-        self._welcome_wifi_icon.setStyleSheet("background: transparent;")
-        wifi_top.addWidget(self._welcome_wifi_icon)
-        self._welcome_wifi_status_label = QLabel(t("welcome_internet_checking"))
-        self._welcome_wifi_status_label.setFont(QFont("DM Sans", 20, QFont.Bold))
-        self._welcome_wifi_status_label.setStyleSheet(
-            f"color: {config.COLOR_TEXT}; background: transparent;"
-        )
-        wifi_top.addWidget(self._welcome_wifi_status_label, 1)
-        wifi_lay.addLayout(wifi_top)
-
-        self._welcome_wifi_hint = QLabel(t("welcome_wifi_hint"))
-        self._welcome_wifi_hint.setFont(QFont("DM Sans", 13))
-        self._welcome_wifi_hint.setStyleSheet(
-            f"color: {config.COLOR_TEXT_DIM}; background: transparent;"
-        )
-        self._welcome_wifi_hint.setWordWrap(True)
-        wifi_lay.addWidget(self._welcome_wifi_hint)
-
-        self._welcome_wifi_btn = QPushButton("📡  " + t("welcome_wifi_open_btn"))
-        self._welcome_wifi_btn.setCursor(Qt.PointingHandCursor)
-        self._welcome_wifi_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        self._welcome_wifi_btn.setFixedHeight(60)
-        self._welcome_wifi_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
-            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
-            f"border-radius: 12px; padding: 10px 24px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
-        )
-        self._welcome_wifi_btn.clicked.connect(self._on_welcome_open_wifi)
-        wifi_lay.addWidget(self._welcome_wifi_btn)
-        outer.addWidget(wifi_card)
-
-        # ── QR-scan card ──────────────────────────────────────────────
-        qr_card = QWidget()
-        qr_card.setStyleSheet(
-            f"background: {config.COLOR_INPUT_BG}; "
-            f"border: 2px solid {config.COLOR_BORDER}; "
-            f"border-radius: 16px;"
-        )
-        qr_lay = QVBoxLayout(qr_card)
-        qr_lay.setContentsMargins(28, 22, 28, 22)
-        qr_lay.setSpacing(10)
-
-        qr_title = QLabel(t("welcome_couple_title"))
-        qr_title.setFont(QFont("DM Sans", 20, QFont.Bold))
-        qr_title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
-        self._welcome_qr_title = qr_title
-        qr_lay.addWidget(qr_title)
-
-        qr_hint = QLabel(t("welcome_couple_hint"))
-        qr_hint.setFont(QFont("DM Sans", 13))
-        qr_hint.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-        qr_hint.setWordWrap(True)
-        self._welcome_qr_hint = qr_hint
-        qr_lay.addWidget(qr_hint)
-
-        self._welcome_scan_btn = QPushButton("📷  " + t("welcome_scan_btn"))
-        self._welcome_scan_btn.setCursor(Qt.PointingHandCursor)
-        self._welcome_scan_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._welcome_scan_btn.setFixedHeight(72)
-        self._welcome_scan_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
-            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
-            f"border-radius: 14px; padding: 12px 32px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
-            f"QPushButton:disabled {{ background: rgba(0,0,0,0.1); color: rgba(0,0,0,0.35); }}"
-        )
-        self._welcome_scan_btn.clicked.connect(self._on_welcome_scan_qr)
-        qr_lay.addWidget(self._welcome_scan_btn)
-        outer.addWidget(qr_card)
-
-        outer.addStretch()
+        self._welcome_lock_btn.clicked.connect(self._go_settings)
 
         # ── Periodic wifi/internet check ─────────────────────────────
         self._welcome_wifi_timer = QTimer(self)
         self._welcome_wifi_timer.setInterval(4000)  # check elke 4 sec
         self._welcome_wifi_timer.timeout.connect(self._welcome_check_connectivity)
 
+        # Reposition lock button after page is shown
+        page.resizeEvent = self._welcome_resize_event
+
         self.stack.addWidget(page)
         return page
+
+    def _welcome_resize_event(self, event):
+        """Houd het slotje rechts-onder bij elke resize."""
+        if hasattr(self, '_welcome_lock_btn'):
+            page = self._welcome_page
+            self._welcome_lock_btn.move(page.width() - 80, page.height() - 80)
+            self._welcome_lock_btn.raise_()
+
+    def _build_welcome_wifi_card(self):
+        """Card die getoond wordt bij geen internetverbinding."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+        card = QWidget()
+        card.setStyleSheet(
+            f"QWidget {{ background: {config.COLOR_INPUT_BG}; border-radius: 24px; }}"
+        )
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(48, 40, 48, 40)
+        lay.setSpacing(18)
+
+        icon = QLabel("📡")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setFont(QFont("DM Sans", 56))
+        icon.setStyleSheet("background: transparent;")
+        lay.addWidget(icon)
+
+        h = QLabel(t("welcome_wifi_disconnected"))
+        h.setAlignment(Qt.AlignCenter)
+        h.setFont(QFont("DM Sans", 24, QFont.Bold))
+        h.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        self._welcome_wifi_h = h
+        lay.addWidget(h)
+
+        hint = QLabel(t("welcome_wifi_hint"))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("DM Sans", 14))
+        hint.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        hint.setWordWrap(True)
+        self._welcome_wifi_hint = hint
+        lay.addWidget(hint)
+        lay.addSpacing(8)
+
+        btn = QPushButton(t("welcome_wifi_open_btn"))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        btn.setMinimumHeight(64)
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 16px; padding: 14px 32px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+        )
+        btn.clicked.connect(self._on_welcome_open_wifi)
+        self._welcome_wifi_btn = btn
+        lay.addWidget(btn)
+        return card
+
+    def _build_welcome_qr_card(self):
+        """Card die getoond wordt bij actieve internetverbinding."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+        card = QWidget()
+        card.setStyleSheet(
+            f"QWidget {{ background: {config.COLOR_INPUT_BG}; border-radius: 24px; }}"
+        )
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(48, 40, 48, 40)
+        lay.setSpacing(18)
+
+        icon = QLabel("📷")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setFont(QFont("DM Sans", 56))
+        icon.setStyleSheet("background: transparent;")
+        lay.addWidget(icon)
+
+        h = QLabel(t("welcome_couple_title"))
+        h.setAlignment(Qt.AlignCenter)
+        h.setFont(QFont("DM Sans", 24, QFont.Bold))
+        h.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        h.setWordWrap(True)
+        self._welcome_qr_title = h
+        lay.addWidget(h)
+
+        hint = QLabel(t("welcome_couple_hint"))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("DM Sans", 14))
+        hint.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        hint.setWordWrap(True)
+        self._welcome_qr_hint = hint
+        lay.addWidget(hint)
+        lay.addSpacing(8)
+
+        btn = QPushButton(t("welcome_scan_btn"))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        btn.setMinimumHeight(64)
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 16px; padding: 14px 32px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+        )
+        btn.clicked.connect(self._on_welcome_scan_qr)
+        self._welcome_scan_btn = btn
+        lay.addWidget(btn)
+        return card
+
+    def _build_welcome_checking_card(self):
+        """Korte placeholder tijdens initial wifi-check (max ~1 sec)."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+        card = QWidget()
+        card.setStyleSheet(
+            f"QWidget {{ background: {config.COLOR_INPUT_BG}; border-radius: 24px; }}"
+        )
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(48, 60, 48, 60)
+        lay.setSpacing(12)
+        h = QLabel("…")
+        h.setAlignment(Qt.AlignCenter)
+        h.setFont(QFont("DM Sans", 32))
+        h.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        lay.addWidget(h)
+        return card
+
+    def _build_qr_scan_page(self):
+        """Fullscreen QR-scan page met live webcam-feed + Annuleer-knop.
+
+        Vervangt de modal CoupleEventDialog voor de welcome-flow omdat
+        dialogs niet zichtbaar zijn in fullscreen-mode met TopMost flag.
+        """
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        page = QWidget()
+        page.setStyleSheet(f"background: {config.COLOR_BG};")
+        self._scan_qr_page = page
+
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(30, 30, 30, 30)
+        outer.setSpacing(20)
+
+        # ── Top bar: cancel-knop linksboven + titel ─────────────────
+        top_bar = QHBoxLayout()
+        cancel_btn = QPushButton("←  Annuleer")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
+        cancel_btn.setMinimumHeight(48)
+        cancel_btn.setStyleSheet(
+            f"QPushButton {{ background: rgba(0,0,0,0.06); color: {config.COLOR_TEXT}; "
+            f"border: none; border-radius: 12px; padding: 8px 22px; }}"
+            f"QPushButton:hover {{ background: rgba(0,0,0,0.12); }}"
+        )
+        cancel_btn.clicked.connect(self._on_scan_qr_cancel)
+        top_bar.addWidget(cancel_btn)
+        top_bar.addStretch()
+        outer.addLayout(top_bar)
+
+        # ── Titel + instructie centraal ──────────────────────────────
+        title = QLabel("Scan de QR-code van je booking")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 36, QFont.Bold))
+        title.setStyleSheet(
+            f"color: {config.COLOR_TEXT}; background: transparent; letter-spacing: -0.5px;"
+        )
+        title.setWordWrap(True)
+        outer.addWidget(title)
+
+        instr = QLabel("Houd de QR-code in beeld — de booking wordt automatisch gekoppeld")
+        instr.setAlignment(Qt.AlignCenter)
+        instr.setFont(QFont("DM Sans", 14))
+        instr.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        instr.setWordWrap(True)
+        outer.addWidget(instr)
+
+        # ── Live webcam preview ──────────────────────────────────────
+        preview = QLabel()
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumSize(640, 480)
+        preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        preview.setStyleSheet(
+            f"background: #000; border-radius: 20px;"
+        )
+        self._scan_qr_preview_label = preview
+        outer.addWidget(preview, 1)
+
+        # ── Status onderaan ──────────────────────────────────────────
+        status = QLabel("Wacht op camera...")
+        status.setAlignment(Qt.AlignCenter)
+        status.setFont(QFont("DM Sans", 14))
+        status.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        self._scan_qr_status = status
+        outer.addWidget(status)
+
+        self.stack.addWidget(page)
+        self._scan_qr_worker = None  # QRScanWorker actief tijdens scan
+        return page
+
+    def _on_welcome_scan_qr(self):
+        """Open de QR-scan page (fullscreen, niet modal)."""
+        if not self._has_internet:
+            print("[WELCOME] Scan-knop genegeerd — geen internet")
+            return
+        # Switch naar scan_qr page + start de worker
+        self.stack.setCurrentIndex(self.pages["scan_qr"])
+        self._scan_qr_start()
+
+    def _scan_qr_start(self):
+        """Start de QRScanWorker voor live preview + detectie."""
+        from couple_event_dialog import QRScanWorker
+        # Webcam-index uit event of fallback 0
+        wc_idx = 0
+        if self.active_event:
+            wc_idx = getattr(self.active_event, 'webcam_index', 0) or 0
+        # Eerst eventueel actieve camera vrijgeven zodat QR-worker hem kan pakken
+        try:
+            if hasattr(self, 'camera') and self.camera and self.camera.is_connected():
+                self.camera.stop_live_view()
+                self.camera.disconnect()
+                self._scan_qr_camera_was_connected = True
+            else:
+                self._scan_qr_camera_was_connected = False
+        except Exception:
+            self._scan_qr_camera_was_connected = False
+
+        self._scan_qr_status.setText("Wacht op camera...")
+        self._scan_qr_worker = QRScanWorker(device_index=wc_idx, parent=self)
+        self._scan_qr_worker.frame_ready.connect(self._scan_qr_on_frame)
+        self._scan_qr_worker.qr_detected.connect(self._scan_qr_on_detected)
+        self._scan_qr_worker.error.connect(self._scan_qr_on_error)
+        self._scan_qr_worker.start()
+        print("[SCAN-QR] Worker gestart")
+
+    def _scan_qr_on_frame(self, jpeg_bytes):
+        """Toon nieuwe frame in preview."""
+        if not hasattr(self, '_scan_qr_preview_label'):
+            return
+        pix = QPixmap()
+        if pix.loadFromData(jpeg_bytes, "JPEG"):
+            scaled = pix.scaled(
+                self._scan_qr_preview_label.width(),
+                self._scan_qr_preview_label.height(),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self._scan_qr_preview_label.setPixmap(scaled)
+            self._scan_qr_status.setText("Houd de QR-code in beeld...")
+
+    def _scan_qr_on_detected(self, token):
+        """QR gedetecteerd → stop worker + start coupling-flow."""
+        print(f"[SCAN-QR] Token gedetecteerd: {token[:16]}...")
+        self._scan_qr_status.setText("QR gevonden — bezig met koppelen...")
+        self._scan_qr_stop_worker()
+        # Start coupling flow
+        from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
+        loading = CouplingLoadingDialog(self)
+        worker = CouplingWorker(token, self)
+        self._coupling_worker = worker
+
+        def _on_progress(msg):
+            loading.set_status(msg)
+
+        def _on_done(booking_data, design_local_path, err_msg):
+            loading.accept()
+            self._on_coupling_finished(token, booking_data, design_local_path, err_msg)
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            self._coupling_worker = None
+
+        worker.progress.connect(_on_progress)
+        worker.done.connect(_on_done)
+        worker.start()
+        loading.exec_()
+
+    def _scan_qr_on_error(self, msg):
+        """Webcam-fout → toon error + ga terug naar welcome."""
+        print(f"[SCAN-QR] Error: {msg}")
+        self._scan_qr_status.setText(f"Fout: {msg}")
+        # Geef gebruiker tijd om de error te lezen voordat we terugkeren
+        from PyQt5.QtCore import QTimer as _T
+        _T.singleShot(3000, self._on_scan_qr_cancel)
+
+    def _on_scan_qr_cancel(self):
+        """Annuleer-knop → stop worker + terug naar welcome."""
+        self._scan_qr_stop_worker()
+        self.stack.setCurrentIndex(self.pages["welcome"])
+        print("[SCAN-QR] Geannuleerd, terug naar welcome")
+
+    def _scan_qr_stop_worker(self):
+        """Stop de QRScanWorker netjes."""
+        if self._scan_qr_worker is not None:
+            try:
+                self._scan_qr_worker.stop()
+            except Exception as e:
+                print(f"[SCAN-QR] Worker stop fout: {e}")
+            self._scan_qr_worker = None
 
     def _welcome_lang_btn_style(self, active: bool) -> str:
         """Style voor de language-knoppen op welcome page."""
@@ -2188,17 +2440,21 @@ class PhotoboothWindow(QMainWindow):
             self._welcome_title_label.setText(t("welcome_title"))
         if hasattr(self, '_welcome_lang_label'):
             self._welcome_lang_label.setText(t("welcome_lang_label"))
+        # Wifi-card teksten
+        if hasattr(self, '_welcome_wifi_h'):
+            self._welcome_wifi_h.setText(t("welcome_wifi_disconnected"))
         if hasattr(self, '_welcome_wifi_btn'):
-            self._welcome_wifi_btn.setText("📡  " + t("welcome_wifi_open_btn"))
+            self._welcome_wifi_btn.setText(t("welcome_wifi_open_btn"))
         if hasattr(self, '_welcome_wifi_hint'):
             self._welcome_wifi_hint.setText(t("welcome_wifi_hint"))
+        # QR-card teksten
         if hasattr(self, '_welcome_qr_title'):
             self._welcome_qr_title.setText(t("welcome_couple_title"))
         if hasattr(self, '_welcome_qr_hint'):
             self._welcome_qr_hint.setText(t("welcome_couple_hint"))
         if hasattr(self, '_welcome_scan_btn'):
-            self._welcome_scan_btn.setText("📷  " + t("welcome_scan_btn"))
-        # Wifi-status: refresh op basis van huidige connectiviteit
+            self._welcome_scan_btn.setText(t("welcome_scan_btn"))
+        # Verifieer connectivity-status na taal-wissel
         self._welcome_check_connectivity()
 
     def _on_welcome_open_wifi(self):
@@ -2241,30 +2497,15 @@ class PhotoboothWindow(QMainWindow):
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
-        """Update welcome-page UI met huidige internetstatus."""
+        """Switch tussen wifi-card en qr-card op basis van internet-status.
+
+        Toont ÉÉN van de twee — nooit beide.
+        """
         self._has_internet = online
-        if not hasattr(self, '_welcome_wifi_status_label'):
+        if not hasattr(self, '_welcome_action_stack'):
             return
-        if online:
-            self._welcome_wifi_icon.setText("✅")
-            self._welcome_wifi_status_label.setText(t("welcome_wifi_connected"))
-            self._welcome_wifi_status_label.setStyleSheet(
-                f"color: {config.COLOR_SUCCESS}; background: transparent;"
-            )
-            self._welcome_wifi_hint.setVisible(False)
-            self._welcome_wifi_btn.setVisible(False)
-            # Scan-knop aan
-            self._welcome_scan_btn.setEnabled(True)
-        else:
-            self._welcome_wifi_icon.setText("⚠️")
-            self._welcome_wifi_status_label.setText(t("welcome_wifi_disconnected"))
-            self._welcome_wifi_status_label.setStyleSheet(
-                f"color: {config.COLOR_DANGER}; background: transparent;"
-            )
-            self._welcome_wifi_hint.setVisible(True)
-            self._welcome_wifi_btn.setVisible(True)
-            # Scan-knop uit
-            self._welcome_scan_btn.setEnabled(False)
+        # Page 0 = wifi-setup card, Page 1 = qr-scan card
+        self._welcome_action_stack.setCurrentIndex(1 if online else 0)
 
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
