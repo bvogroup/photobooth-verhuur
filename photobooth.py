@@ -6981,10 +6981,19 @@ class PhotoboothWindow(QMainWindow):
                 bg_path = self.active_event.background_path
             elif template and template.background_path:
                 bg_path = template.background_path
-            print(f"[STRIP] Template: '{template.name}', bg_path='{bg_path}', _strip_bg={'JA' if self._strip_bg else 'NEE'}")
+            print(f"[STRIP] Template: '{template.name}', bg_path='{bg_path}', _strip_bg={'JA' if self._strip_bg else 'NEE'}, doel=({PRINT_W},{PRINT_H})")
             if self._strip_bg:
                 strip = self._strip_bg.copy()
-                print("[STRIP] Achtergrond uit preload gebruikt")
+                # BUG-FIX: _preload_background gebruikt hardcoded 1200×1800.
+                # Bij een landscape template (1800×1200) klopt die preload-grootte
+                # niet — daardoor werd het strip-canvas portrait, frames erbuiten
+                # geclipt, en de gast zag de helft van z'n foto's niet. Resize
+                # de preload-BG hier alsnog naar de juiste doelgrootte.
+                if strip.size != (PRINT_W, PRINT_H):
+                    print(f"[STRIP] Preload-BG resize {strip.size} → ({PRINT_W},{PRINT_H})")
+                    strip = strip.resize((PRINT_W, PRINT_H), Image.LANCZOS)
+                else:
+                    print("[STRIP] Achtergrond uit preload gebruikt")
             elif bg_path and os.path.isfile(bg_path):
                 print(f"[STRIP] Achtergrond synchroon laden: {bg_path}")
                 with Image.open(bg_path) as bg_raw:
