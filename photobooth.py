@@ -5698,8 +5698,9 @@ class PhotoboothWindow(QMainWindow):
         card_lay.setContentsMargins(8, 8, 8, 8)
         card_lay.setSpacing(14)
 
-        # Render ECHTE preview (bg + frame placeholders) + rounded mask
-        raw_pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
+        # Render ECHTE preview (bg + frame placeholders) — tight (geen
+        # witte margin) + rounded mask
+        raw_pix = self._render_layout_preview(tmpl, thumb_w, thumb_h, tight=True)
         rounded_pix = self._apply_rounded_corners(raw_pix, radius=24)
         thumb = QLabel()
         thumb.setPixmap(rounded_pix)
@@ -11725,11 +11726,20 @@ class PhotoboothWindow(QMainWindow):
         container.mousePressEvent = lambda e, t=layout: self._on_layout_selected(t)
         return container
 
-    def _render_layout_preview(self, layout, w, h):
-        """Render a QPixmap showing the frame layout as colored rectangles."""
+    def _render_layout_preview(self, layout, w, h, tight=False):
+        """Render a QPixmap showing the frame layout as colored rectangles.
+
+        Args:
+            tight: True = canvas vult de hele pixmap, transparante achtergrond
+                   en geen 8% letterbox-margin. Gebruikt door template-picker.
+                   False = canvas centreert met margin (default, voor grid).
+        """
         from PyQt5.QtGui import QPainter, QPen, QBrush
         pixmap = QPixmap(w, h)
-        pixmap.fill(QColor(config.COLOR_CARD_BG))
+        if tight:
+            pixmap.fill(Qt.transparent)
+        else:
+            pixmap.fill(QColor(config.COLOR_CARD_BG))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
@@ -11758,7 +11768,8 @@ class PhotoboothWindow(QMainWindow):
                 canvas_h = 1800
         scale_x = w / canvas_w
         scale_y = h / canvas_h
-        scale = min(scale_x, scale_y) * 0.92
+        # tight=True: canvas vult volledig (geen margin); anders 8% breathing-room
+        scale = min(scale_x, scale_y) * (1.0 if tight else 0.92)
         offset_x = (w - canvas_w * scale) / 2
         offset_y = (h - canvas_h * scale) / 2
 
