@@ -2106,9 +2106,13 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_lock_btn.clicked.connect(self._go_settings)
 
         # ── Periodic wifi/internet check ─────────────────────────────
+        # Elke 5 sec checken, blijft pollen ook als qr-card al getoond is.
+        # Pas na 2 opeenvolgende failures wordt naar offline geswitcht
+        # (flapping voorkomen bij transient netwerkfouten).
         self._welcome_wifi_timer = QTimer(self)
-        self._welcome_wifi_timer.setInterval(4000)  # check elke 4 sec
+        self._welcome_wifi_timer.setInterval(5000)
         self._welcome_wifi_timer.timeout.connect(self._welcome_check_connectivity)
+        self._welcome_consecutive_failures = 0
 
         # Reposition lock button after page is shown
         page.resizeEvent = self._welcome_resize_event
@@ -2524,9 +2528,10 @@ class PhotoboothWindow(QMainWindow):
     def _welcome_apply_connectivity(self, online: bool):
         """Switch tussen wifi-card en qr-card op basis van internet-status.
 
-        Toont ÉÉN van de twee — nooit beide.
+        Anti-flapping: SUCCESS resets counter en switcht meteen naar online.
+        FAILURE telt op; pas bij >=2 opeenvolgende failures gaan we offline.
+        Zo voorkomen we dat één transient failure de gast eraf gooit.
         """
-        self._has_internet = online
         if not hasattr(self, '_welcome_action_stack'):
             return
         # Stop fallback-timer omdat we nu een echt resultaat hebben
@@ -2535,9 +2540,28 @@ class PhotoboothWindow(QMainWindow):
                 self._welcome_checking_fallback.stop()
             except Exception:
                 pass
-        # Page 0 = wifi-setup card, Page 1 = qr-scan card
-        self._welcome_action_stack.setCurrentIndex(1 if online else 0)
-        print(f"[WELCOME] UI switched naar {'qr-card' if online else 'wifi-card'}")
+
+        if online:
+            # Direct online: reset counter + toon qr-card
+            self._welcome_consecutive_failures = 0
+            self._has_internet = True
+            self._welcome_action_stack.setCurrentIndex(1)
+            print("[WELCOME] Online — qr-card getoond")
+        else:
+            # Failure: tel op. Pas bij 2x op rij naar offline switchen.
+            self._welcome_consecutive_failures = getattr(
+                self, '_welcome_consecutive_failures', 0
+            ) + 1
+            current_idx = self._welcome_action_stack.currentIndex()
+            if self._welcome_consecutive_failures >= 2 or current_idx == 2:
+                # Bevestigde offline OF eerste check (current=checking) → wifi-card
+                self._has_internet = False
+                self._welcome_action_stack.setCurrentIndex(0)
+                print(f"[WELCOME] Offline (failures={self._welcome_consecutive_failures}) — wifi-card")
+            else:
+                # 1 failure terwijl qr-card al getoond werd → blijf op qr-card,
+                # wacht op volgende tick voor bevestiging
+                print(f"[WELCOME] 1 failure — wachten op bevestiging (qr-card behouden)")
 
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
