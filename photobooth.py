@@ -13289,27 +13289,32 @@ class PhotoboothWindow(QMainWindow):
                 except OSError:
                     pass
 
-        # Verwijder ook cloud-template files die NIET meer in de cloud-lijst
-        # voorkomen (klant heeft 'm verwijderd in portaal).
+        # NIET MEER aggressive deleten van cloud-template files die niet in
+        # de huidige cloud-respons zitten — dat veroorzaakte data-verlies als
+        # de portal-DB per ongeluk een template kwijtraakte of een netwerk-
+        # fout een lege lijst gaf.
+        #
+        # Stale files blijven gewoon in TEMPLATES_DIR staan; ze worden in de
+        # picker getoond zolang ze technisch valide JSON zijn. Operator kan
+        # ze handmatig wissen via Layout-tab > Verwijder template (of via
+        # filesystem).
+        #
+        # Zo zijn we beschermd tegen accidentele cloud-deletes.
         valid_template_ids = {ct.get("id", "") for ct in cloud_templates if ct.get("id")}
         try:
-            for fname in os.listdir(config.TEMPLATES_DIR):
-                if not fname.startswith(f"linked_{booking_id}_tmpl_") or not fname.endswith(".json"):
-                    continue
-                # Extract tmpl_id uit filename
+            existing_cloud_files = [
+                f for f in os.listdir(config.TEMPLATES_DIR)
+                if f.startswith(f"linked_{booking_id}_tmpl_") and f.endswith(".json")
+            ]
+            # Diagnose-log: welke staan er nog naast de cloud-lijst?
+            for fname in existing_cloud_files:
                 middle = fname[len(f"linked_{booking_id}_tmpl_"):-len(".json")]
-                # safe_id mapping: original uuid wordt sanitized — vergelijk dus
-                # tegen safe_id van elke valid id
-                still_valid = any(
+                in_cloud = any(
                     "".join(c if c.isalnum() or c in "-_" else "_" for c in vid) == middle
                     for vid in valid_template_ids
                 )
-                if not still_valid:
-                    try:
-                        os.remove(os.path.join(config.TEMPLATES_DIR, fname))
-                        print(f"[LINKED-CLOUD] Verwijderd (niet meer in cloud): {fname}")
-                    except OSError:
-                        pass
+                if not in_cloud:
+                    print(f"[LINKED-CLOUD] Behouden (niet in cloud-lijst): {fname}")
         except OSError:
             pass
 
