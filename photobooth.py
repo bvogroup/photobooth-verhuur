@@ -2069,8 +2069,9 @@ class PhotoboothWindow(QMainWindow):
         outer.addSpacing(12)
 
         # ── Action stack: ÉÉN van de twee cards (wifi OF qr) ──────────
-        # We renderen tijdens initial paint één placeholder; _welcome_apply_connectivity
-        # bouwt de juiste card op het juiste moment.
+        # Default ONLINE (qr-card) — alleen switchen naar wifi-card bij 2x
+        # bevestigde ping-failure op rij. Dit voorkomt false-positives waar
+        # de gast met werkende wifi toch 'geen verbinding' ziet.
         self._welcome_action_container = QWidget()
         self._welcome_action_container.setStyleSheet("background: transparent;")
         action_lay = QHBoxLayout(self._welcome_action_container)
@@ -2079,14 +2080,16 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_action_stack = QStackedWidget()
         self._welcome_action_stack.setStyleSheet("background: transparent;")
         self._welcome_action_stack.setMaximumWidth(640)
-        # Page 0: wifi-card
+        # Page 0: wifi-card (alleen na 2x ping-failure)
         self._welcome_action_stack.addWidget(self._build_welcome_wifi_card())
-        # Page 1: qr-card
+        # Page 1: qr-card (DEFAULT)
         self._welcome_action_stack.addWidget(self._build_welcome_qr_card())
-        # Page 2: checking placeholder (alleen kort getoond bij eerste laad)
+        # Page 2: checking placeholder (niet meer gebruikt — direct qr tonen)
         self._welcome_action_stack.addWidget(self._build_welcome_checking_card())
-        # Start: checking — wordt onmiddellijk overschreven door initial check
-        self._welcome_action_stack.setCurrentIndex(2)
+        # Start: direct qr-card. Achtergrond-ping kan later naar wifi-card
+        # switchen bij meermaals falen.
+        self._welcome_action_stack.setCurrentIndex(1)
+        self._has_internet = True  # optimistic default
         action_lay.addWidget(self._welcome_action_stack)
         action_lay.addStretch()
         outer.addWidget(self._welcome_action_container)
@@ -2547,42 +2550,34 @@ class PhotoboothWindow(QMainWindow):
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
-        """Switch tussen wifi-card en qr-card op basis van internet-status.
+        """Switch tussen wifi-card en qr-card. Default ONLINE.
 
-        Anti-flapping: SUCCESS resets counter en switcht meteen naar online.
-        FAILURE telt op; pas bij >=2 opeenvolgende failures gaan we offline.
-        Zo voorkomen we dat één transient failure de gast eraf gooit.
+        - SUCCESS: reset failure counter, toon qr-card (page 1)
+        - FAILURE: tel op; pas bij >=2 opeenvolgende failures wifi-card (page 0)
+
+        Default op qr-card zorgt dat een werkende verbinding ALTIJD de scan-
+        optie toont, ook al duurt de eerste ping wat langer.
         """
         if not hasattr(self, '_welcome_action_stack'):
             return
-        # Stop fallback-timer omdat we nu een echt resultaat hebben
-        if hasattr(self, '_welcome_checking_fallback'):
-            try:
-                self._welcome_checking_fallback.stop()
-            except Exception:
-                pass
 
         if online:
-            # Direct online: reset counter + toon qr-card
             self._welcome_consecutive_failures = 0
-            self._has_internet = True
-            self._welcome_action_stack.setCurrentIndex(1)
-            print("[WELCOME] Online — qr-card getoond")
+            if self._has_internet is not True or self._welcome_action_stack.currentIndex() != 1:
+                self._has_internet = True
+                self._welcome_action_stack.setCurrentIndex(1)
+                print("[WELCOME] Online — qr-card getoond")
         else:
-            # Failure: tel op. Pas bij 2x op rij naar offline switchen.
             self._welcome_consecutive_failures = getattr(
                 self, '_welcome_consecutive_failures', 0
             ) + 1
-            current_idx = self._welcome_action_stack.currentIndex()
-            if self._welcome_consecutive_failures >= 2 or current_idx == 2:
-                # Bevestigde offline OF eerste check (current=checking) → wifi-card
-                self._has_internet = False
-                self._welcome_action_stack.setCurrentIndex(0)
-                print(f"[WELCOME] Offline (failures={self._welcome_consecutive_failures}) — wifi-card")
+            if self._welcome_consecutive_failures >= 2:
+                if self._has_internet is not False or self._welcome_action_stack.currentIndex() != 0:
+                    self._has_internet = False
+                    self._welcome_action_stack.setCurrentIndex(0)
+                    print(f"[WELCOME] Offline (2× failure bevestigd) — wifi-card")
             else:
-                # 1 failure terwijl qr-card al getoond werd → blijf op qr-card,
-                # wacht op volgende tick voor bevestiging
-                print(f"[WELCOME] 1 failure — wachten op bevestiging (qr-card behouden)")
+                print(f"[WELCOME] 1× failure — qr-card behouden, wacht op volgende tick")
 
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
@@ -4985,24 +4980,16 @@ class PhotoboothWindow(QMainWindow):
         ev = self.active_event
         no_booking = not ev or not getattr(ev, 'linked_booking_id', '')
         if no_booking and "welcome" in self.pages:
-            # Reset stack naar checking-card terwijl we de check doen
+            # Reset naar qr-card (optimistic default). Achtergrond-ping
+            # bevestigt; pas bij 2 failures op rij → wifi-card.
             if hasattr(self, '_welcome_action_stack'):
-                self._welcome_action_stack.setCurrentIndex(2)
+                self._welcome_action_stack.setCurrentIndex(1)
+                self._welcome_consecutive_failures = 0
             self.stack.setCurrentIndex(self.pages["welcome"])
-            # Start de wifi/internet check-timer
+            # Start de wifi/internet check-timer (5 sec interval)
             if hasattr(self, '_welcome_wifi_timer'):
                 self._welcome_check_connectivity()
                 self._welcome_wifi_timer.start()
-            # Fallback: als de check binnen 3 sec geen resultaat geeft, val
-            # terug op WIFI-card (assume offline — safer default zodat user
-            # niet stilletjes op een werkende QR-card lijkt te zitten).
-            if not hasattr(self, '_welcome_checking_fallback'):
-                self._welcome_checking_fallback = QTimer(self)
-                self._welcome_checking_fallback.setSingleShot(True)
-                self._welcome_checking_fallback.timeout.connect(
-                    lambda: self._welcome_apply_connectivity(False)
-                )
-            self._welcome_checking_fallback.start(3000)
             # Sync active language to button highlight
             try:
                 from translations import get_language
@@ -5011,7 +4998,7 @@ class PhotoboothWindow(QMainWindow):
                     btn.setStyleSheet(self._welcome_lang_btn_style(active=(code == current)))
             except Exception:
                 pass
-            print("[UI] Welcome page getoond (geen event gekoppeld)")
+            print("[UI] Welcome page getoond (geen event gekoppeld) — default ONLINE")
             return
 
         # Stop wifi-timer als we naar normale idle gaan
