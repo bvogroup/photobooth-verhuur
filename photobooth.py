@@ -1252,6 +1252,14 @@ class PhotoboothWindow(QMainWindow):
         # Auto-couple bij Linked-modus
         QTimer.singleShot(500, self._auto_recouple_on_startup)
 
+        # Periodic refresh (60s): re-fetch booking + apply templates wanneer
+        # internet beschikbaar en event gekoppeld. Vangt portal-wijzigingen op
+        # zonder dat operator op Ververs hoeft te klikken.
+        self._periodic_refresh_timer = QTimer(self)
+        self._periodic_refresh_timer.setInterval(60_000)  # 60 sec
+        self._periodic_refresh_timer.timeout.connect(self._periodic_refresh_tick)
+        self._periodic_refresh_timer.start()
+
         # Wifi-monitor uitgeschakeld — gebruiker wil deze flow niet meer zien.
         # Methodes blijven bestaan voor backwards compat maar starten niet.
 
@@ -1346,6 +1354,61 @@ class PhotoboothWindow(QMainWindow):
         # Uploader starten voor pending queue (alleen als token + booking_id geldig)
         self._start_linked_uploader()
         self._update_linked_card_visibility()
+
+    def _periodic_refresh_tick(self):
+        """Background tick — re-fetch booking + apply templates als gekoppeld
+        en online. Stilte: geen UI-dialog, geen interruptions. Skip tijdens
+        actieve sessie (state != IDLE) zodat de gast niet wordt onderbroken.
+        """
+        ev = self.active_event
+        if not ev:
+            return
+        token = getattr(ev, 'linked_token', '') or ''
+        booking_id = getattr(ev, 'linked_booking_id', '') or ''
+        if not token or not booking_id:
+            return  # geen gekoppeld event
+        # Skip tijdens actieve sessie / settings / etc — alleen IDLE
+        if hasattr(self, 'state') and self.state != State.IDLE:
+            return
+        if not getattr(self, '_has_internet', False):
+            return  # offline: skip
+
+        # Async fetch op background-thread zodat UI niet bevriest
+        import threading
+        def _bg():
+            try:
+                from cloud_booking import fetch_booking, fetch_design
+                b, err = fetch_booking(token, use_cache_on_offline=False)
+                if not b:
+                    print(f"[PERIODIC-REFRESH] Booking fetch fout: {err}")
+                    return
+                # Apply op main thread via singleShot
+                local_path = ""
+                design_path = b.get("booking", {}).get("photostrip_design_url", "") or ""
+                if design_path:
+                    local, _derr = fetch_design(token, design_path, booking_id)
+                    if local:
+                        local_path = local
+                from PyQt5.QtCore import QTimer as _T
+                _T.singleShot(0, lambda: self._periodic_refresh_apply(b, local_path))
+            except Exception as e:
+                print(f"[PERIODIC-REFRESH] Achtergrond-fout: {e}")
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _periodic_refresh_apply(self, booking_data, design_local_path):
+        """Op main thread aangeroepen na periodic fetch. Stil toepassen."""
+        if not self.active_event:
+            return
+        # Skip als de gast intussen aan het werk is
+        if hasattr(self, 'state') and self.state != State.IDLE:
+            return
+        try:
+            self._apply_linked_booking(booking_data)
+            # Cloud-templates auto-toepassen (force_regen=False = respect user-edits)
+            self._apply_design_to_template(design_local_path or "", force_regen=False)
+            print("[PERIODIC-REFRESH] Booking + templates ververst")
+        except Exception as e:
+            print(f"[PERIODIC-REFRESH] Apply-fout: {e}")
 
     def _background_auth_verify(self):
         """Background thread: verify session online, update plan if needed.
@@ -2379,7 +2442,7 @@ class PhotoboothWindow(QMainWindow):
             f"color: {config.COLOR_TEXT_DIM}; min-height: 0; padding: 0; }}"
             f"QPushButton:pressed {{ color: {config.COLOR_PRIMARY}; }}"
         )
-        self._idle_lock_btn.clicked.connect(self._go_settings)
+        self._idle_lock_btn.clicked.connect(self._on_lock_clicked)
         self._idle_lock_btn.raise_()
 
         return page
@@ -4815,6 +4878,19 @@ class PhotoboothWindow(QMainWindow):
             self._show_template_picker(linked_choices)
             return  # _show_template_picker zal _go_direct_capture aanroepen na keuze
 
+        # ── Geen cloud-templates? → default-picker (4 foto's / strips) ──
+        # Wanneer er een booking gekoppeld is maar geen templates uit het
+        # portaal beschikbaar zijn, laat de gast kiezen tussen '4 foto's op
+        # een vel' of 'strips' met witte achtergrond. Bij keuze: in-memory
+        # Template (niet persist naar disk).
+        ev = self.active_event
+        has_booking = ev and getattr(ev, 'linked_booking_id', '')
+        if has_booking and len(linked_choices) == 0:
+            defaults = self._build_default_templates_for_event()
+            if defaults:
+                self._show_template_picker(defaults)
+                return
+
         # Check for pre-selected template from active event
         saved_name = self.active_event.template_name if self.active_event else ""
         match = self._find_template_by_name(saved_name) if saved_name else None
@@ -4861,6 +4937,75 @@ class PhotoboothWindow(QMainWindow):
         self.state = State.SELECT_TEMPLATE
         self._load_templates()
         self.stack.setCurrentIndex(self.pages["select_template"])
+
+    def _build_default_templates_for_event(self):
+        """Maak in-memory default Template-objecten voor de actieve booking
+        wanneer geen cloud-templates beschikbaar zijn.
+
+        Returns 2 templates: '4 foto's op een vel' + 'strips' (variant
+        afhankelijk van event.printer_mode: 3strips/premium of 4x6/standard).
+        Achtergrond is leeg (wit). Niet opgeslagen naar disk.
+        """
+        from template_model import Template, PhotoFrame
+        ev = self.active_event
+        if not ev:
+            return []
+        # Bepaal of premium-flow (DNP 3-strips) of standaard (Canon 2-strips)
+        pm = getattr(ev, 'printer_mode', '3strips')
+        if pm == 'dnp':
+            pm = '3strips'
+        elif pm == 'canon':
+            pm = '4x6'
+        is_premium = (pm == '3strips')
+
+        # ── Template 1: 4 foto's op een vel (landscape 1800×1200) ──
+        sheet_4 = Template(
+            name="4 foto's op een vel",
+            background_path="",
+            frames=[
+                PhotoFrame(x=30,  y=30,  width=855, height=555, rotation=0),
+                PhotoFrame(x=915, y=30,  width=855, height=555, rotation=0),
+                PhotoFrame(x=30,  y=615, width=855, height=555, rotation=0),
+                PhotoFrame(x=915, y=615, width=855, height=555, rotation=0),
+            ],
+            is_double_strip=True,
+            cut_default=False,
+            is_triple_strip=False,
+            is_4x3_strip=False,
+        )
+
+        # ── Template 2: Strips (variant op basis van pakket) ──
+        if is_premium:
+            # DNP triple strip — 600x1200 canvas, 3 frames, auto-cut
+            strips = Template(
+                name="3 strips van 3 foto's",
+                background_path="",
+                frames=[
+                    PhotoFrame(x=48, y=30,  width=504, height=283, rotation=0),
+                    PhotoFrame(x=48, y=343, width=504, height=283, rotation=0),
+                    PhotoFrame(x=48, y=656, width=504, height=283, rotation=0),
+                ],
+                is_double_strip=False,
+                cut_default=True,
+                is_triple_strip=True,
+                is_4x3_strip=False,
+            )
+        else:
+            # Canon dubbele strip — 600x1800 canvas (mirrored bij print)
+            strips = Template(
+                name="2 strips van 3 foto's",
+                background_path="",
+                frames=[
+                    PhotoFrame(x=30, y=105,  width=540, height=360, rotation=0),
+                    PhotoFrame(x=30, y=720,  width=540, height=360, rotation=0),
+                    PhotoFrame(x=30, y=1335, width=540, height=360, rotation=0),
+                ],
+                is_double_strip=False,
+                cut_default=True,
+                is_triple_strip=False,
+                is_4x3_strip=False,
+            )
+        return [sheet_4, strips]
 
     def _get_linked_templates_for_booking(self):
         """Geef lijst van linked Template-objecten voor de actieve booking.
@@ -8175,6 +8320,12 @@ class PhotoboothWindow(QMainWindow):
         is_portrait = screen.geometry().height() > screen.geometry().width() if screen else False
         tab_font_size = 10 if is_portrait else 14
 
+        # Indices van tabs die verborgen moeten worden (Layout-tab heeft geen
+        # functie meer sinds cloud-templates — templates komen uit portaal).
+        # Code blijft staan (tab_stack pagina wordt nog geappend) zodat
+        # template-grid logica niet hoeft worden weggesneden.
+        _HIDDEN_TAB_INDICES = {1}  # 1 = Layout
+
         row_lay = QHBoxLayout()
         row_lay.setSpacing(4)
         for i, name in enumerate(tab_names):
@@ -8183,7 +8334,10 @@ class PhotoboothWindow(QMainWindow):
             btn.setFont(QFont("DM Sans", tab_font_size, QFont.Bold))
             btn.clicked.connect(lambda _, idx=i: self._switch_settings_tab(idx))
             self._settings_tab_buttons.append(btn)
-            row_lay.addWidget(btn)
+            if i in _HIDDEN_TAB_INDICES:
+                btn.setVisible(False)
+            else:
+                row_lay.addWidget(btn)
         row_lay.addStretch()
         tab_bar_container.addLayout(row_lay)
 
@@ -10066,6 +10220,219 @@ class PhotoboothWindow(QMainWindow):
         # Terug-knop verwijderd — gebruik Escape of slotje om terug te gaan
 
         self.stack.addWidget(page)
+
+    def _on_lock_clicked(self):
+        """Slotje geklikt → toon info-dialog (event-info + acties) i.p.v.
+        direct PIN-prompt. PIN-prompt komt pas bij Loskoppelen of
+        Geavanceerde instellingen.
+        """
+        self._show_event_info_dialog()
+
+    def _show_event_info_dialog(self):
+        """Modal met event-info + acties: Ververs / Loskoppel / Geavanceerd.
+
+        Loskoppel + Geavanceerd vragen om PIN. Ververs werkt direct.
+        """
+        from PyQt5.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
+        )
+        ev = self.active_event
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Event-info")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(480)
+        dlg.setStyleSheet(f"QDialog {{ background: {config.COLOR_CARD_BG}; }}")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        # ── Header ──────────────────────────────────────────────────
+        title = QLabel("Gekoppeld event")
+        title.setFont(QFont("DM Sans", 18, QFont.Bold))
+        title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        lay.addWidget(title)
+
+        # ── Status-block ────────────────────────────────────────────
+        status_frame = QFrame()
+        status_frame.setStyleSheet(
+            f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
+            f"border: 1px solid {config.COLOR_BORDER}; border-radius: 10px; padding: 14px; }}"
+        )
+        st_lay = QVBoxLayout(status_frame)
+        st_lay.setSpacing(6)
+
+        booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
+        booking_label = getattr(ev, 'linked_booking_label', '') if ev else ''
+
+        if booking_id:
+            name_lbl = QLabel(f"🟢  {booking_label or booking_id}")
+            name_lbl.setFont(QFont("DM Sans", 14, QFont.Bold))
+            name_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+            name_lbl.setWordWrap(True)
+            st_lay.addWidget(name_lbl)
+
+            id_lbl = QLabel(f"ID: {booking_id}")
+            id_lbl.setFont(QFont("DM Sans", 10))
+            id_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+            st_lay.addWidget(id_lbl)
+
+            # Upload-progress (zelfde data als _update_linked_progress)
+            upload_lbl = QLabel("")
+            upload_lbl.setFont(QFont("DM Sans", 11))
+            upload_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+            upload_lbl.setWordWrap(True)
+            try:
+                from cloud_uploader import get_status
+                s = get_status(booking_id)
+                if s["total"] > 0:
+                    pct = int(100 * s["uploaded"] / max(1, s["total"]))
+                    msg = f"📤  Uploaded: {s['uploaded']}/{s['total']} foto's ({pct}%)"
+                    if s["pending"] > 0:
+                        msg += f"  ·  {s['pending']} wachten"
+                    if s["failed"] > 0:
+                        msg += f"  ·  ⚠ {s['failed']} mislukt"
+                    upload_lbl.setText(msg)
+                else:
+                    upload_lbl.setText("📤  Nog geen foto's geüpload")
+            except Exception:
+                upload_lbl.setText("📤  Upload-status niet beschikbaar")
+            st_lay.addWidget(upload_lbl)
+        else:
+            no_lbl = QLabel("Geen event gekoppeld")
+            no_lbl.setFont(QFont("DM Sans", 13))
+            no_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+            st_lay.addWidget(no_lbl)
+        lay.addWidget(status_frame)
+
+        # ── Actie-knoppen ──────────────────────────────────────────
+        def _btn(label, color_bg, color_hover, font_size=14):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFont(QFont("DM Sans", font_size, QFont.Bold))
+            b.setMinimumHeight(48)
+            b.setStyleSheet(
+                f"QPushButton {{ background: {color_bg}; color: {config.COLOR_TEXT_ON_PRIMARY}; "
+                f"border: none; border-radius: 10px; padding: 10px 18px; }}"
+                f"QPushButton:hover {{ background: {color_hover}; }}"
+                f"QPushButton:disabled {{ background: rgba(0,0,0,0.15); color: rgba(255,255,255,0.5); }}"
+            )
+            return b
+
+        # Ververs (direct, geen PIN)
+        refresh_btn = _btn("🔄  Ververs event", config.COLOR_PRIMARY, config.COLOR_PRIMARY_HOVER)
+        refresh_btn.setEnabled(bool(booking_id))
+        refresh_btn.clicked.connect(lambda: self._lock_action_refresh(dlg))
+        lay.addWidget(refresh_btn)
+
+        # Loskoppelen (PIN vereist)
+        unlink_btn = _btn("🔗❌  Loskoppelen", config.COLOR_DANGER, "#8E2D24")
+        unlink_btn.setEnabled(bool(booking_id))
+        unlink_btn.clicked.connect(lambda: self._lock_action_unlink(dlg))
+        lay.addWidget(unlink_btn)
+
+        lay.addSpacing(8)
+
+        # Geavanceerde instellingen (PIN vereist)
+        settings_btn = _btn("⚙️  Geavanceerde instellingen",
+                            config.COLOR_SECONDARY, config.COLOR_SECONDARY_HOVER)
+        settings_btn.clicked.connect(lambda: self._lock_action_advanced(dlg))
+        lay.addWidget(settings_btn)
+
+        # Sluiten
+        close_btn = QPushButton("Sluiten")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setFont(QFont("DM Sans", 12))
+        close_btn.setMinimumHeight(40)
+        close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #888; border: none; "
+            "padding: 8px 16px; }"
+            "QPushButton:hover { color: #333; }"
+        )
+        close_btn.clicked.connect(dlg.reject)
+        lay.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+        dlg.exec_()
+
+    def _lock_action_refresh(self, dlg):
+        """Ververs-knop in event-info dialog: re-fetch booking + sluiten."""
+        dlg.accept()
+        # Hergebruik bestaande refresh-flow
+        self._on_refresh_event_clicked()
+
+    def _lock_action_unlink(self, dlg):
+        """Loskoppelen vraagt PIN; bij correct PIN: clear linked_* en sluit."""
+        pin = self.active_event.pin_code if self.active_event else ""
+        if pin:
+            try:
+                entered, ok = PinDialog.get_pin(self, t("enter_pin"))
+                if not ok or entered != pin:
+                    return
+            except Exception as e:
+                print(f"[LOCK] PIN-prompt fout: {e}")
+                return
+        # PIN ok → unlink
+        from PyQt5.QtWidgets import QMessageBox
+        ev = self.active_event
+        if ev:
+            ev.linked_booking_id = ""
+            ev.linked_token = ""
+            ev.linked_booking_label = ""
+            ev.linked_design_path = ""
+            ev.save(config.EVENTS_DIR)
+            print(f"[LOCK] Event losgekoppeld")
+            try:
+                from cloud_uploader import stop_worker
+                # geen booking-id meer beschikbaar voor stop_worker — skip
+            except Exception:
+                pass
+        dlg.accept()
+        # Terug naar welcome-page (idle routeert automatisch)
+        self._go_idle()
+
+    def _lock_action_advanced(self, dlg):
+        """Geavanceerde instellingen vraagt PIN; bij ok: settings openen."""
+        pin = self.active_event.pin_code if self.active_event else ""
+        if pin:
+            try:
+                entered, ok = PinDialog.get_pin(self, t("enter_pin"))
+                if not ok or entered != pin:
+                    return
+            except Exception as e:
+                print(f"[LOCK] PIN-prompt fout: {e}")
+                return
+        dlg.accept()
+        # PIN al geverifieerd — roep direct de "post-PIN" settings-flow aan
+        # door _go_settings handmatig in te springen. We omzeilen dat
+        # _go_settings opnieuw om PIN vraagt door even pin_code te verbergen.
+        self._go_settings_after_pin()
+
+    def _go_settings_after_pin(self):
+        """Open settings panel ZONDER opnieuw PIN te vragen (al gevalideerd)."""
+        self.state = State.SETTINGS
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+        )
+        self.setWindowTitle("Bootharoo — Instellingen")
+        self.show()
+        self.showMaximized()
+        try:
+            self._populate_event_dropdown()
+        except Exception as e:
+            print(f"[SETTINGS] Event dropdown crash: {e}")
+        try:
+            self._load_settings_for_event()
+        except Exception as e:
+            print(f"[SETTINGS] Load settings crash: {e}")
+        try:
+            self._load_settings_templates()
+        except Exception as e:
+            print(f"[SETTINGS] Templates crash: {e}")
+        self.stack.setCurrentIndex(self.pages["settings"])
+        print(f"[SETTINGS] Geopend via lock-info dialog")
 
     def _go_settings(self):
         """Open operator panel, check PIN first if set."""
