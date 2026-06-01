@@ -2068,10 +2068,11 @@ class PhotoboothWindow(QMainWindow):
         outer.addLayout(lang_row)
         outer.addSpacing(12)
 
-        # ── Action stack: ÉÉN van de twee cards (wifi OF qr) ──────────
-        # Default ONLINE (qr-card) — alleen switchen naar wifi-card bij 2x
-        # bevestigde ping-failure op rij. Dit voorkomt false-positives waar
-        # de gast met werkende wifi toch 'geen verbinding' ziet.
+        # ── Action stack: 3 cards ──────────────────────────────────────
+        # State machine:
+        #   'checking' (page 2): 3 pings doen voor commit naar online/offline
+        #   'online'   (page 1, qr-card): 5x ping fail op rij → offline
+        #   'offline'  (page 0, wifi-card): 1x ping success → online
         self._welcome_action_container = QWidget()
         self._welcome_action_container.setStyleSheet("background: transparent;")
         action_lay = QHBoxLayout(self._welcome_action_container)
@@ -2080,16 +2081,15 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_action_stack = QStackedWidget()
         self._welcome_action_stack.setStyleSheet("background: transparent;")
         self._welcome_action_stack.setMaximumWidth(640)
-        # Page 0: wifi-card (alleen na 2x ping-failure)
-        self._welcome_action_stack.addWidget(self._build_welcome_wifi_card())
-        # Page 1: qr-card (DEFAULT)
-        self._welcome_action_stack.addWidget(self._build_welcome_qr_card())
-        # Page 2: checking placeholder (niet meer gebruikt — direct qr tonen)
-        self._welcome_action_stack.addWidget(self._build_welcome_checking_card())
-        # Start: direct qr-card. Achtergrond-ping kan later naar wifi-card
-        # switchen bij meermaals falen.
-        self._welcome_action_stack.setCurrentIndex(1)
-        self._has_internet = True  # optimistic default
+        self._welcome_action_stack.addWidget(self._build_welcome_wifi_card())     # 0
+        self._welcome_action_stack.addWidget(self._build_welcome_qr_card())       # 1
+        self._welcome_action_stack.addWidget(self._build_welcome_checking_card()) # 2
+        # Start in checking state
+        self._welcome_action_stack.setCurrentIndex(2)
+        self._has_internet = None  # nog onbekend
+        self._welcome_state = 'checking'
+        self._welcome_check_results = []          # eerste 3 ping resultaten
+        self._welcome_consecutive_failures = 0    # alleen relevant in 'online' state
         action_lay.addWidget(self._welcome_action_stack)
         action_lay.addStretch()
         outer.addWidget(self._welcome_action_container)
@@ -2109,11 +2109,11 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_lock_btn.clicked.connect(self._go_settings)
 
         # ── Periodic wifi/internet check ─────────────────────────────
-        # Elke 5 sec checken, blijft pollen ook als qr-card al getoond is.
-        # Pas na 2 opeenvolgende failures wordt naar offline geswitcht
-        # (flapping voorkomen bij transient netwerkfouten).
+        # Interval 3 sec — snel commit naar de juiste card binnen ~10 sec.
+        # State machine in _welcome_apply_connectivity bepaalt of we
+        # switchen op basis van success/failure counters.
         self._welcome_wifi_timer = QTimer(self)
-        self._welcome_wifi_timer.setInterval(5000)
+        self._welcome_wifi_timer.setInterval(3000)
         self._welcome_wifi_timer.timeout.connect(self._welcome_check_connectivity)
         self._welcome_consecutive_failures = 0
 
@@ -2227,10 +2227,9 @@ class PhotoboothWindow(QMainWindow):
         return card
 
     def _build_welcome_checking_card(self):
-        """Tijdelijke 'aan het laden' placeholder tijdens eerste wifi-check.
+        """'Internet controleren...' card met geanimeerde spinner-dots.
 
-        Wordt verborgen zodra _welcome_apply_connectivity de stack switcht
-        naar wifi-card of qr-card.
+        Getoond tijdens eerste 3 ping-checks na openen welcome page.
         """
         from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
         card = QWidget()
@@ -2241,19 +2240,38 @@ class PhotoboothWindow(QMainWindow):
         lay.setContentsMargins(48, 40, 48, 40)
         lay.setSpacing(14)
 
-        icon = QLabel("⏳")
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setFont(QFont("DM Sans", 48))
-        icon.setStyleSheet("background: transparent;")
-        lay.addWidget(icon)
+        # Geanimeerde spinner via roterend emoji
+        self._welcome_spinner_icon = QLabel("⏳")
+        self._welcome_spinner_icon.setAlignment(Qt.AlignCenter)
+        self._welcome_spinner_icon.setFont(QFont("DM Sans", 56))
+        self._welcome_spinner_icon.setStyleSheet("background: transparent;")
+        lay.addWidget(self._welcome_spinner_icon)
 
         h = QLabel(t("welcome_internet_checking"))
         h.setAlignment(Qt.AlignCenter)
-        h.setFont(QFont("DM Sans", 20, QFont.Bold))
-        h.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        h.setFont(QFont("DM Sans", 22, QFont.Bold))
+        h.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
         h.setWordWrap(True)
         self._welcome_checking_label = h
         lay.addWidget(h)
+
+        sub = QLabel("Even kijken of er internetverbinding is...")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setFont(QFont("DM Sans", 13))
+        sub.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+
+        # Spinner-animatie timer
+        self._welcome_spinner_timer = QTimer(self)
+        self._welcome_spinner_timer.setInterval(400)
+        self._welcome_spinner_states = ["⏳", "⌛", "⏳", "⌛"]
+        self._welcome_spinner_idx = 0
+        def _tick():
+            self._welcome_spinner_idx = (self._welcome_spinner_idx + 1) % len(self._welcome_spinner_states)
+            self._welcome_spinner_icon.setText(self._welcome_spinner_states[self._welcome_spinner_idx])
+        self._welcome_spinner_timer.timeout.connect(_tick)
+
         return card
 
     def _build_qr_scan_page(self):
@@ -2550,34 +2568,77 @@ class PhotoboothWindow(QMainWindow):
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
-        """Switch tussen wifi-card en qr-card. Default ONLINE.
+        """State machine voor wifi/qr card switching.
 
-        - SUCCESS: reset failure counter, toon qr-card (page 1)
-        - FAILURE: tel op; pas bij >=2 opeenvolgende failures wifi-card (page 0)
-
-        Default op qr-card zorgt dat een werkende verbinding ALTIJD de scan-
-        optie toont, ook al duurt de eerste ping wat langer.
+        States:
+          - 'checking': eerste 3 pings verzamelen, dan commit
+          - 'online' (qr-card):  5x ping-fail op rij → switch naar 'offline'
+          - 'offline' (wifi-card): 1x ping-success → meteen 'online'
         """
         if not hasattr(self, '_welcome_action_stack'):
             return
 
-        if online:
-            self._welcome_consecutive_failures = 0
-            if self._has_internet is not True or self._welcome_action_stack.currentIndex() != 1:
+        state = getattr(self, '_welcome_state', 'checking')
+
+        # ── CHECKING: verzamel eerste resultaten, commit na 3 ─────────
+        if state == 'checking':
+            self._welcome_check_results.append(online)
+            print(f"[WELCOME] Check #{len(self._welcome_check_results)}: "
+                  f"{'OK' if online else 'FAIL'}")
+            # Direct commit als we 1 succesvolle ping hebben
+            if online:
+                self._welcome_commit_state(True)
+                return
+            # 3 mislukkingen op rij → commit naar offline
+            if len(self._welcome_check_results) >= 3:
+                self._welcome_commit_state(False)
+                return
+            # Anders: blijf op spinner, wacht op volgende tick
+            return
+
+        # ── ONLINE: blijf op qr-card, tellen failures voor switch ────
+        if state == 'online':
+            if online:
+                self._welcome_consecutive_failures = 0
+                return  # blijf op qr-card, geen UI-update nodig
+            self._welcome_consecutive_failures += 1
+            print(f"[WELCOME] Online state — failure {self._welcome_consecutive_failures}/5")
+            if self._welcome_consecutive_failures >= 5:
+                self._welcome_state = 'offline'
+                self._has_internet = False
+                self._welcome_action_stack.setCurrentIndex(0)
+                self._welcome_consecutive_failures = 0
+                print(f"[WELCOME] 5× ping mislukt → switch naar wifi-card")
+            return
+
+        # ── OFFLINE: blijf op wifi-card, 1 success genoeg om te switchen ─
+        if state == 'offline':
+            if online:
+                self._welcome_state = 'online'
                 self._has_internet = True
                 self._welcome_action_stack.setCurrentIndex(1)
-                print("[WELCOME] Online — qr-card getoond")
+                self._welcome_consecutive_failures = 0
+                print(f"[WELCOME] Eerste succesvolle ping → switch naar qr-card")
+            # Anders blijf op wifi-card
+
+    def _welcome_commit_state(self, online: bool):
+        """Initial-state commit na eerste batch checking-pings."""
+        if hasattr(self, '_welcome_spinner_timer'):
+            try:
+                self._welcome_spinner_timer.stop()
+            except Exception:
+                pass
+        if online:
+            self._welcome_state = 'online'
+            self._has_internet = True
+            self._welcome_action_stack.setCurrentIndex(1)
+            self._welcome_consecutive_failures = 0
+            print(f"[WELCOME] Initial commit → ONLINE (qr-card)")
         else:
-            self._welcome_consecutive_failures = getattr(
-                self, '_welcome_consecutive_failures', 0
-            ) + 1
-            if self._welcome_consecutive_failures >= 2:
-                if self._has_internet is not False or self._welcome_action_stack.currentIndex() != 0:
-                    self._has_internet = False
-                    self._welcome_action_stack.setCurrentIndex(0)
-                    print(f"[WELCOME] Offline (2× failure bevestigd) — wifi-card")
-            else:
-                print(f"[WELCOME] 1× failure — qr-card behouden, wacht op volgende tick")
+            self._welcome_state = 'offline'
+            self._has_internet = False
+            self._welcome_action_stack.setCurrentIndex(0)
+            print(f"[WELCOME] Initial commit → OFFLINE (wifi-card)")
 
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
@@ -4980,13 +5041,18 @@ class PhotoboothWindow(QMainWindow):
         ev = self.active_event
         no_booking = not ev or not getattr(ev, 'linked_booking_id', '')
         if no_booking and "welcome" in self.pages:
-            # Reset naar qr-card (optimistic default). Achtergrond-ping
-            # bevestigt; pas bij 2 failures op rij → wifi-card.
+            # Start in CHECKING state — spinner-card terwijl we 3 pings doen
             if hasattr(self, '_welcome_action_stack'):
-                self._welcome_action_stack.setCurrentIndex(1)
+                self._welcome_state = 'checking'
+                self._welcome_check_results = []
                 self._welcome_consecutive_failures = 0
+                self._has_internet = None
+                self._welcome_action_stack.setCurrentIndex(2)
+                # Spinner animatie aan
+                if hasattr(self, '_welcome_spinner_timer'):
+                    self._welcome_spinner_timer.start()
             self.stack.setCurrentIndex(self.pages["welcome"])
-            # Start de wifi/internet check-timer (5 sec interval)
+            # Start ping-check direct (eerste van de 3) + timer voor follow-ups
             if hasattr(self, '_welcome_wifi_timer'):
                 self._welcome_check_connectivity()
                 self._welcome_wifi_timer.start()
@@ -4998,12 +5064,14 @@ class PhotoboothWindow(QMainWindow):
                     btn.setStyleSheet(self._welcome_lang_btn_style(active=(code == current)))
             except Exception:
                 pass
-            print("[UI] Welcome page getoond (geen event gekoppeld) — default ONLINE")
+            print("[UI] Welcome page getoond (geen event gekoppeld) — state=CHECKING")
             return
 
-        # Stop wifi-timer als we naar normale idle gaan
+        # Stop wifi-timer + spinner als we naar normale idle gaan
         if hasattr(self, '_welcome_wifi_timer') and self._welcome_wifi_timer.isActive():
             self._welcome_wifi_timer.stop()
+        if hasattr(self, '_welcome_spinner_timer') and self._welcome_spinner_timer.isActive():
+            self._welcome_spinner_timer.stop()
 
         self.stack.setCurrentIndex(self.pages["idle"])
         self._update_status()
