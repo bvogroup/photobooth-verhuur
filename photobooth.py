@@ -6646,6 +6646,19 @@ class PhotoboothWindow(QMainWindow):
                 # File handle is now closed; continue processing in memory
                 if getattr(frame, 'rotation', 0) != 0:
                     img = img.rotate(-frame.rotation, expand=True)
+                # Auto-orient: als frame en foto verschillende aspect-oriëntatie
+                # hebben (bv. landscape frame + portrait camera-foto), draai
+                # de foto 90° zodat z'n long-axis matcht met de long-axis van
+                # het frame. Voorkomt sterk croppen / verkeerd uitsnijden bij
+                # liggende templates zoals '4 foto's op een vel'.
+                _iw, _ih = img.size
+                frame_land = frame.width > frame.height
+                img_land = _iw > _ih
+                if frame_land != img_land:
+                    img = img.rotate(90, expand=True)
+                    print(f"[STRIP] Foto {frame_index + 1} auto-georiënteerd "
+                          f"(frame={'L' if frame_land else 'P'}, "
+                          f"foto={'L' if img_land else 'P'} → draai 90°)")
                 # Crop-to-fit: vult het frame exact, snijdt overtollige randen af
                 img = ImageOps.fit(img, (frame.width, frame.height), Image.LANCZOS)
                 with self._processed_lock:
@@ -7014,6 +7027,12 @@ class PhotoboothWindow(QMainWindow):
                         img = img.rotate(-ev.camera_rotation, expand=True)
                     if getattr(frame, 'rotation', 0) != 0:
                         img = img.rotate(-frame.rotation, expand=True)
+                    # Auto-orient: zie _process_photo_for_strip — match aspect
+                    # van foto met aspect van frame zodat liggende templates
+                    # ook correct werken met een portrait camera-opname.
+                    _iw, _ih = img.size
+                    if (frame.width > frame.height) != (_iw > _ih):
+                        img = img.rotate(90, expand=True)
                     img = ImageOps.fit(img, (frame.width, frame.height), Image.LANCZOS)
                 else:
                     continue
@@ -7222,6 +7241,10 @@ class PhotoboothWindow(QMainWindow):
                         img = img.rotate(-ev.camera_rotation, expand=True)
                     if getattr(frame, 'rotation', 0) != 0:
                         img = img.rotate(-frame.rotation, expand=True)
+                    # Auto-orient: zie _process_photo_for_strip
+                    _iw, _ih = img.size
+                    if (frame.width > frame.height) != (_iw > _ih):
+                        img = img.rotate(90, expand=True)
                     img = ImageOps.fit(img, (frame.width, frame.height), Image.LANCZOS)
                 else:
                     continue
