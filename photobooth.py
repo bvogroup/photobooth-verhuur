@@ -14252,12 +14252,27 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[LINKED] Template-regen waarschuwing: {err}")
 
     def _apply_linked_booking(self, booking_data: dict):
-        """Schrijf booking-metadata naar active_event (na coupling of refresh)."""
+        """Schrijf booking-metadata naar active_event (na coupling of refresh).
+
+        BELANGRIJK: als de cloud-response geen geldige booking.id bevat,
+        wordt de bestaande koppeling NIET overschreven met lege waarden.
+        Eerder werd `linked_booking_id` blind op `b.get("id", "")` gezet —
+        bij een lege/onvolledige response betekende dat: koppeling weg, na
+        reboot welcome-scherm. Nu: alleen schrijven als bid niet-leeg.
+        """
         if not self.active_event:
             return
-        b = booking_data.get("booking", {})
-        q = booking_data.get("quote", {})
-        bid = b.get("id", "")
+        b = booking_data.get("booking", {}) or {}
+        q = booking_data.get("quote", {}) or {}
+        bid = b.get("id", "") or ""
+        # Geen geldige booking.id in response → bestaande koppeling intact laten.
+        # Voorkomt dat een lege/onvolledige cloud-response de event-koppeling op
+        # disk wist na een geslaagde fetch_booking-call.
+        if not bid:
+            print(f"[LINKED] _apply_linked_booking: lege booking.id in response, "
+                  f"bestaande koppeling intact gelaten "
+                  f"(id={self.active_event.linked_booking_id!r})")
+            return
         # Display label: customer + event_date als beschikbaar
         name = (b.get("customer_name") or q.get("customer_name")
                 or b.get("event_name") or q.get("event_name") or "Gekoppeld event")
@@ -14275,9 +14290,17 @@ class PhotoboothWindow(QMainWindow):
             except Exception as e:
                 print(f"[LINKED] Stop oude uploader fout (niet kritiek): {e}")
         self.active_event.linked_booking_id = str(bid)
-        self.active_event.linked_token = q.get("token", self.active_event.linked_token)
+        # Token NIET overschrijven met lege string — bewaar bestaande tokens
+        # als de response 'm niet bevat (token zit normaal niet in booking_data).
+        new_token = q.get("token", "") or ""
+        if new_token:
+            self.active_event.linked_token = new_token
         self.active_event.linked_booking_label = label
-        self.active_event.linked_design_path = b.get("photostrip_design_url", "")
+        # Design path NIET wissen als de response 'm niet teruggeeft —
+        # behoud bestaande lokale referentie voor offline-flow.
+        new_design = b.get("photostrip_design_url", "") or ""
+        if new_design:
+            self.active_event.linked_design_path = new_design
         # Gebruiker-keuze: altijd 3 foto's voor DNP linked-modus (kan later
         # variabel via UI). Cloud-DB-default is 2 — die negeren we.
         self.active_event.linked_photo_count = 3
