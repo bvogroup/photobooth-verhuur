@@ -14405,34 +14405,38 @@ class PhotoboothWindow(QMainWindow):
                 except OSError:
                     pass
 
-        # NIET MEER aggressive deleten van cloud-template files die niet in
-        # de huidige cloud-respons zitten — dat veroorzaakte data-verlies als
-        # de portal-DB per ongeluk een template kwijtraakte of een netwerk-
-        # fout een lege lijst gaf.
-        #
-        # Stale files blijven gewoon in TEMPLATES_DIR staan; ze worden in de
-        # picker getoond zolang ze technisch valide JSON zijn. Operator kan
-        # ze handmatig wissen via Layout-tab > Verwijder template (of via
-        # filesystem).
-        #
-        # Zo zijn we beschermd tegen accidentele cloud-deletes.
+        # Slimme cleanup: delete lokale files die NIET meer in de cloud-lijst
+        # voorkomen, MAAR ALLEEN als de cloud-lijst non-empty is. Een lege
+        # lijst betekent waarschijnlijk netwerkfout/bug — dan niets wissen.
+        # Een non-empty lijst betekent klant heeft expliciet templates
+        # verwijderd in portaal → die mogen ook lokaal weg.
         valid_template_ids = {ct.get("id", "") for ct in cloud_templates if ct.get("id")}
-        try:
-            existing_cloud_files = [
-                f for f in os.listdir(config.TEMPLATES_DIR)
-                if f.startswith(f"linked_{booking_id}_tmpl_") and f.endswith(".json")
-            ]
-            # Diagnose-log: welke staan er nog naast de cloud-lijst?
-            for fname in existing_cloud_files:
-                middle = fname[len(f"linked_{booking_id}_tmpl_"):-len(".json")]
-                in_cloud = any(
-                    "".join(c if c.isalnum() or c in "-_" else "_" for c in vid) == middle
+        if not valid_template_ids:
+            print(f"[LINKED-CLOUD] Cloud-lijst leeg — geen cleanup (bug-safe)")
+        else:
+            try:
+                existing_cloud_files = [
+                    f for f in os.listdir(config.TEMPLATES_DIR)
+                    if f.startswith(f"linked_{booking_id}_tmpl_") and f.endswith(".json")
+                ]
+                # Match safe_id-vorm (UUID sanitization) tegen valid ids
+                valid_safe_ids = {
+                    "".join(c if c.isalnum() or c in "-_" else "_" for c in vid)
                     for vid in valid_template_ids
-                )
-                if not in_cloud:
-                    print(f"[LINKED-CLOUD] Behouden (niet in cloud-lijst): {fname}")
-        except OSError:
-            pass
+                }
+                for fname in existing_cloud_files:
+                    middle = fname[len(f"linked_{booking_id}_tmpl_"):-len(".json")]
+                    if middle in valid_safe_ids:
+                        continue  # nog steeds geldig
+                    # Niet meer in cloud → user heeft 'm in portaal verwijderd
+                    fpath = os.path.join(config.TEMPLATES_DIR, fname)
+                    try:
+                        os.remove(fpath)
+                        print(f"[LINKED-CLOUD] Verwijderd (uit portaal weg): {fname}")
+                    except OSError as e:
+                        print(f"[LINKED-CLOUD] Kon niet verwijderen {fname}: {e}")
+            except OSError:
+                pass
 
         # Sorteer templates: is_default eerst, dan sort_order, dan naam
         sorted_templates = sorted(
@@ -14512,13 +14516,25 @@ class PhotoboothWindow(QMainWindow):
         print(f"[LINKED-CLOUD] Klaar: {applied_count} opgeslagen, {skipped_count} overgeslagen "
               f"(default='{default_template_name}', first='{first_template_name}')")
 
-        # Set active template_name als hij nog niet bij een cloud template hoort
+        # Set active template_name:
+        # - nog niet gezet op een cloud-template variant → kies default
+        # - huidige template is een gedeletete cloud-template → kies default
         chosen = default_template_name or first_template_name
         current = ev.template_name or ""
         prefix = f"Event {booking_id[:8]} — "
-        if chosen and not current.startswith(prefix):
+        valid_cloud_names = set()
+        for ct in cloud_templates:
+            display_name = ct.get("name") or ""
+            if display_name:
+                valid_cloud_names.add(f"Event {booking_id[:8]} — {display_name}")
+        needs_reset = (
+            not current.startswith(prefix)
+            or (valid_cloud_names and current not in valid_cloud_names)
+        )
+        if chosen and needs_reset:
             ev.template_name = chosen
-            print(f"[LINKED-CLOUD] Active template_name → '{chosen}'")
+            print(f"[LINKED-CLOUD] Active template_name → '{chosen}' "
+                  f"(was '{current}')")
         ev.background_path = ""  # cloud-template wint
         ev.save(config.EVENTS_DIR)
         if hasattr(self, '_layout_categories_container'):
