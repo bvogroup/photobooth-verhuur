@@ -5483,13 +5483,17 @@ class PhotoboothWindow(QMainWindow):
         return results
 
     def _show_template_picker(self, choices):
-        """Grid template-picker met échte template-previews.
+        """Template-picker met max 3 cards per pagina + ◀ ▶ navigatie.
 
-        Toont alle templates naast elkaar in een horizontale rij. Elke kaart
-        heeft een breedte gebaseerd op het paper-formaat (stripjes smaller,
-        velletjes breder). Klik op een kaart om te bevestigen.
+        Toont een rij van max 3 templates tegelijk. Bij meer dan 3:
+        carousel-pagina's met pijlen voor links/rechts. Cards tonen
+        ECHTE template-previews als 'gevallen vel' (drop-shadow op
+        donkere achtergrond) zodat het volledige papier zichtbaar is.
         """
-        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PyQt5.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+            QStackedWidget,
+        )
 
         current_page = self.stack.currentWidget()
         if current_page is None:
@@ -5498,77 +5502,130 @@ class PhotoboothWindow(QMainWindow):
         self._tmpl_picker_overlay.setGeometry(0, 0, current_page.width(), current_page.height())
         self._tmpl_picker_overlay.setStyleSheet("background: rgba(20,20,22,0.97);")
         self._tmpl_picker_choices = list(choices)
+        self._tmpl_picker_page = 0
+        PER_PAGE = 3
 
         lay = QVBoxLayout(self._tmpl_picker_overlay)
-        lay.setContentsMargins(40, 40, 40, 40)
-        lay.setSpacing(20)
+        lay.setContentsMargins(40, 36, 40, 32)
+        lay.setSpacing(14)
 
         # ── Header ────────────────────────────────────────────────────
         title = QLabel("Kies je ontwerp")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("DM Sans", 42, QFont.Bold))
+        title.setFont(QFont("DM Sans", 40, QFont.Bold))
         title.setStyleSheet("color: white; background: transparent;")
         lay.addWidget(title)
 
         subtitle = QLabel("Tik op het ontwerp dat je wilt gebruiken")
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setFont(QFont("DM Sans", 16))
-        subtitle.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
+        subtitle.setFont(QFont("DM Sans", 15))
+        subtitle.setStyleSheet("color: rgba(255,255,255,0.55); background: transparent;")
         lay.addWidget(subtitle)
-        lay.addStretch()
+        lay.addSpacing(8)
 
-        # ── Bepaal layout-grootte ─────────────────────────────────────
+        # ── Scherm-afmetingen + card-hoogte ───────────────────────────
         screen = self.screen()
         screen_w = screen.geometry().width() if screen else 1920
         screen_h = screen.geometry().height() if screen else 1080
 
-        # Bereken card sizes — alle cards hebben dezelfde HOOGTE, maar
-        # breedte verschilt per template-type (paper aspect).
-        # Doelhoogte: ~60% van scherm.
-        thumb_h = min(720, int(screen_h * 0.62))
+        # Doelhoogte cards: ~58% van scherm. Iets ruimer dan eerst
+        # zodat de paper-margin (8% breathing-room rond canvas) goed
+        # zichtbaar is.
+        thumb_h = min(700, int(screen_h * 0.58))
+
+        # Bouw alle cards 1 keer (totale breedte beperkt door PER_PAGE)
         cards = []
-        total_width = 0
-        gap = 28
-        # Render cards + bereken totale breedte
         for tmpl in self._tmpl_picker_choices:
             thumb_w = self._picker_card_width_for_aspect(tmpl, thumb_h)
             card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
             cards.append(card)
-            total_width += thumb_w + 60   # card breedte incl. padding
-        total_width += (len(cards) - 1) * gap
 
-        # Als totale breedte > scherm: schaal naar beneden
-        max_row_w = screen_w - 100
-        if total_width > max_row_w and total_width > 0:
-            scale = max_row_w / total_width
-            thumb_h = int(thumb_h * scale)
-            # Cards opnieuw bouwen op geschaalde hoogte
-            cards = []
-            for tmpl in self._tmpl_picker_choices:
-                thumb_w = self._picker_card_width_for_aspect(tmpl, thumb_h)
-                card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
-                cards.append(card)
+        # Paginate
+        n = len(cards)
+        n_pages = max(1, (n + PER_PAGE - 1) // PER_PAGE)
 
-        # ── Grid (horizontale rij) ────────────────────────────────────
-        grid_row = QHBoxLayout()
-        grid_row.setSpacing(gap)
-        grid_row.addStretch()
-        for card in cards:
-            grid_row.addWidget(card, alignment=Qt.AlignCenter)
-        grid_row.addStretch()
-        lay.addLayout(grid_row)
-        lay.addStretch()
+        # ── Carousel: stacked pages met max 3 cards per pagina ────────
+        self._tmpl_picker_stack = QStackedWidget()
+        self._tmpl_picker_stack.setStyleSheet("background: transparent;")
+        for page_idx in range(n_pages):
+            start = page_idx * PER_PAGE
+            end = min(start + PER_PAGE, n)
+            page_widget = QWidget()
+            page_widget.setStyleSheet("background: transparent;")
+            page_lay = QHBoxLayout(page_widget)
+            page_lay.setSpacing(48)
+            page_lay.setContentsMargins(0, 0, 0, 0)
+            page_lay.addStretch()
+            for card in cards[start:end]:
+                page_lay.addWidget(card, alignment=Qt.AlignCenter)
+            page_lay.addStretch()
+            self._tmpl_picker_stack.addWidget(page_widget)
+
+        # Carousel-row: ◀ [stack] ▶
+        carousel_row = QHBoxLayout()
+        carousel_row.setContentsMargins(0, 0, 0, 0)
+        carousel_row.setSpacing(0)
+
+        def _arrow_btn(text, slot, side):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFont(QFont("DM Sans", 28, QFont.Bold))
+            b.setFixedSize(64, 64)
+            b.setStyleSheet(
+                "QPushButton { background: rgba(255,255,255,0.08); color: white; "
+                "border: 1px solid rgba(255,255,255,0.18); border-radius: 32px; }"
+                "QPushButton:hover { background: rgba(255,255,255,0.16); }"
+                "QPushButton:disabled { color: rgba(255,255,255,0.2); "
+                "background: rgba(255,255,255,0.04); }"
+            )
+            b.clicked.connect(slot)
+            return b
+
+        self._tmpl_picker_prev_btn = _arrow_btn("‹", self._tmpl_picker_page_prev, "left")
+        self._tmpl_picker_next_btn = _arrow_btn("›", self._tmpl_picker_page_next, "right")
+
+        carousel_row.addWidget(self._tmpl_picker_prev_btn, alignment=Qt.AlignVCenter)
+        carousel_row.addSpacing(16)
+        carousel_row.addWidget(self._tmpl_picker_stack, stretch=1)
+        carousel_row.addSpacing(16)
+        carousel_row.addWidget(self._tmpl_picker_next_btn, alignment=Qt.AlignVCenter)
+
+        # Verberg pijlen als er maar 1 pagina is
+        if n_pages <= 1:
+            self._tmpl_picker_prev_btn.hide()
+            self._tmpl_picker_next_btn.hide()
+
+        lay.addLayout(carousel_row, stretch=1)
+
+        # ── Page-indicator dots (alleen bij >1 pagina) ────────────────
+        self._tmpl_picker_dots = []
+        if n_pages > 1:
+            dots_row = QHBoxLayout()
+            dots_row.setSpacing(10)
+            dots_row.addStretch()
+            for i in range(n_pages):
+                dot = QLabel()
+                dot.setFixedSize(10, 10)
+                dot.setStyleSheet(
+                    f"background: {'white' if i == 0 else 'rgba(255,255,255,0.28)'}; "
+                    f"border-radius: 5px;"
+                )
+                self._tmpl_picker_dots.append(dot)
+                dots_row.addWidget(dot)
+            dots_row.addStretch()
+            lay.addLayout(dots_row)
+            lay.addSpacing(6)
 
         # ── Annuleer knop onderaan ───────────────────────────────────
         cancel_btn = QPushButton("✕  Annuleer")
         cancel_btn.setCursor(Qt.PointingHandCursor)
-        cancel_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        cancel_btn.setFixedHeight(52)
+        cancel_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
+        cancel_btn.setFixedHeight(48)
         cancel_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.1); color: white; "
-            "border: 1px solid rgba(255,255,255,0.25); border-radius: 14px; "
-            "padding: 8px 36px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
+            "QPushButton { background: rgba(255,255,255,0.08); color: white; "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 12px; "
+            "padding: 6px 32px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.16); }"
         )
         cancel_btn.clicked.connect(self._on_template_picker_cancel)
         cancel_row = QHBoxLayout()
@@ -5579,8 +5636,37 @@ class PhotoboothWindow(QMainWindow):
 
         self._tmpl_picker_overlay.show()
         self._tmpl_picker_overlay.raise_()
-        print(f"[TEMPLATE-PICKER] Grid geopend met {len(choices)} keuzes "
+        # Update knop-state (eerste pagina)
+        self._tmpl_picker_update_page_state()
+        print(f"[TEMPLATE-PICKER] Geopend met {n} keuzes over {n_pages} pagina(s) "
               f"(thumb h={thumb_h})")
+
+    def _tmpl_picker_update_page_state(self):
+        """Update arrow-buttons + dot-indicator op basis van huidige pagina."""
+        if not hasattr(self, '_tmpl_picker_stack'):
+            return
+        idx = self._tmpl_picker_page
+        n_pages = self._tmpl_picker_stack.count()
+        if hasattr(self, '_tmpl_picker_prev_btn'):
+            self._tmpl_picker_prev_btn.setEnabled(idx > 0)
+            self._tmpl_picker_next_btn.setEnabled(idx < n_pages - 1)
+        for i, dot in enumerate(self._tmpl_picker_dots):
+            dot.setStyleSheet(
+                f"background: {'white' if i == idx else 'rgba(255,255,255,0.28)'}; "
+                f"border-radius: 5px;"
+            )
+
+    def _tmpl_picker_page_prev(self):
+        if self._tmpl_picker_page > 0:
+            self._tmpl_picker_page -= 1
+            self._tmpl_picker_stack.setCurrentIndex(self._tmpl_picker_page)
+            self._tmpl_picker_update_page_state()
+
+    def _tmpl_picker_page_next(self):
+        if self._tmpl_picker_page < self._tmpl_picker_stack.count() - 1:
+            self._tmpl_picker_page += 1
+            self._tmpl_picker_stack.setCurrentIndex(self._tmpl_picker_page)
+            self._tmpl_picker_update_page_state()
 
     def _picker_card_width_for_aspect(self, tmpl, thumb_h):
         """Bereken card-breedte op basis van het paper-aspect van het template.
@@ -5683,30 +5769,40 @@ class PhotoboothWindow(QMainWindow):
     def _build_template_picker_card(self, tmpl, thumb_w, thumb_h):
         """Bouw één klikbare template-kaart voor de picker.
 
-        Toont:
-          - De ECHTE template-preview (achtergrond + foto-frames) met
-            rounded corners zodat het op een fotostripje lijkt
-          - Naam onder de preview
-        Click → confirm selectie.
+        Visueel: het hele papiervel met 8% breathing-room rond de
+        canvas-rand, drop-shadow eronder zodat het lijkt op een echt
+        liggend fotopapiertje. Naam eronder.
         """
-        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+        from PyQt5.QtWidgets import (
+            QWidget, QVBoxLayout, QLabel, QGraphicsDropShadowEffect,
+        )
+        from PyQt5.QtGui import QColor
 
-        # Outer container — transparent, clickbaar, geen extra rand/bg
+        # Outer container — transparent, clickbaar
         card = QWidget()
         card.setCursor(Qt.PointingHandCursor)
         card.setStyleSheet("background: transparent;")
         card_lay = QVBoxLayout(card)
-        card_lay.setContentsMargins(8, 8, 8, 8)
-        card_lay.setSpacing(14)
+        card_lay.setContentsMargins(0, 0, 0, 0)
+        card_lay.setSpacing(20)
 
-        # Render ECHTE preview (bg + frame placeholders) — tight (geen
-        # witte margin) + rounded mask
-        raw_pix = self._render_layout_preview(tmpl, thumb_w, thumb_h, tight=True)
-        rounded_pix = self._apply_rounded_corners(raw_pix, radius=24)
+        # Render ECHTE preview met 8% breathing-room (tight=False) zodat
+        # het hele vel zichtbaar is incl. de witte paper-margins rond de
+        # frames. Achtergrond van de pixmap is transparant gemaakt door
+        # de inner-render aan te passen.
+        raw_pix = self._render_layout_preview(tmpl, thumb_w, thumb_h, tight=False)
+        rounded_pix = self._apply_rounded_corners(raw_pix, radius=18)
         thumb = QLabel()
         thumb.setPixmap(rounded_pix)
         thumb.setAlignment(Qt.AlignCenter)
         thumb.setFixedSize(thumb_w, thumb_h)
+        # Subtiele drop-shadow zodat het vel "zweeft" boven de donkere
+        # achtergrond — geeft tactiel papier-gevoel.
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(34)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        thumb.setGraphicsEffect(shadow)
         thumb.setStyleSheet("background: transparent;")
         card_lay.addWidget(thumb, alignment=Qt.AlignCenter)
 
@@ -5716,19 +5812,20 @@ class PhotoboothWindow(QMainWindow):
             display_name = display_name.split(" — ", 1)[1]
         name_lbl = QLabel(display_name)
         name_lbl.setAlignment(Qt.AlignCenter)
-        name_lbl.setFont(QFont("DM Sans", 16, QFont.Bold))
+        name_lbl.setFont(QFont("DM Sans", 17, QFont.Bold))
         name_lbl.setStyleSheet(
             "color: white; background: transparent; "
             "letter-spacing: -0.2px;"
         )
         name_lbl.setWordWrap(True)
-        name_lbl.setMaximumWidth(thumb_w + 20)
+        name_lbl.setMaximumWidth(thumb_w + 40)
         card_lay.addWidget(name_lbl)
 
-        # Click handler — direct confirm bij tap
+        # Click handler — direct confirm bij tap (via thumb of card)
         def _on_click(_event, t=tmpl):
             self._on_template_picked(t)
         card.mousePressEvent = _on_click
+        thumb.mousePressEvent = _on_click
         return card
 
     def _apply_rounded_corners(self, pix, radius=24):
@@ -11779,16 +11876,15 @@ class PhotoboothWindow(QMainWindow):
         """Render a QPixmap showing the frame layout as colored rectangles.
 
         Args:
-            tight: True = canvas vult de hele pixmap, transparante achtergrond
-                   en geen 8% letterbox-margin. Gebruikt door template-picker.
-                   False = canvas centreert met margin (default, voor grid).
+            tight: True = canvas vult de hele pixmap, geen letterbox-margin.
+                   False = canvas centreert met 8% breathing-room.
+        Achtergrond rondom canvas is ALTIJD transparant — laat de parent
+        widget z'n eigen background tonen. Voor een 'gevallen vel'-effect
+        kan de caller een drop-shadow op het label zetten.
         """
         from PyQt5.QtGui import QPainter, QPen, QBrush
         pixmap = QPixmap(w, h)
-        if tight:
-            pixmap.fill(Qt.transparent)
-        else:
-            pixmap.fill(QColor(config.COLOR_CARD_BG))
+        pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
