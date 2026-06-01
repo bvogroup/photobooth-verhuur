@@ -2500,29 +2500,43 @@ class PhotoboothWindow(QMainWindow):
     def _welcome_check_connectivity(self):
         """Check WiFi + internet status via direct TCP-socket (bypass DNS).
 
-        urllib.request blokkeert lang (10-30 sec) bij DNS-fail op Windows
-        omdat de DNS-timeout niet gekoppeld is aan de urlopen-timeout.
-        Daarom gebruiken we socket.create_connection direct naar IP-adres,
-        wat met 1 sec timeout snel faalt bij geen netwerk.
+        Probeert meerdere host:port combinaties zodat we niet falen door
+        één geblokkeerde poort (sommige firewalls blokkeren uitgaand 53):
+          - 8.8.8.8:53     Google DNS
+          - 1.1.1.1:53     Cloudflare DNS
+          - 8.8.8.8:443    Google DNS over HTTPS (vrijwel altijd open)
+          - 1.1.1.1:443    Cloudflare DNS over HTTPS (vrijwel altijd open)
 
-        We testen Google DNS (8.8.8.8:53) + Cloudflare DNS (1.1.1.1:53) —
-        beide zijn betrouwbare anycast servers.
+        Logt de exact gefaalde pogingen zodat netwerk-issues debugbaar zijn.
         """
         import threading
         def _bg():
             import socket
             online = False
-            for host, port in (("8.8.8.8", 53), ("1.1.1.1", 53)):
+            failures = []
+            targets = [
+                ("8.8.8.8", 53),
+                ("1.1.1.1", 53),
+                ("8.8.8.8", 443),
+                ("1.1.1.1", 443),
+            ]
+            for host, port in targets:
                 try:
-                    s = socket.create_connection((host, port), timeout=1.0)
+                    s = socket.create_connection((host, port), timeout=1.5)
                     s.close()
                     online = True
                     break
-                except OSError:
+                except OSError as e:
+                    failures.append(f"{host}:{port}={type(e).__name__}({e})")
                     continue
             from PyQt5.QtCore import QTimer as _T
             _T.singleShot(0, lambda: self._welcome_apply_connectivity(online))
-            print(f"[WELCOME] Connectivity check (socket): {'online' if online else 'offline'}")
+            if online:
+                print(f"[WELCOME] Connectivity check: online (via {host}:{port})")
+            else:
+                # Alle pogingen mislukt — log waarom
+                print(f"[WELCOME] Connectivity check: OFFLINE — alle pogingen "
+                      f"faalden: {' | '.join(failures)}")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
