@@ -2991,12 +2991,12 @@ TRANSLATIONS = {
         "it": "Scansiona QR",
     },
     "welcome_internet_checking": {
-        "nl": "Internet controleren...",
-        "en": "Checking internet...",
-        "de": "Internet wird geprüft...",
-        "fr": "Vérification de l'internet...",
-        "es": "Comprobando internet...",
-        "it": "Verifica internet...",
+        "nl": "Photobooth wordt opgestart...",
+        "en": "Photobooth is starting up...",
+        "de": "Photobooth wird gestartet...",
+        "fr": "Démarrage de la photobooth...",
+        "es": "Iniciando la photobooth...",
+        "it": "Avvio della photobooth...",
     },
 }
 

@@ -2117,13 +2117,12 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_lock_btn.clicked.connect(self._go_settings)
 
         # ── Periodic wifi/internet check ─────────────────────────────
-        # Interval 3 sec — snel commit naar de juiste card binnen ~10 sec.
-        # State machine in _welcome_apply_connectivity bepaalt of we
-        # switchen op basis van success/failure counters.
+        # Interval 1.5 sec — 3 pings in ~5 sec, snelle commit naar juiste card.
         self._welcome_wifi_timer = QTimer(self)
-        self._welcome_wifi_timer.setInterval(3000)
+        self._welcome_wifi_timer.setInterval(1500)
         self._welcome_wifi_timer.timeout.connect(self._welcome_check_connectivity)
         self._welcome_consecutive_failures = 0
+        self._welcome_consecutive_successes = 0
 
         # Reposition lock button after page is shown
         page.resizeEvent = self._welcome_resize_event
@@ -2263,7 +2262,7 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_checking_label = h
         lay.addWidget(h)
 
-        sub = QLabel("Even kijken of er internetverbinding is...")
+        sub = QLabel("Een moment geduld...")
         sub.setAlignment(Qt.AlignCenter)
         sub.setFont(QFont("DM Sans", 13))
         sub.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
@@ -2549,9 +2548,10 @@ class PhotoboothWindow(QMainWindow):
             used_ip = ""
             for ip in ("8.8.8.8", "1.1.1.1"):
                 try:
+                    # -w 1000 = 1 sec ping timeout (max 2 sec totaal voor beide IPs)
                     result = subprocess.run(
-                        ["ping", ip, "-n", "1", "-w", "1500"],
-                        capture_output=True, text=True, timeout=3,
+                        ["ping", ip, "-n", "1", "-w", "1000"],
+                        capture_output=True, text=True, timeout=2,
                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
                     )
                     if result.returncode == 0:
@@ -2620,15 +2620,26 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[WELCOME] 5× ping mislukt → switch naar wifi-card")
             return
 
-        # ── OFFLINE: blijf op wifi-card, 1 success genoeg om te switchen ─
+        # ── OFFLINE: blijf op wifi-card, 2x success op rij nodig ────────
+        # Voorkomt dat één toevallige geslaagde ping (bv. NCSI cache) ten
+        # onrechte naar qr-card switcht terwijl de gast geen wifi heeft.
         if state == 'offline':
             if online:
-                self._welcome_state = 'online'
-                self._has_internet = True
-                self._welcome_action_stack.setCurrentIndex(1)
-                self._welcome_consecutive_failures = 0
-                print(f"[WELCOME] Eerste succesvolle ping → switch naar qr-card")
-            # Anders blijf op wifi-card
+                self._welcome_consecutive_successes = getattr(
+                    self, '_welcome_consecutive_successes', 0
+                ) + 1
+                if self._welcome_consecutive_successes >= 2:
+                    self._welcome_state = 'online'
+                    self._has_internet = True
+                    self._welcome_action_stack.setCurrentIndex(1)
+                    self._welcome_consecutive_failures = 0
+                    self._welcome_consecutive_successes = 0
+                    print(f"[WELCOME] 2× ping OK op rij → switch naar qr-card")
+                else:
+                    print(f"[WELCOME] Offline state — success {self._welcome_consecutive_successes}/2")
+            else:
+                # Reset success counter bij failure
+                self._welcome_consecutive_successes = 0
 
     def _welcome_commit_state(self, online: bool):
         """Initial-state commit na eerste batch checking-pings."""
@@ -5055,6 +5066,7 @@ class PhotoboothWindow(QMainWindow):
                 self._welcome_state = 'checking'
                 self._welcome_check_results = []
                 self._welcome_consecutive_failures = 0
+                self._welcome_consecutive_successes = 0
                 self._has_internet = None
                 self._welcome_action_stack.setCurrentIndex(2)
                 # Spinner animatie aan
