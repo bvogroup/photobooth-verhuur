@@ -4597,24 +4597,27 @@ class PhotoboothWindow(QMainWindow):
     def _show_template_picker(self, choices):
         """Toon fullscreen overlay om uit meerdere linked templates te kiezen.
 
-        Bij keuze → set selected_template + active_event.template_name +
-        ga door naar _go_direct_capture.
+        Elke kaart toont:
+          - Grote preview-thumbnail (canvas met frames als grijze rechthoeken)
+          - Template-naam
+          - Aantal foto's
+        Cards zijn klikbaar via mousePressEvent.
         """
         from PyQt5.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout
+            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout,
+            QFrame, QSizePolicy
         )
+
         # Bouw overlay op de huidige page
         current_page = self.stack.currentWidget()
         if current_page is None:
             current_page = self
         self._tmpl_picker_overlay = QWidget(current_page)
         self._tmpl_picker_overlay.setGeometry(0, 0, current_page.width(), current_page.height())
-        self._tmpl_picker_overlay.setStyleSheet(
-            f"background: rgba(26,26,26,0.97);"
-        )
+        self._tmpl_picker_overlay.setStyleSheet("background: rgba(26,26,26,0.97);")
         lay = QVBoxLayout(self._tmpl_picker_overlay)
         lay.setContentsMargins(40, 40, 40, 40)
-        lay.setSpacing(20)
+        lay.setSpacing(16)
 
         title = QLabel("Kies een ontwerp")
         title.setAlignment(Qt.AlignCenter)
@@ -4627,36 +4630,27 @@ class PhotoboothWindow(QMainWindow):
         subtitle.setFont(QFont("DM Sans", 16))
         subtitle.setStyleSheet("color: rgba(255,255,255,0.7); background: transparent;")
         lay.addWidget(subtitle)
-        lay.addSpacing(16)
+        lay.addSpacing(8)
+
+        # Bepaal thumbnail-grootte op basis van screen + aantal templates
+        screen = self.screen()
+        screen_w = screen.geometry().width() if screen else 1920
+        screen_h = screen.geometry().height() if screen else 1080
+        cols = min(len(choices), 3)
+        # Zorg dat 2-3 cards naast elkaar passen met marge
+        max_card_w = max(280, (screen_w - 200) // cols - 40)
+        max_card_h = max(380, screen_h - 320)
+        # Thumbnail: 80% van de kaart-hoogte, breedte bepaalt aspect later
+        thumb_h = min(560, int(max_card_h * 0.75))
+        thumb_w = min(420, max_card_w - 32)
 
         # Grid van template-kaarten
         grid_widget = QWidget()
         grid_widget.setStyleSheet("background: transparent;")
         grid = QGridLayout(grid_widget)
         grid.setSpacing(24)
-        cols = min(len(choices), 3)
-        thumb_w, thumb_h = 280, 360
         for i, tmpl in enumerate(choices):
-            card = QPushButton()
-            card.setCursor(Qt.PointingHandCursor)
-            card.setFixedSize(thumb_w + 24, thumb_h + 70)
-            card.setStyleSheet(
-                f"QPushButton {{ background: white; border: 4px solid transparent; "
-                f"border-radius: 16px; padding: 12px; text-align: center; }}"
-                f"QPushButton:hover {{ border-color: {config.COLOR_PRIMARY}; }}"
-                f"QPushButton:pressed {{ background: #f0f0f0; }}"
-            )
-            # Thumbnail in de knop via QLabel-icon
-            from PyQt5.QtGui import QIcon
-            pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
-            card.setIcon(QIcon(pix))
-            from PyQt5.QtCore import QSize
-            card.setIconSize(QSize(thumb_w, thumb_h))
-            # Naam onderaan
-            display_name = self._translate_template_name(tmpl.name) if hasattr(self, '_translate_template_name') else tmpl.name
-            card.setText("\n" + display_name)
-            card.setFont(QFont("DM Sans", 12, QFont.Bold))
-            card.clicked.connect(lambda _c, t=tmpl: self._on_template_picked(t))
+            card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
             grid.addWidget(card, i // cols, i % cols, Qt.AlignCenter)
         lay.addWidget(grid_widget, alignment=Qt.AlignCenter)
 
@@ -4668,7 +4662,7 @@ class PhotoboothWindow(QMainWindow):
         cancel_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.1); color: white; "
             "border: 1px solid rgba(255,255,255,0.25); border-radius: 12px; "
-            "padding: 8px 24px; }"
+            "padding: 8px 32px; }"
             "QPushButton:hover { background: rgba(255,255,255,0.18); }"
         )
         cancel_btn.clicked.connect(self._on_template_picker_cancel)
@@ -4680,7 +4674,56 @@ class PhotoboothWindow(QMainWindow):
 
         self._tmpl_picker_overlay.show()
         self._tmpl_picker_overlay.raise_()
-        print(f"[TEMPLATE-PICKER] Geopend met {len(choices)} keuzes")
+        print(f"[TEMPLATE-PICKER] Geopend met {len(choices)} keuzes "
+              f"(thumb: {thumb_w}x{thumb_h})")
+
+    def _build_template_picker_card(self, tmpl, thumb_w, thumb_h):
+        """Bouw één klikbare template-kaart voor de picker."""
+        from PyQt5.QtWidgets import QFrame, QVBoxLayout, QLabel
+
+        card = QFrame()
+        card.setCursor(Qt.PointingHandCursor)
+        card.setStyleSheet(
+            f"QFrame {{ background: white; border: 3px solid transparent; "
+            f"border-radius: 18px; padding: 14px; }}"
+            f"QFrame:hover {{ border-color: {config.COLOR_PRIMARY}; }}"
+        )
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(14, 14, 14, 14)
+        card_lay.setSpacing(12)
+
+        # Thumbnail-pixmap renderen — gebruik bestaande preview-functie
+        pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
+        thumb = QLabel()
+        thumb.setPixmap(pix)
+        thumb.setAlignment(Qt.AlignCenter)
+        thumb.setFixedSize(thumb_w, thumb_h)
+        thumb.setStyleSheet("background: transparent; border: 1px solid #ddd; border-radius: 8px;")
+        card_lay.addWidget(thumb, alignment=Qt.AlignCenter)
+
+        # Naam (zonder "Event <id> —" prefix als die er staat)
+        display_name = tmpl.name
+        if " — " in display_name:
+            display_name = display_name.split(" — ", 1)[1]
+        name_lbl = QLabel(display_name)
+        name_lbl.setAlignment(Qt.AlignCenter)
+        name_lbl.setFont(QFont("DM Sans", 18, QFont.Bold))
+        name_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        name_lbl.setWordWrap(True)
+        card_lay.addWidget(name_lbl)
+
+        # Aantal foto's onder de naam
+        info_lbl = QLabel(f"{tmpl.num_photos} foto's")
+        info_lbl.setAlignment(Qt.AlignCenter)
+        info_lbl.setFont(QFont("DM Sans", 13))
+        info_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        card_lay.addWidget(info_lbl)
+
+        # Click handler via mousePressEvent
+        def _on_click(_event, t=tmpl):
+            self._on_template_picked(t)
+        card.mousePressEvent = _on_click
+        return card
 
     def _on_template_picked(self, tmpl):
         """User heeft een template gekozen uit de picker → start sessie."""
