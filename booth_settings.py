@@ -97,9 +97,15 @@ class BoothSettings:
     # ── Geavanceerd ────────────────────────────────────────────
     lock_icon_size: int = 60
     pin_code: str = ""
-    # Printer-modus: "canon" = oude flow (single/double strip op HiTi),
-    # "dnp" = nieuwe flow (triple strip 5x10cm op DNP QW410 met 2-inch cut).
-    printer_mode: str = "dnp"
+    # Printer-modus (3 modi sinds v1.99.34):
+    #   "4x3"     = 1 grote print op 4x3 paper (geen mirror/cut)
+    #   "4x6"     = Canon dubbele strip op 4x6 paper (links gemirrord naar
+    #               rechts; cut tussen 2 helften)
+    #   "3strips" = DNP triple strip — 600x1200 design 3× gestapeld op 4x6
+    #               vel met 2-inch cut
+    # Legacy waarden 'canon' / 'dnp' worden bij load gemigreerd naar
+    # respectievelijk '4x6' / '3strips'.
+    printer_mode: str = "3strips"
 
     # ── Booth-modus (verhuur Linked-functie) ──────────────────
     # "standalone" = huidige flow (lokaal + 30-min QR share)
@@ -145,6 +151,11 @@ class BoothSettings:
             except Exception as ex:
                 print(f"[BOOTH-SETTINGS] Kon niet laden ({ex}); defaults gebruikt")
                 instance = cls()
+        # Legacy printer_mode migratie ('canon'/'dnp' → '4x6'/'3strips')
+        if instance.printer_mode == "canon":
+            instance.printer_mode = "4x6"
+        elif instance.printer_mode == "dnp":
+            instance.printer_mode = "3strips"
         cls._apply_verhuur_overrides(instance)
         return instance
 

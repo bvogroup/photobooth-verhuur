@@ -5,11 +5,22 @@ Uses win32print + pure ctypes GDI calls to print.
 Uses a saved DEVMODE blob (captured via the driver's own preferences dialog)
 to guarantee that driver-specific settings like split/cut are preserved.
 
-Flow:
-1. User clicks "Printer instellen" in settings → driver dialog opens
-2. User selects paper size (e.g. "4x6 Split 2"), clicks OK
-3. Full DEVMODE (incl. driver-private bytes) is saved to disk
-4. Every print job loads that saved DEVMODE and passes it to CreateDCW
+Twee modi:
+- Single-profile (legacy, HiTi): één DEVMODE per printer. Gebruikt bij
+  print zonder profile_key.
+- Multi-profile (DNP QW410 verhuur): meerdere DEVMODEs per printer, één per
+  paper-format/cut-combinatie. Tijdens print kiest de app het juiste profiel
+  op basis van het template (bv. triple_strip → '4x6_cut').
+
+DNP profiel-sleutels:
+    PROFILE_4X6_NOCUT  — 4x6 vel, geen 2-inch cut (1 enkele foto)
+    PROFILE_4X6_CUT    — 4x6 vel met 2-inch cut (3 stripjes van 5x10 cm)
+    PROFILE_4X3        — 4x3 vel (half-size print)
+
+dmDeviceName-patch: bij replay overschrijven we de printernaam-bytes in de
+DEVMODE met de actuele Windows printernaam. Daardoor blijft de blob werken
+ook na unit-swap (zelfde model, andere fysieke printer waar Windows een
+andere queue-naam aan gaf, bv. 'DP-QW410 (kopie 1)').
 """
 
 import os
@@ -24,6 +35,19 @@ from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 import win32print
 import config
+
+
+# ── DNP profile-sleutels (gebruikt door de verhuur-flow) ───────────────────
+PROFILE_4X6_NOCUT = "4x6_nocut"   # 1 enkele foto op vol vel
+PROFILE_4X6_CUT = "4x6_cut"       # 3 stripjes via 2-inch cut
+PROFILE_4X3 = "4x3"               # half-size vel
+
+DNP_PROFILE_KEYS = (PROFILE_4X6_NOCUT, PROFILE_4X6_CUT, PROFILE_4X3)
+DNP_PROFILE_LABELS = {
+    PROFILE_4X6_NOCUT: "4x6 zonder cut (1 foto)",
+    PROFILE_4X6_CUT:   "4x6 met 2-inch cut (3 stripjes)",
+    PROFILE_4X3:       "4x3 (half-size)",
+}
 
 
 class PrinterError(Exception):
@@ -50,22 +74,60 @@ def find_printer(name_contains):
     return None
 
 
-def _devmode_path(printer_name):
-    """Return the path where the saved DEVMODE blob is stored."""
+def _devmode_path(printer_name, profile_key=None):
+    """Return the path where the saved DEVMODE blob is stored.
+
+    Args:
+        printer_name: Windows printer naam (will be sanitized voor filesystem)
+        profile_key: optionele profiel-sleutel (bv. '4x6_cut'). None = legacy
+                     single-profile pad (zelfde als pre-multi-profile versies).
+    """
     safe_name = "".join(c if c.isalnum() else "_" for c in printer_name)
+    if profile_key:
+        safe_key = "".join(c if c.isalnum() else "_" for c in profile_key)
+        return os.path.join(config.DATA_DIR,
+                            f"printer_devmode_{safe_name}_{safe_key}.bin")
     return os.path.join(config.DATA_DIR, f"printer_devmode_{safe_name}.bin")
 
 
-def capture_printer_devmode(printer_name, hwnd=None):
+def _patch_devmode_device_name(devmode_bytes: bytes, target_name: str) -> bytes:
+    """Overschrijf de printernaam-bytes in een DEVMODE-blob.
+
+    DEVMODE-layout (Windows): de eerste 32 wide-chars (= 64 bytes) bevatten
+    dmDeviceName als UTF-16 met null-terminator. Bij replay tegen een andere
+    printer-queue-naam (bv. na unit-swap waar Windows 'DP-QW410 (kopie 1)'
+    aanmaakte) moet die naam matchen, anders weigert CreateDCW de DC.
+
+    Args:
+        devmode_bytes: originele DEVMODE blob
+        target_name:   Windows printernaam waar we tegen gaan printen
+
+    Returns:
+        bytes met aangepaste dmDeviceName, rest van de buffer ongewijzigd.
+    """
+    if not devmode_bytes or len(devmode_bytes) < 64:
+        return devmode_bytes
+    CCHDEVICENAME_BYTES = 64  # 32 wide-chars × 2 bytes
+    # Build new dmDeviceName: target_name truncated to 31 chars + null-terminator
+    name = (target_name or "")[:31]
+    name_bytes = name.encode("utf-16-le")
+    # Pad to 64 bytes with null bytes
+    padded = name_bytes + b"\x00" * (CCHDEVICENAME_BYTES - len(name_bytes))
+    return padded + devmode_bytes[CCHDEVICENAME_BYTES:]
+
+
+def capture_printer_devmode(printer_name, hwnd=None, profile_key=None):
     """Open the printer driver's preferences dialog and save the resulting DEVMODE.
 
-    This shows the HiTi (or other printer) driver's own UI where the user
-    can select paper size, split/cut mode, media type, etc.
-    The full DEVMODE (including driver-private bytes) is saved to disk.
+    This shows the printer driver's own UI where the user can select paper
+    size, split/cut mode, media type, etc. The full DEVMODE (including
+    driver-private bytes) is saved to disk.
 
     Args:
         printer_name: Name (or partial name) of the printer
-        hwnd: Parent window handle (optional, for dialog positioning)
+        hwnd:         Parent window handle (optional, for dialog positioning)
+        profile_key:  Optional profiel-sleutel (bv. '4x6_cut'). None = legacy
+                      single-profile bestand.
 
     Returns:
         (ok, message) tuple
@@ -114,7 +176,7 @@ def capture_printer_devmode(printer_name, hwnd=None):
             return False, "Dialoog geannuleerd"
 
         # Save the full DEVMODE blob to disk
-        path = _devmode_path(exact_name)
+        path = _devmode_path(exact_name, profile_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'wb') as f:
             f.write(devmode_buf.raw)
@@ -123,7 +185,8 @@ def capture_printer_devmode(printer_name, hwnd=None):
         dm_struct_size = struct.unpack_from('<H', devmode_buf, 68)[0]
         dm_extra = struct.unpack_from('<H', devmode_buf, 70)[0]
         dm_paper = struct.unpack_from('<h', devmode_buf, 78)[0]
-        print(f"[PRINTER] DEVMODE opgeslagen: {dm_size}B "
+        suffix = f" [{profile_key}]" if profile_key else ""
+        print(f"[PRINTER] DEVMODE opgeslagen{suffix}: {dm_size}B "
               f"(struct={dm_struct_size}, extra={dm_extra}, paper={dm_paper})")
         print(f"[PRINTER] Opgeslagen naar: {path}")
 
@@ -135,37 +198,56 @@ def capture_printer_devmode(printer_name, hwnd=None):
         win32print.ClosePrinter(hprinter)
 
 
-def load_saved_devmode(printer_name):
-    """Load a previously saved DEVMODE blob for the given printer.
+def load_saved_devmode(printer_name, profile_key=None):
+    """Load a previously saved DEVMODE blob for the given printer/profile.
 
-    Returns the raw bytes, or None if no saved DEVMODE exists.
+    Returns the raw bytes met dmDeviceName aangepast naar de actuele printer,
+    of None als er geen DEVMODE bestaat voor dit profiel.
+
+    Bij profile_key=None: oude single-file pad (legacy / HiTi). Bij specifieke
+    key: zoekt eerst het profile-specifieke bestand; valt niet meer terug op
+    de legacy file (om verwarring te voorkomen — verkeerde paper-format!).
     """
     exact_name = find_printer(printer_name)
     if not exact_name:
         return None
 
-    path = _devmode_path(exact_name)
+    path = _devmode_path(exact_name, profile_key)
     if not os.path.isfile(path):
-        print(f"[PRINTER] Geen opgeslagen DEVMODE gevonden: {path}")
+        suffix = f" [{profile_key}]" if profile_key else ""
+        print(f"[PRINTER] Geen opgeslagen DEVMODE gevonden{suffix}: {path}")
         return None
 
     with open(path, 'rb') as f:
         data = f.read()
 
+    # Patch dmDeviceName naar de actuele printer-queue-naam zodat de blob
+    # ook werkt na unit-swap (Windows kan een andere naam toegekend hebben).
+    data = _patch_devmode_device_name(data, exact_name)
+
     dm_struct_size = struct.unpack_from('<H', data, 68)[0]
     dm_extra = struct.unpack_from('<H', data, 70)[0]
     dm_paper = struct.unpack_from('<h', data, 78)[0]
-    print(f"[PRINTER] DEVMODE geladen: {len(data)}B "
+    suffix = f" [{profile_key}]" if profile_key else ""
+    print(f"[PRINTER] DEVMODE geladen{suffix}: {len(data)}B "
           f"(struct={dm_struct_size}, extra={dm_extra}, paper={dm_paper})")
     return data
 
 
-def has_saved_devmode(printer_name):
-    """Check if there's a saved DEVMODE for this printer."""
+def has_saved_devmode(printer_name, profile_key=None):
+    """Check if there's a saved DEVMODE for this printer/profile."""
     exact_name = find_printer(printer_name)
     if not exact_name:
         return False
-    return os.path.isfile(_devmode_path(exact_name))
+    return os.path.isfile(_devmode_path(exact_name, profile_key))
+
+
+def get_profile_status(printer_name):
+    """Return dict {profile_key: bool} voor alle DNP profielen.
+
+    Handig voor UI-status (✓/✗ per profiel).
+    """
+    return {key: has_saved_devmode(printer_name, key) for key in DNP_PROFILE_KEYS}
 
 
 def check_printer_status(printer_name):
@@ -308,7 +390,7 @@ def wait_for_job_completion(printer_name, job_start_time, timeout=30):
     return False, "Print job niet gevonden in wachtrij"
 
 
-def print_photo(image_path, printer_name, copies=1):
+def print_photo(image_path, printer_name, copies=1, profile_key=None):
     """
     Print a photo to the specified printer using Windows GDI.
 
@@ -317,9 +399,13 @@ def print_photo(image_path, printer_name, copies=1):
     settings (paper size, cutting, split, media type, etc.).
 
     Args:
-        image_path: Path to the image file
+        image_path:   Path to the image file
         printer_name: Name (or partial name) of the target printer
-        copies: Number of copies to print (default 1)
+        copies:       Number of copies to print (default 1)
+        profile_key:  Optionele DNP-profiel-sleutel ('4x6_nocut', '4x6_cut',
+                      '4x3'). Bij None: gebruik legacy single-profile (HiTi).
+                      Bij DNP fallback-chain: probeer profiel-specifieke blob,
+                      zo niet aanwezig dan legacy blob, anders driver-default.
 
     Returns:
         True on success, raises PrinterError on failure
@@ -351,12 +437,17 @@ def print_photo(image_path, printer_name, copies=1):
 
     img_w, img_h = pil_image.size
     print(f"[PRINTER] Afbeelding: {img_w}x{img_h}px, "
-          f"Printer: {exact_name}, Kopieen: {copies}")
+          f"Printer: {exact_name}, Kopieen: {copies}, profiel: {profile_key or 'legacy'}")
 
     try:
-        # Load saved DEVMODE (captured via driver dialog) if available
-        # This preserves ALL driver settings: split/cut, paper size, media, etc.
-        saved_devmode = load_saved_devmode(printer_name)
+        # Load saved DEVMODE (captured via driver dialog) if available.
+        # Multi-profile (DNP): probeer profile-specifiek; bij ontbreken val
+        # terug op legacy single-file zodat upgrade-paden niet breken.
+        saved_devmode = None
+        if profile_key:
+            saved_devmode = load_saved_devmode(printer_name, profile_key)
+        if saved_devmode is None:
+            saved_devmode = load_saved_devmode(printer_name)
 
         _gdi32 = ctypes.windll.gdi32
         _gdi32.CreateDCW.argtypes = [
@@ -580,11 +671,12 @@ class PrintThread(QThread):
     print_failed = pyqtSignal(str)
     print_status = pyqtSignal(str)  # Status updates during printing
 
-    def __init__(self, image_path, printer_name, copies=1):
+    def __init__(self, image_path, printer_name, copies=1, profile_key=None):
         super().__init__()
         self.image_path = image_path
         self.printer_name = printer_name
         self.copies = copies
+        self.profile_key = profile_key
 
     def run(self):
         try:
@@ -596,7 +688,8 @@ class PrintThread(QThread):
                 return
 
             self.print_status.emit("Bezig met printen...")
-            print_photo(self.image_path, self.printer_name, self.copies)
+            print_photo(self.image_path, self.printer_name, self.copies,
+                        profile_key=self.profile_key)
             self.print_complete.emit()
         except PrinterError as e:
             self.print_failed.emit(str(e))

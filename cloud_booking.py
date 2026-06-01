@@ -53,6 +53,14 @@ def _design_cache_path(booking_id: str, ext: str = "png") -> str:
     return os.path.join(_cache_root(), f"design_{safe}.{ext}")
 
 
+def _template_bg_cache_path(template_id: str, ext: str = "png") -> str:
+    """Cache-pad voor de achtergrond van een specifiek template uit
+    hippe_booking_templates (Fase 2 cloud-template flow).
+    """
+    safe = "".join(c for c in template_id if c.isalnum() or c in "-_")[:64]
+    return os.path.join(_cache_root(), f"tmpl_bg_{safe}.{ext}")
+
+
 # ── Booking lookup ───────────────────────────────────────────────────
 
 def fetch_booking(token: str, use_cache_on_offline: bool = True) -> Tuple[Optional[dict], str]:
@@ -228,3 +236,113 @@ def validate_design_format(image_path: str, printer_mode: str) -> Tuple[bool, st
         )
 
     return True, ""
+
+
+# ── Cloud template support (Fase 2) ───────────────────────────────────
+
+def extract_templates(booking_response: dict) -> list:
+    """Return de templates[] array uit de get-photobooth-booking response.
+
+    Gegarandeerd een list (kan leeg zijn voor oude bookings zonder rij in
+    hippe_booking_templates). De aanroeper kan bij empty terugvallen op de
+    legacy auto-gen flow (lokaal _make_strip_frames_ar / _make_triple_frames).
+    """
+    if not isinstance(booking_response, dict):
+        return []
+    templates = booking_response.get("templates") or []
+    if not isinstance(templates, list):
+        return []
+    return templates
+
+
+def fetch_template_bg(token: str, template_id: str,
+                       booking_id: str) -> Tuple[Optional[str], str]:
+    """Download de achtergrond-image voor een specifiek cloud-template.
+
+    Roept de get-photobooth-template-bg edge function aan, krijgt een signed
+    URL terug, en cachet de image lokaal als tmpl_bg_<template_id>.<ext>.
+
+    Returns:
+        (local_path, error). Bij geen achtergrond (template.background_url
+        is NULL in DB): returns ("", "") — geen fout, lege string betekent
+        "wit gebruiken". Bij offline + cache aanwezig: returns
+        (cached_path, warning).
+    """
+    if not token or not template_id:
+        return None, "Token of template_id ontbreekt"
+
+    # Probeer cache van .png en .jpg
+    for ext_try in ("png", "jpg", "jpeg"):
+        p = _template_bg_cache_path(template_id, ext_try)
+        if os.path.isfile(p):
+            cached = p
+            break
+    else:
+        cached = None
+
+    url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-template-bg"
+    try:
+        resp = requests.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "apikey": config.CLIXIBO_ANON_KEY,
+                "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
+            },
+            json={"token": token, "template_id": template_id},
+            timeout=15,
+        )
+    except Exception as e:
+        if cached:
+            return cached, f"offline (cache gebruikt): {e}"
+        return None, f"Geen internet voor template-bg fetch: {e}"
+
+    if resp.status_code == 404:
+        return None, "Template niet gevonden voor deze booking"
+    if resp.status_code != 200:
+        if cached:
+            return cached, f"offline (cache gebruikt): server {resp.status_code}"
+        return None, f"Template-bg fetch fout {resp.status_code}: {resp.text[:200]}"
+
+    try:
+        signed_url = resp.json().get("url")
+    except Exception:
+        return None, "Ongeldige response van template-bg endpoint"
+
+    # signed_url is None betekent: dit template heeft geen achtergrond (wit)
+    if not signed_url:
+        return "", ""
+
+    # Extensie afleiden uit URL (zonder query params)
+    ext = "png"
+    try:
+        path_part = signed_url.split("?", 1)[0]
+        ext = (path_part.rsplit(".", 1)[-1] or "png").lower()
+        if ext not in ("png", "jpg", "jpeg"):
+            ext = "png"
+    except Exception:
+        pass
+
+    local = _template_bg_cache_path(template_id, ext)
+
+    try:
+        dl = requests.get(signed_url, timeout=30)
+    except Exception as e:
+        if cached:
+            return cached, f"download mislukt (cache gebruikt): {e}"
+        return None, f"Download mislukt: {e}"
+
+    if dl.status_code != 200:
+        if cached:
+            return cached, f"download {dl.status_code} (cache gebruikt)"
+        return None, f"Template-bg download {dl.status_code}"
+
+    tmp = local + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(dl.content)
+        os.replace(tmp, local)
+    except Exception as e:
+        return None, f"Lokaal opslaan mislukt: {e}"
+
+    return local, ""

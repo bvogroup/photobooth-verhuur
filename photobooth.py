@@ -541,9 +541,16 @@ class LayoutEditorCanvas(QWidget):
         return _layout_display_rotation(self.template)
 
     def _canvas_size(self):
-        """Canvas dimensies op basis van template type (triple vs gewoon)."""
+        """Canvas dimensies op basis van template type.
+
+        triple_strip → 600x1200 (DNP 5x10cm strip)
+        4x3_strip    → 1200x900 (4x3 paper, landscape)
+        anders       → 1200x1800 (4x6 paper, portrait)
+        """
         if self.template and getattr(self.template, 'is_triple_strip', False):
             return 600, 1200
+        if self.template and getattr(self.template, 'is_4x3_strip', False):
+            return 1200, 900
         return 1200, 1800
 
     def _calc_transform(self):
@@ -828,29 +835,33 @@ class SubprocessPrintThread(QThread):
     print_failed = pyqtSignal(str)
     print_status = pyqtSignal(str)
 
-    def __init__(self, image_path, printer_name, copies=1):
+    def __init__(self, image_path, printer_name, copies=1, profile_key=None):
         super().__init__()
         self.image_path = image_path
         self.printer_name = printer_name
         self.copies = copies
+        self.profile_key = profile_key
 
     def run(self):
         import subprocess
 
         self.print_status.emit("Bezig met printen...")
 
+        # DNP-profiel als 5e CLI arg ('-' = geen profiel = legacy HiTi pad)
+        profile_arg = self.profile_key or "-"
+
         # Determine Python executable and worker script path
         if getattr(sys, 'frozen', False):
             cmd = [sys.executable, "--print-worker",
                    self.image_path, self.printer_name,
-                   str(self.copies), config.DATA_DIR]
+                   str(self.copies), config.DATA_DIR, profile_arg]
         else:
             worker_script = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "print_worker.py"
             )
             cmd = [sys.executable, worker_script,
                    self.image_path, self.printer_name,
-                   str(self.copies), config.DATA_DIR]
+                   str(self.copies), config.DATA_DIR, profile_arg]
 
         try:
             print(f"[PRINTER] Subprocess: {' '.join(str(c) for c in cmd[:4])}...")
@@ -2364,6 +2375,114 @@ class PhotoboothWindow(QMainWindow):
         self.pages["countdown"] = self.pages["preview"]
 
     # --- REVIEW (strip) ---
+    def _build_review_confirm_panel(self) -> "QWidget":
+        """Panel 1 op review-pagina rechts: 'Zijn de foto's goed gelukt?'
+
+        Twee knoppen:
+          - Ja                → naar print-vraag panel
+          - Nee, begin opnieuw → reset sessie + terug naar preview
+        """
+        panel = QWidget()
+        panel.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setSpacing(14)
+        lay.addStretch()
+
+        title = QLabel("Zijn de foto's goed gelukt?")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 22, QFont.Bold))
+        title.setStyleSheet("color: white; background: transparent;")
+        title.setWordWrap(True)
+        lay.addWidget(title)
+
+        lay.addSpacing(16)
+
+        yes_btn = QPushButton("✓  Ja")
+        yes_btn.setCursor(Qt.PointingHandCursor)
+        yes_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        yes_btn.setMinimumHeight(72)
+        yes_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #3A8B5E; }}"
+        )
+        yes_btn.clicked.connect(self._on_review_photos_ok)
+        lay.addWidget(yes_btn)
+        self._review_confirm_yes_btn = yes_btn
+
+        no_btn = QPushButton("✗  Nee, begin opnieuw")
+        no_btn.setCursor(Qt.PointingHandCursor)
+        no_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        no_btn.setMinimumHeight(60)
+        no_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.08); color: #cccccc; "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
+            "padding: 14px; font-size: 16px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.16); color: white; }"
+        )
+        no_btn.clicked.connect(self._on_review_photos_redo)
+        lay.addWidget(no_btn)
+        self._review_confirm_no_btn = no_btn
+
+        lay.addStretch()
+        return panel
+
+    def _build_review_print_question_panel(self) -> "QWidget":
+        """Panel 2 op review-pagina rechts: 'Wil je de foto's geprint hebben?'
+
+        Twee knoppen:
+          - Ja      → print + naar standaard action panel (met QR)
+          - Nee     → direct naar action panel zonder auto-print
+        """
+        panel = QWidget()
+        panel.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setSpacing(14)
+        lay.addStretch()
+
+        title = QLabel("Wil je de foto's geprint hebben?")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 22, QFont.Bold))
+        title.setStyleSheet("color: white; background: transparent;")
+        title.setWordWrap(True)
+        lay.addWidget(title)
+
+        lay.addSpacing(16)
+
+        yes_btn = QPushButton("🖨  Ja, print")
+        yes_btn.setCursor(Qt.PointingHandCursor)
+        yes_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        yes_btn.setMinimumHeight(72)
+        yes_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #3A8B5E; }}"
+        )
+        yes_btn.clicked.connect(self._on_review_print_yes)
+        lay.addWidget(yes_btn)
+        self._review_print_yes_btn = yes_btn
+
+        no_btn = QPushButton("✗  Nee, geen print")
+        no_btn.setCursor(Qt.PointingHandCursor)
+        no_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        no_btn.setMinimumHeight(60)
+        no_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.08); color: #cccccc; "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
+            "padding: 14px; font-size: 16px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.16); color: white; }"
+        )
+        no_btn.clicked.connect(self._on_review_print_no)
+        lay.addWidget(no_btn)
+        self._review_print_no_btn = no_btn
+
+        lay.addStretch()
+        return panel
+
     def _build_review_page(self):
         """Build unified sharing screen: photo + all actions on one page.
         Layout adapts: landscape = side-by-side, portrait = stacked."""
@@ -2523,6 +2642,21 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_done_btn.clicked.connect(self._go_done)
         right_lay.addWidget(self._sharing_done_btn)
 
+        # ── Tussen-scherm 1: "Zijn de foto's goed gelukt?" ──
+        self._review_confirm_panel = self._build_review_confirm_panel()
+        # ── Tussen-scherm 2: "Wil je de foto's geprint hebben?" ──
+        self._review_print_question_panel = self._build_review_print_question_panel()
+
+        # QStackedWidget houdt de 3 panelen op de rechterkant (of onderkant
+        # in portrait). Page-volgorde matters: confirm → print-vraag → action.
+        from PyQt5.QtWidgets import QStackedWidget as _QStackedWidget
+        self._review_panel_stack = _QStackedWidget()
+        self._review_panel_stack.setStyleSheet("background: transparent;")
+        self._review_panel_stack.addWidget(self._review_confirm_panel)         # idx 0
+        self._review_panel_stack.addWidget(self._review_print_question_panel)  # idx 1
+        self._review_panel_stack.addWidget(self._review_action_panel)          # idx 2
+        self._review_panel_stack.setCurrentIndex(0)
+
         # Build the layout directly — no dynamic wrapper reparenting
         # to avoid Windows fullscreen geometry corruption
         self._review_wrapper = QWidget()
@@ -2531,7 +2665,7 @@ class PhotoboothWindow(QMainWindow):
         wrap_lay.setContentsMargins(0, 0, 0, 0)
         wrap_lay.setSpacing(0)
         wrap_lay.addWidget(self._review_photo_container, stretch=3)
-        wrap_lay.addWidget(self._review_action_panel, stretch=0)
+        wrap_lay.addWidget(self._review_panel_stack, stretch=0)
         main_lay.addWidget(self._review_wrapper)
         self._review_is_portrait = True
 
@@ -5440,10 +5574,6 @@ class PhotoboothWindow(QMainWindow):
             from PIL import Image
             import time as _time
 
-            PRINT_W = 1200
-            PRINT_H = 1800
-            STRIP_W = PRINT_W // 2
-
             template = self.selected_template
             if not template:
                 print("[STRIP] FOUT: Geen template geselecteerd")
@@ -5452,6 +5582,15 @@ class PhotoboothWindow(QMainWindow):
             # DNP verhuur-flow: triple strip → portrait 5x10cm, 3x gestapeld op vel.
             if getattr(template, 'is_triple_strip', False):
                 return self._build_triple_strip_image(template)
+
+            # 4x3 paper modus: 1200x900 landscape, vol vel, geen mirror.
+            if getattr(template, 'is_4x3_strip', False):
+                PRINT_W = 1200
+                PRINT_H = 900
+            else:
+                PRINT_W = 1200
+                PRINT_H = 1800
+            STRIP_W = PRINT_W // 2
 
             # Wait briefly for any pending photo processing (max 500ms)
             # Use short sleeps with processEvents to keep UI responsive
@@ -5581,10 +5720,15 @@ class PhotoboothWindow(QMainWindow):
             # single strip tonen, niet het 1200x1800 vel met dubbele helften).
             self._single_strip_path = None
             ev = self.active_event
+            # Force single strip upload bij linked Canon (4x6) flow zodat de
+            # cloud-gallery de 600x1800 single strip ziet i.p.v. het
+            # 1200x1800 vel met gedupliceerde helften.
+            _pm = getattr(ev, 'printer_mode', '3strips') if ev else '3strips'
+            _is_canon_mode = _pm in ('4x6', 'canon')  # canon = legacy
             _force_single = bool(
                 ev
                 and getattr(ev, 'booth_mode', 'standalone') == 'linked'
-                and getattr(ev, 'printer_mode', 'canon') == 'canon'
+                and _is_canon_mode
                 and not template.is_double_strip
             )
             if ev and (ev.share_single_strip or _force_single) and PRINT_W >= 1200:
@@ -5967,6 +6111,15 @@ class PhotoboothWindow(QMainWindow):
         # Hide QR overlay
         self._qr_overlay.hide()
 
+        # Start in confirm-panel (page 0): "Zijn de foto's goed gelukt?"
+        # Auto-print, QR-prep en countdown gebeuren PAS na de print-vraag
+        # (zie _on_review_print_yes / _no). We bewaren de gewenste
+        # auto-print en qr_on settings hier:
+        self._review_pending_auto_print = bool(print_on and auto_print)
+        self._review_pending_qr = bool(qr_on)
+        if hasattr(self, '_review_panel_stack'):
+            self._review_panel_stack.setCurrentIndex(0)
+
         # Adapt layout for current orientation
         self._review_is_portrait = None  # Force re-evaluation
         self._adapt_review_layout()
@@ -5975,22 +6128,77 @@ class PhotoboothWindow(QMainWindow):
         QTimer.singleShot(200, self._display_review_strip)
         # NO second re-render: printer GDI can break fullscreen between 200-500ms
 
-        # Auto-print AFTER strip is displayed (800ms delay prevents GDI
-        # from corrupting the geometry before the strip is rendered)
-        if print_on and auto_print:
+        # Start Google Drive upload in background (non-blocking)
+        self._start_gdrive_upload()
+
+    # ── Tussen-scherm handlers ──────────────────────────────────────────
+
+    def _on_review_photos_ok(self):
+        """User klikt 'Ja' op 'foto's goed gelukt?' → naar print-vraag panel."""
+        if hasattr(self, '_review_panel_stack'):
+            self._review_panel_stack.setCurrentIndex(1)
+
+    def _on_review_photos_redo(self):
+        """User klikt 'Nee, begin opnieuw' → reset sessie + auto-start nieuwe.
+
+        Annuleert pending timers, gooit foto's weg, en gaat via _go_direct_capture
+        terug naar de standaard photobooth-flow (live view + auto-countdown,
+        zonder losse 'foto maken' knop). Event session_count wordt NIET dubbel
+        bijgewerkt omdat _go_direct_capture geen session-increment doet.
+        """
+        print("[REVIEW] User koos 'Nee, opnieuw' — sessie reset")
+        # Stop pending timers
+        try:
+            if hasattr(self, 'review_timer'):
+                self.review_timer.stop()
+            if hasattr(self, '_sharing_countdown_timer'):
+                self._sharing_countdown_timer.stop()
+            if hasattr(self, 'done_timer'):
+                self.done_timer.stop()
+        except Exception:
+            pass
+        # Hide QR overlay if it's showing
+        if hasattr(self, '_qr_overlay'):
+            self._qr_overlay.hide()
+        # Reset strip-state (de capture- en photo-state worden door
+        # _go_direct_capture zelf gereset)
+        self.strip_path = None
+        self._single_strip_path = None
+        self._display_strip_path = None
+        self._display_single_strip_path = None
+        self._boomerang_path = None
+        self._session_prints_used = 0
+        self._qr_ready = False
+        # Direct-capture flow → live view start + auto-countdown
+        # (zelfde flow als normale sessie-start, geen 'foto maken' knop)
+        self._go_direct_capture()
+
+    def _on_review_print_yes(self):
+        """User klikt 'Ja, print' → switch naar action panel + start print."""
+        if hasattr(self, '_review_panel_stack'):
+            self._review_panel_stack.setCurrentIndex(2)
+        # Start auto-print indien event auto-print aan heeft staan
+        if getattr(self, '_review_pending_auto_print', False):
             self._sharing_print_status.setText(t("printing"))
             self._sharing_print_status.show()
             QTimer.singleShot(800, self._sharing_do_auto_print)
-
-        # Prepare QR code in background (so it's ready when user taps QR button)
-        if qr_on:
+        else:
+            # auto_print stond uit — manuele print-knop blijft beschikbaar
+            self._sharing_print_status.hide()
+        # QR-code voorbereiden + countdown starten zoals oude flow
+        if getattr(self, '_review_pending_qr', False):
             QTimer.singleShot(200, self._prepare_qr_code)
-
-        # Start the visual countdown bar (30 seconds)
         self._start_sharing_countdown()
 
-        # Start Google Drive upload in background (non-blocking)
-        self._start_gdrive_upload()
+    def _on_review_print_no(self):
+        """User klikt 'Nee, geen print' → action panel zonder auto-print."""
+        if hasattr(self, '_review_panel_stack'):
+            self._review_panel_stack.setCurrentIndex(2)
+        self._sharing_print_status.hide()
+        # QR-code voorbereiden + countdown starten zoals oude flow
+        if getattr(self, '_review_pending_qr', False):
+            QTimer.singleShot(200, self._prepare_qr_code)
+        self._start_sharing_countdown()
 
     def _display_review_strip(self):
         if not self.strip_path or not os.path.exists(self.strip_path):
@@ -6233,6 +6441,43 @@ class PhotoboothWindow(QMainWindow):
         copies = self.effective_print_copies
         self._do_print_job(copies=copies)
 
+    def _resolve_dnp_profile_key(self, template):
+        """Bepaal welk DNP printer-profiel bij dit template/event hoort.
+
+        Mapping (3 modi, alle 3 op DNP QW410):
+          - printer_mode='4x3'     → PROFILE_4X3       (half-size paper)
+          - printer_mode='4x6'     → PROFILE_4X6_NOCUT (vol vel, geen cut)
+          - printer_mode='3strips' → PROFILE_4X6_CUT   (3 stripjes via 2-inch cut)
+
+        Legacy fallback: 'canon' → '4x6', 'dnp' → '3strips'.
+
+        Args:
+            template: huidige Template-object (gebruikt voor extra triple-
+                      strip detectie als printer_mode misbruikt zou zijn).
+
+        Returns:
+            profile_key string. Bij ontbrekende active_event: None (driver-
+            default).
+        """
+        from printer import PROFILE_4X6_CUT, PROFILE_4X6_NOCUT, PROFILE_4X3
+        ev = self.active_event
+        if not ev:
+            return None
+        mode = getattr(ev, 'printer_mode', '3strips')
+        # Legacy → nieuwe waarden
+        if mode == 'canon':
+            mode = '4x6'
+        elif mode == 'dnp':
+            mode = '3strips'
+        if mode == '4x3':
+            return PROFILE_4X3
+        if mode == '4x6':
+            return PROFILE_4X6_NOCUT
+        # 3strips (of triple-strip template als fallback-signaal)
+        if mode == '3strips' or (template and getattr(template, 'is_triple_strip', False)):
+            return PROFILE_4X6_CUT
+        return PROFILE_4X6_NOCUT
+
     def _do_print_job(self, copies=1):
         """Execute a print job (shared between auto-print and manual print).
 
@@ -6257,7 +6502,9 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[PRINT-QUOTA] Blokkeer: used={used}, quota={quota}, gevraagd={copies}")
                 return
 
-        self.print_thread = SubprocessPrintThread(self.strip_path, config.PRINTER_NAME, copies)
+        profile_key = self._resolve_dnp_profile_key(self.selected_template)
+        self.print_thread = SubprocessPrintThread(self.strip_path, config.PRINTER_NAME, copies,
+                                                  profile_key=profile_key)
         self.print_thread.print_complete.connect(
             lambda c=copies: self._on_print_complete_with_quota(c)
         )
@@ -6436,6 +6683,10 @@ class PhotoboothWindow(QMainWindow):
         Only adjusts margins, font sizes and button heights."""
         portrait = self._is_portrait()
 
+        # Stack die de 3 panelen bevat (confirm / print-vraag / action).
+        # Krijgt zelfde size-constraints als het oude action panel kreeg.
+        _stack = getattr(self, '_review_panel_stack', None)
+
         if portrait:
             # Clamp all widgets to screen width — window geometry can be
             # corrupted by Windows DPI scaling (912→1237px).
@@ -6443,6 +6694,9 @@ class PhotoboothWindow(QMainWindow):
             max_w = screen.geometry().width() if screen else 912
             self._review_action_panel.setMinimumSize(0, 0)
             self._review_action_panel.setMaximumWidth(max_w)
+            if _stack:
+                _stack.setMinimumSize(0, 0)
+                _stack.setMaximumWidth(max_w)
             self._review_photo_container.setMinimumSize(0, 0)
             self._review_photo_container.setMaximumWidth(max_w)
             self._review_wrapper.setMaximumWidth(max_w)
@@ -6452,15 +6706,29 @@ class PhotoboothWindow(QMainWindow):
             self._review_photo_container.layout().setContentsMargins(0, 0, 0, 0)
             self._review_action_panel.layout().setContentsMargins(side_margin, 8, side_margin, 12)
             self._review_action_panel.layout().setSpacing(8)
+            # Confirm + print-vraag panels: ook side-margins
+            for p in (getattr(self, '_review_confirm_panel', None),
+                      getattr(self, '_review_print_question_panel', None)):
+                if p and p.layout():
+                    p.layout().setContentsMargins(side_margin, 8, side_margin, 12)
+                    p.layout().setSpacing(10)
             # Ensure vertical layout for portrait
             wrap_lay = self._review_wrapper.layout()
             if wrap_lay:
                 wrap_lay.setDirection(wrap_lay.TopToBottom)
                 wrap_lay.setStretch(0, 3)  # photo container
-                wrap_lay.setStretch(1, 0)  # action panel
+                wrap_lay.setStretch(1, 0)  # panel stack
             self._review_action_panel.setMaximumWidth(16777215)  # reset landscape constraint
+            if _stack:
+                _stack.setMaximumWidth(16777215)
             for btn in [self._sharing_print_btn, self._sharing_qr_btn,
-                        self._sharing_email_btn, self._sharing_done_btn]:
+                        self._sharing_email_btn, self._sharing_done_btn,
+                        getattr(self, '_review_confirm_yes_btn', None),
+                        getattr(self, '_review_confirm_no_btn', None),
+                        getattr(self, '_review_print_yes_btn', None),
+                        getattr(self, '_review_print_no_btn', None)]:
+                if btn is None:
+                    continue
                 btn.setMinimumHeight(48)
                 btn.setMaximumHeight(56)
                 btn.setFont(QFont("DM Sans", 14, QFont.Bold))
@@ -6474,17 +6742,32 @@ class PhotoboothWindow(QMainWindow):
             self._review_action_panel.setMinimumSize(0, 0)
             self._review_action_panel.setMaximumWidth(int(max_w * 0.35))
             self._review_action_panel.setMaximumHeight(16777215)
+            if _stack:
+                _stack.setMinimumSize(0, 0)
+                _stack.setMaximumWidth(int(max_w * 0.35))
+                _stack.setMaximumHeight(16777215)
             self._review_photo_container.layout().setContentsMargins(10, 10, 0, 10)
             self._review_action_panel.layout().setContentsMargins(16, 12, 16, 12)
             self._review_action_panel.layout().setSpacing(8)
+            for p in (getattr(self, '_review_confirm_panel', None),
+                      getattr(self, '_review_print_question_panel', None)):
+                if p and p.layout():
+                    p.layout().setContentsMargins(16, 12, 16, 12)
+                    p.layout().setSpacing(10)
             # Change wrapper to horizontal layout
             wrap_lay = self._review_wrapper.layout()
             if wrap_lay:
                 wrap_lay.setDirection(wrap_lay.LeftToRight)
                 wrap_lay.setStretch(0, 3)  # photo container (left)
-                wrap_lay.setStretch(1, 1)  # action panel (right)
+                wrap_lay.setStretch(1, 1)  # panel stack (right)
             for btn in [self._sharing_print_btn, self._sharing_qr_btn,
-                        self._sharing_email_btn, self._sharing_done_btn]:
+                        self._sharing_email_btn, self._sharing_done_btn,
+                        getattr(self, '_review_confirm_yes_btn', None),
+                        getattr(self, '_review_confirm_no_btn', None),
+                        getattr(self, '_review_print_yes_btn', None),
+                        getattr(self, '_review_print_no_btn', None)]:
+                if btn is None:
+                    continue
                 btn.setMinimumHeight(48)
                 btn.setMaximumHeight(60)
                 btn.setFont(QFont("DM Sans", 14, QFont.Bold))
@@ -7558,6 +7841,57 @@ class PhotoboothWindow(QMainWindow):
         bg_row.addStretch()
         card_layout_lay.addLayout(bg_row)
 
+        # ── Printer-modus selector (3 knoppen: 4x3 / 4x6 / 3 strips) ──
+        # Vervangt de oude "Printer-modus" radio in Geavanceerd. Bepaalt
+        # welke templates zichtbaar zijn in de grid hieronder + welk
+        # DNP printer-profiel gebruikt wordt bij printen.
+        pmode_card, pmode_card_lay = self._settings_card("Printer-modus")
+        pmode_btn_row = QHBoxLayout()
+        pmode_btn_row.setSpacing(8)
+        from PyQt5.QtWidgets import QButtonGroup as _BG
+        self._printer_mode_group = _BG(self)
+        self._printer_mode_group.setExclusive(True)
+
+        def _make_mode_btn(label, mode_val, hint):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+            btn.setMinimumHeight(56)
+            btn.setToolTip(hint)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {config.COLOR_INPUT_BG}; "
+                f"color: {config.COLOR_TEXT}; border: 2px solid {config.COLOR_BORDER}; "
+                f"border-radius: 10px; padding: 8px 14px; font-size: 12px; }}"
+                f"QPushButton:hover {{ background: {config.COLOR_ACCENT}; }}"
+                f"QPushButton:checked {{ background: {config.COLOR_PRIMARY}; "
+                f"color: {config.COLOR_TEXT_ON_PRIMARY}; "
+                f"border: 2px solid {config.COLOR_PRIMARY_HOVER}; }}"
+            )
+            btn._mode_value = mode_val
+            btn.toggled.connect(
+                lambda checked, m=mode_val: checked and self._on_printer_mode_changed_v2(m)
+            )
+            return btn
+
+        self._printer_mode_btn_4x3 = _make_mode_btn(
+            "4x3", "4x3", "1 grote print op 4x3 paper (half-size, geen cut)")
+        self._printer_mode_btn_4x6 = _make_mode_btn(
+            "4x6", "4x6", "Canon dubbele strip op 4x6 paper (cut tussen 2 helften)")
+        self._printer_mode_btn_3strips = _make_mode_btn(
+            "3 strips", "3strips", "DNP 4x6 paper met 2-inch cut (3 strips van 5x10cm)")
+
+        for btn in (self._printer_mode_btn_4x3,
+                    self._printer_mode_btn_4x6,
+                    self._printer_mode_btn_3strips):
+            self._printer_mode_group.addButton(btn)
+            pmode_btn_row.addWidget(btn, 1)
+
+        # Default selectie (wordt overschreven bij _load_settings_for_event)
+        self._printer_mode_btn_3strips.setChecked(True)
+        pmode_card_lay.addLayout(pmode_btn_row)
+        card_layout_lay.addWidget(pmode_card)
+
         # Layout categories container
         self._layout_categories_container = QVBoxLayout()
         self._layout_categories_container.setSpacing(4)
@@ -7625,28 +7959,17 @@ class PhotoboothWindow(QMainWindow):
         printer_row.addStretch()
         connect_lay.addLayout(printer_row)
 
-        # Driver row
-        driver_row = QHBoxLayout()
-        driver_row.setSpacing(12)
-        driver_label = QLabel(t("driver_settings"))
-        driver_label.setFont(QFont("DM Sans", 13, QFont.Bold))
-        driver_label.setStyleSheet(label_style)
-        driver_row.addWidget(driver_label)
-        self._devmode_status_label = QLabel(t("driver_not_configured"))
-        self._devmode_status_label.setFont(QFont("DM Sans", 12))
-        self._devmode_status_label.setStyleSheet(dim_label_style)
-        driver_row.addWidget(self._devmode_status_label)
-        configure_printer_btn = QPushButton(t("printer_setup"))
-        configure_printer_btn.setCursor(Qt.PointingHandCursor)
-        configure_printer_btn.setFont(QFont("DM Sans", 11, QFont.Bold))
-        configure_printer_btn.setFixedHeight(36)
-        configure_printer_btn.setStyleSheet(
-            small_btn_style.replace("{bg}", config.COLOR_PRIMARY)
-                           .replace("{hov}", config.COLOR_PRIMARY_HOVER)
-        )
-        configure_printer_btn.clicked.connect(self._on_configure_printer)
-        driver_row.addWidget(configure_printer_btn)
-        # Test print direct ernaast — zelfde rij, kleiner formaat
+        # Test print row (de oude "Driver instellingen: PRINTER INSTELLEN"
+        # is vervangen door de DNP-profielen-card hieronder, die per profiel
+        # capture-knoppen toont in plaats van één globaal DEVMODE-bestand).
+        # _devmode_status_label blijft een hidden stub voor backwards-compat
+        # met _update_devmode_status (wordt niet meer in UI getoond).
+        from PyQt5.QtWidgets import QLabel as _QL
+        self._devmode_status_label = _QL("")
+        self._devmode_status_label.setVisible(False)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(12)
         test_print_btn = QPushButton(t("test_print"))
         test_print_btn.setCursor(Qt.PointingHandCursor)
         test_print_btn.setFont(QFont("DM Sans", 11, QFont.Bold))
@@ -7656,10 +7979,13 @@ class PhotoboothWindow(QMainWindow):
                            .replace("{hov}", config.COLOR_SECONDARY_HOVER)
         )
         test_print_btn.clicked.connect(self._on_test_print)
-        driver_row.addWidget(test_print_btn)
-        driver_row.addStretch()
-        connect_lay.addLayout(driver_row)
-        self._update_devmode_status()
+        test_row.addWidget(test_print_btn)
+        test_row.addStretch()
+        connect_lay.addLayout(test_row)
+
+        # DNP printer-profielen staan NIET inline op deze tab (was te makkelijk
+        # toegankelijk voor klanten). Capture-UI zit nu achter een knop in
+        # Geavanceerd → 'DNP printer-instellingen' die een dialog opent.
 
         # Bestel printpapier knop onderaan sub-tab 1
         connect_lay.addSpacing(8)
@@ -8726,27 +9052,35 @@ class PhotoboothWindow(QMainWindow):
         card_lang_lay.addLayout(lang_row)
         tab5_lay.addWidget(card_lang)
 
-        # Card: Printer-modus (verhuur)
-        card_pmode, card_pmode_lay = self._settings_card("Printer-modus")
-        pmode_row = QHBoxLayout()
-        pmode_row.setSpacing(20)
-        from PyQt5.QtWidgets import QButtonGroup as _BG
-        self._printer_mode_group = _BG(self)
-        self._printer_mode_canon_radio = QRadioButton("Canon (huidige flow)")
-        self._printer_mode_canon_radio.setFont(QFont("DM Sans", 13))
-        self._printer_mode_dnp_radio = QRadioButton("DNP (3-strip 5x10cm)")
-        self._printer_mode_dnp_radio.setFont(QFont("DM Sans", 13))
-        self._printer_mode_group.addButton(self._printer_mode_canon_radio)
-        self._printer_mode_group.addButton(self._printer_mode_dnp_radio)
-        # Default: DNP (verhuur)
-        self._printer_mode_dnp_radio.setChecked(True)
-        self._printer_mode_canon_radio.toggled.connect(self._on_printer_mode_changed)
-        self._printer_mode_dnp_radio.toggled.connect(self._on_printer_mode_changed)
-        pmode_row.addWidget(self._printer_mode_canon_radio)
-        pmode_row.addWidget(self._printer_mode_dnp_radio)
-        pmode_row.addStretch()
-        card_pmode_lay.addLayout(pmode_row)
-        tab5_lay.addWidget(card_pmode)
+        # ── Card: DNP printer-instellingen (verborgen achter knop) ──
+        # Capture-UI is bewust verborgen achter een dialog zodat klanten er
+        # niet per ongeluk bij komen. Eenmalig per PC instellen.
+        card_dnp_btn, card_dnp_btn_lay = self._settings_card("DNP printer-instellingen")
+        dnp_btn_intro = QLabel(
+            "Eenmalig per PC instellen — capture de DNP driver-instellingen "
+            "voor de 3 paper/cut configuraties."
+        )
+        dnp_btn_intro.setFont(QFont("DM Sans", 11))
+        dnp_btn_intro.setWordWrap(True)
+        dnp_btn_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_dnp_btn_lay.addWidget(dnp_btn_intro)
+
+        dnp_open_btn = QPushButton("Open DNP printer-instellingen…")
+        dnp_open_btn.setCursor(Qt.PointingHandCursor)
+        dnp_open_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        dnp_open_btn.setFixedHeight(40)
+        dnp_open_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 8px; padding: 8px 22px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        dnp_open_btn.clicked.connect(self._open_dnp_profiles_dialog)
+        card_dnp_btn_lay.addWidget(dnp_open_btn)
+        tab5_lay.addWidget(card_dnp_btn)
+
+        # Printer-modus (4x3 / 4x6 / 3strips) staat in de Layout-tab boven
+        # de template-grid (niet meer hier).
 
         # ── Card: Booth-modus (Standalone vs Gekoppeld) ──
         card_bmode, card_bmode_lay = self._settings_card("Modus")
@@ -9432,17 +9766,28 @@ class PhotoboothWindow(QMainWindow):
             self._save_photos_toggle.setChecked(getattr(ev, 'save_photos_locally', True))
             self._save_photos_toggle.blockSignals(False)
 
-        # Update printer-modus radio (verhuur)
-        if hasattr(self, '_printer_mode_dnp_radio') and ev:
-            mode = getattr(ev, 'printer_mode', 'dnp')
-            self._printer_mode_canon_radio.blockSignals(True)
-            self._printer_mode_dnp_radio.blockSignals(True)
+        # Update printer-modus 3-knop selector (4x3/4x6/3strips)
+        if hasattr(self, '_printer_mode_btn_3strips') and ev:
+            mode = getattr(ev, 'printer_mode', '3strips')
+            # Legacy fallback (mocht ev nog niet door migratie zijn gegaan)
             if mode == 'canon':
-                self._printer_mode_canon_radio.setChecked(True)
-            else:
-                self._printer_mode_dnp_radio.setChecked(True)
-            self._printer_mode_canon_radio.blockSignals(False)
-            self._printer_mode_dnp_radio.blockSignals(False)
+                mode = '4x6'
+            elif mode == 'dnp':
+                mode = '3strips'
+            mapping = {
+                '4x3': self._printer_mode_btn_4x3,
+                '4x6': self._printer_mode_btn_4x6,
+                '3strips': self._printer_mode_btn_3strips,
+            }
+            for btn in mapping.values():
+                btn.blockSignals(True)
+            for m, btn in mapping.items():
+                btn.setChecked(m == mode)
+            for btn in mapping.values():
+                btn.blockSignals(False)
+
+        # DNP profielen-card is verplaatst naar dialog achter knop in
+        # Geavanceerd — niets te tonen/verbergen op event-load.
 
         # Update booth-modus radio (Standalone/Linked) + linked event card
         if hasattr(self, '_booth_mode_linked_radio') and ev:
@@ -9614,19 +9959,28 @@ class PhotoboothWindow(QMainWindow):
         cat_cut = []      # Snijden (dubbele strips)
         cat_nocut = []    # Niet snijden (enkele strips / volledig)
 
-        # Filter op printer-modus: canon → geen triple strips, dnp → alleen triple
-        pm = getattr(self.active_event, 'printer_mode', 'dnp') if self.active_event else 'dnp'
+        # Filter op printer-modus (4x3 / 4x6 / 3strips). Legacy → nieuwe naam.
+        pm = getattr(self.active_event, 'printer_mode', '3strips') if self.active_event else '3strips'
+        if pm == 'canon':
+            pm = '4x6'
+        elif pm == 'dnp':
+            pm = '3strips'
 
-        # Verhuur = altijd Linked-modus. Alleen de linked template variants tonen
-        # (Event <id> (2 foto's), Event <id> (3 foto's)). Geen DNP-presets, geen
-        # categorie-headers — operator ziet direct de 2 keuzes voor het event.
+        # Verhuur = altijd Linked-modus. Alleen de linked template variants tonen.
+        # Twee naam-conventies:
+        #   - "Event <id> (N foto's)"   = legacy auto-gen (Fase 1 en eerder)
+        #   - "Event <id> — <naam>"     = cloud-template (Fase 2+)
+        # Beide worden getoond zodat operator tussen varianten kan kiezen.
         booth_mode = "linked"  # forced
         linked_booking_id = getattr(self.active_event, 'linked_booking_id', '') if self.active_event else ''
         linked_variants = []
         if linked_booking_id:
-            prefix = f"Event {linked_booking_id[:8]} ("
+            prefix_legacy = f"Event {linked_booking_id[:8]} ("
+            prefix_cloud = f"Event {linked_booking_id[:8]} — "
             for tmpl in custom:
-                if tmpl.name.startswith(prefix) and tmpl.name.endswith(" foto's)"):
+                is_legacy = tmpl.name.startswith(prefix_legacy) and tmpl.name.endswith(" foto's)")
+                is_cloud = tmpl.name.startswith(prefix_cloud)
+                if is_legacy or is_cloud:
                     linked_variants.append(tmpl)
             linked_variants.sort(key=lambda t: t.num_photos)
 
@@ -9769,10 +10123,14 @@ class PhotoboothWindow(QMainWindow):
 
         # Canvas size hangt af van strip-type:
         #  triple_strip → 600x1200 portrait (5x10 cm DNP strip)
+        #  4x3_strip    → 1200x900 landscape (4x3 paper)
         #  anders       → 1200x1800 (4x6 vel)
         if getattr(layout, 'is_triple_strip', False):
             canvas_w = 600
             canvas_h = 1200
+        elif getattr(layout, 'is_4x3_strip', False):
+            canvas_w = 1200
+            canvas_h = 900
         else:
             canvas_w = 1200
             canvas_h = 1800
@@ -10079,6 +10437,171 @@ class PhotoboothWindow(QMainWindow):
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(2000, self._update_devmode_status)
 
+    def _on_capture_dnp_profile(self, profile_key):
+        """Open de DNP driver-UI en sla DEVMODE op voor een specifiek profiel.
+
+        De gebruiker stelt in de driver-UI handmatig de juiste paper-format +
+        cut-optie in voor dit profiel, klikt OK, en de bytes worden bewaard.
+        Daarna kiest de software bij élke print automatisch het juiste profiel
+        op basis van het template.
+        """
+        from printer import capture_printer_devmode, DNP_PROFILE_LABELS
+        from PyQt5.QtWidgets import QMessageBox, QApplication
+
+        if not config.PRINTER_NAME:
+            QMessageBox.warning(self, "Geen printer",
+                "Selecteer eerst een printer in de Printer-tab.")
+            return
+
+        # Korte instructie tonen wat de gebruiker moet kiezen
+        instructions = {
+            "4x6_nocut": "Stel in:\n• Papierformaat: (4x6)\n• 2inch cut: Disable\n\nKlik OK om door te gaan.",
+            "4x6_cut":   "Stel in:\n• Papierformaat: (4x6)\n• 2inch cut: Enable\n\nKlik OK om door te gaan.",
+            "4x3":       "Stel in:\n• Papierformaat: (4x3)\n• 2inch cut: Disable (grayed-out)\n\nKlik OK om door te gaan.",
+        }
+        label = DNP_PROFILE_LABELS.get(profile_key, profile_key)
+        ret = QMessageBox.information(self, f"Capture: {label}",
+            instructions.get(profile_key, ""),
+            QMessageBox.Ok | QMessageBox.Cancel)
+        if ret != QMessageBox.Ok:
+            return
+
+        hwnd = None
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            pass
+
+        QApplication.processEvents()
+        ok, msg = capture_printer_devmode(config.PRINTER_NAME, hwnd=hwnd,
+                                           profile_key=profile_key)
+        if ok:
+            QMessageBox.information(self, "Opgeslagen",
+                f"Profiel '{label}' is opgeslagen.\n\n{msg}")
+            print(f"[SETTINGS] DNP profiel {profile_key} OK: {msg}")
+        else:
+            QMessageBox.warning(self, "Niet opgeslagen",
+                f"Capture mislukt voor '{label}':\n{msg}")
+            print(f"[SETTINGS] DNP profiel {profile_key} fout: {msg}")
+        self._update_dnp_profile_statuses()
+
+    def _update_dnp_profile_statuses(self):
+        """Update ✓/✗ indicators voor de 3 DNP profielen (binnen open dialog)."""
+        if not hasattr(self, '_dnp_profile_status_labels') or not self._dnp_profile_status_labels:
+            return
+        from printer import get_profile_status
+        if not config.PRINTER_NAME:
+            for status in self._dnp_profile_status_labels.values():
+                status.setText("✗")
+                status.setStyleSheet(f"color: {config.COLOR_DANGER};")
+            return
+        statuses = get_profile_status(config.PRINTER_NAME)
+        for key, status_lbl in self._dnp_profile_status_labels.items():
+            saved = statuses.get(key, False)
+            if saved:
+                status_lbl.setText("✓")
+                status_lbl.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+            else:
+                status_lbl.setText("✗")
+                status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
+
+    def _open_dnp_profiles_dialog(self):
+        """Open dialog met de 3 DNP capture-knoppen — bewust verstopt zodat
+        klanten er niet per ongeluk bij komen. Alleen operators die in
+        Geavanceerd → DNP printer-instellingen klikken zien dit.
+        """
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from printer import DNP_PROFILE_KEYS, DNP_PROFILE_LABELS
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("DNP printer-instellingen")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(600)
+        dlg.setStyleSheet(f"QDialog {{ background: {config.COLOR_CARD_BG}; }}")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(14)
+
+        title = QLabel("DNP printer-profielen")
+        title.setFont(QFont("DM Sans", 16, QFont.Bold))
+        title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        lay.addWidget(title)
+
+        intro = QLabel(
+            "Eenmalig per PC instellen. Klik op een knop, kies in de driver-UI "
+            "het juiste papierformaat + cut-optie, klik OK. Daarna schakelt de "
+            "software automatisch tussen profielen tijdens het printen."
+        )
+        intro.setFont(QFont("DM Sans", 11))
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+        lay.addWidget(intro)
+        lay.addSpacing(6)
+
+        # Bouw de 3 rijen met status + label + capture-knop. We registreren
+        # de status-labels in self._dnp_profile_status_labels zodat
+        # _update_dnp_profile_statuses ze kan refreshen na elke capture.
+        self._dnp_profile_status_labels = {}
+        self._dnp_profile_capture_btns = {}
+        for key in DNP_PROFILE_KEYS:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            status = QLabel("✗")
+            status.setFont(QFont("DM Sans", 16, QFont.Bold))
+            status.setFixedWidth(28)
+            status.setAlignment(Qt.AlignCenter)
+            status.setStyleSheet(f"color: {config.COLOR_DANGER}; background: transparent;")
+            row.addWidget(status)
+            self._dnp_profile_status_labels[key] = status
+
+            lbl = QLabel(DNP_PROFILE_LABELS[key])
+            lbl.setFont(QFont("DM Sans", 12))
+            lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+            row.addWidget(lbl, 1)
+
+            btn = QPushButton("Capture")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFont(QFont("DM Sans", 11, QFont.Bold))
+            btn.setFixedHeight(34)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
+                f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+                f"border-radius: 6px; padding: 4px 22px; font-size: 12px; }}"
+                f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+            )
+            btn.clicked.connect(lambda _checked=False, k=key: self._on_capture_dnp_profile(k))
+            row.addWidget(btn)
+            self._dnp_profile_capture_btns[key] = btn
+
+            lay.addLayout(row)
+
+        # Sluit-knop onderaan
+        lay.addSpacing(10)
+        close_btn = QPushButton("Sluiten")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setFont(QFont("DM Sans", 11, QFont.Bold))
+        close_btn.setFixedHeight(36)
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 6px; padding: 6px 24px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        close_btn.clicked.connect(dlg.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        # Eerste status-refresh + open
+        self._update_dnp_profile_statuses()
+        try:
+            dlg.exec_()
+        finally:
+            # Refs naar widgets in een gesloten dialog opruimen
+            self._dnp_profile_status_labels = {}
+            self._dnp_profile_capture_btns = {}
+
     def _build_event_limit_section(self, parent_layout, label_style):
         """Bouw de Eventlimiet-sectie binnen Printerinstellingen-tab.
 
@@ -10298,9 +10821,12 @@ class PhotoboothWindow(QMainWindow):
             print(f"[SETTINGS] Test print image fout: {e}")
             return
 
-        self._test_print_thread = SubprocessPrintThread(test_path, config.PRINTER_NAME, 1)
+        # Test print: gebruik het profiel passend bij huidige printer-modus
+        test_profile = self._resolve_dnp_profile_key(None)
+        self._test_print_thread = SubprocessPrintThread(
+            test_path, config.PRINTER_NAME, 1, profile_key=test_profile)
         self._test_print_thread.start()
-        print(f"[SETTINGS] Test print naar: {config.PRINTER_NAME}")
+        print(f"[SETTINGS] Test print naar: {config.PRINTER_NAME} (profiel: {test_profile or 'legacy'})")
 
     def _update_devmode_status(self):
         """Update the DEVMODE status label."""
@@ -12086,11 +12612,12 @@ class PhotoboothWindow(QMainWindow):
         # met een specifieke aspect-ratio (1.5:1 Canon vs 2:1 DNP). De lokale
         # printer_mode moet daarop matchen anders faalt validate_design_format
         # en kan de print-compose niet de juiste output bouwen.
+        # Cloud kent (nog) geen 4x3 — dat is voorlopig lokaal-only.
         cloud_pm = booking_data.get("printer_mode", "")
         if cloud_pm == "premium":
-            self.active_event.printer_mode = "dnp"
+            self.active_event.printer_mode = "3strips"
         elif cloud_pm == "standard":
-            self.active_event.printer_mode = "canon"
+            self.active_event.printer_mode = "4x6"
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
@@ -12202,12 +12729,37 @@ class PhotoboothWindow(QMainWindow):
         if self.active_event:
             print(f"[LINKED] Event gekoppeld: {self.active_event.linked_booking_label}")
 
-    def _apply_design_to_template(self, local_design_path, force_regen=False):
-        """Synchroon (lokaal) — valideer formaat + genereer 2 én 3 foto-variant.
+    def _get_cloud_templates_for_booking(self, booking_id: str) -> list:
+        """Lees cloud templates[] uit de booking-cache voor dit booking_id.
 
-        Maakt 'Event <id> (2)' en 'Event <id> (3)' templates aan met het cloud-
-        design als achtergrond. Operator kan tussen 2/3 foto's wisselen door op
-        de variant te klikken in de Layout-grid.
+        De cache wordt geschreven door cloud_booking.fetch_booking. Returns []
+        als geen cache of geen templates[]-veld.
+        """
+        if not booking_id:
+            return []
+        ev = self.active_event
+        token = getattr(ev, 'linked_token', '') if ev else ''
+        if not token:
+            return []
+        try:
+            from cloud_booking import _read_booking_cache, extract_templates
+            cached = _read_booking_cache(token)
+            if not cached:
+                return []
+            return extract_templates(cached)
+        except Exception as e:
+            print(f"[LINKED] Kon cloud templates niet lezen: {e}")
+            return []
+
+    def _apply_design_to_template(self, local_design_path, force_regen=False):
+        """Synchroon (lokaal) — valideer formaat + genereer linked templates.
+
+        Twee paden:
+          A. Cloud-template flow (Fase 2+): cloud heeft templates[] in de
+             booking-cache → loop ze, download per template de achtergrond,
+             schrijf elk weg als linked_<booking>_<template_id>.json.
+          B. Legacy auto-gen (geen cloud templates): genereer lokaal 2-foto +
+             3-foto varianten op basis van ev.printer_mode + meegegeven design.
 
         Bij lege/missende local_design_path wordt een wit-achtergrond template
         gegenereerd (booking nog zonder design — niet-blokkerend).
@@ -12224,13 +12776,30 @@ class PhotoboothWindow(QMainWindow):
         if not booking_id:
             return False, "Geen booking_id"
 
+        # ── Pad A: cloud templates beschikbaar? ──────────────────────────
+        cloud_templates = self._get_cloud_templates_for_booking(booking_id)
+        if cloud_templates:
+            return self._apply_cloud_templates(cloud_templates, force_regen)
+
+        # ── Pad B: legacy auto-gen ───────────────────────────────────────
         pm = ev.printer_mode
+        # Legacy → nieuwe mode-naam (voor de zekerheid, mocht migratie nog
+        # niet hebben gedraaid)
+        if pm == "canon":
+            pm = "4x6"
+        elif pm == "dnp":
+            pm = "3strips"
         # Lege design-path = booking zonder design → witte achtergrond,
         # GEEN format-validatie nodig.
         design_path_for_template = ""
         if local_design_path and os.path.isfile(local_design_path):
             from cloud_booking import validate_design_format
-            cloud_check_mode = "premium" if pm == "dnp" else "standard"
+            # 4x3 wordt nog niet door cloud ondersteund — val terug op standard
+            # (1.5:1 aspect, zelfde als 4x6 Canon-design).
+            if pm == "3strips":
+                cloud_check_mode = "premium"
+            else:  # 4x6 of 4x3
+                cloud_check_mode = "standard"
             ok, vmsg = validate_design_format(local_design_path, cloud_check_mode)
             if not ok:
                 return False, vmsg
@@ -12284,6 +12853,109 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[LINKED] Layout refresh waarschuwing: {e}")
         return True, ""
 
+    def _apply_cloud_templates(self, cloud_templates: list, force_regen: bool):
+        """Pad A: schrijf cloud templates naar lokale JSON-bestanden.
+
+        Per cloud template:
+          1. Download achtergrond via fetch_template_bg (None → wit)
+          2. Bouw Template via from_cloud_template
+          3. Schrijf naar linked_<booking_id>_tmpl_<template_id>.json
+
+        force_regen=False respecteert user-edits (overschrijft niet).
+        """
+        from template_model import Template
+        from cloud_booking import fetch_template_bg
+
+        ev = self.active_event
+        if not ev:
+            return False, "Geen actief event"
+        booking_id = ev.linked_booking_id
+        token = getattr(ev, 'linked_token', '')
+        os.makedirs(config.TEMPLATES_DIR, exist_ok=True)
+
+        # Verwijder legacy auto-gen varianten (2foto/3foto) zodat ze niet
+        # naast de cloud-templates in de grid blijven hangen. Cloud is leidend.
+        for count in (2, 3):
+            legacy_path = os.path.join(config.TEMPLATES_DIR,
+                                       f"linked_{booking_id}_{count}foto.json")
+            if os.path.isfile(legacy_path):
+                try:
+                    os.remove(legacy_path)
+                    print(f"[LINKED] Legacy auto-gen verwijderd: {legacy_path}")
+                except OSError:
+                    pass
+
+        first_template_name = None
+        default_template_name = None
+        for ct in cloud_templates:
+            tmpl_id = ct.get("id", "")
+            if not tmpl_id:
+                continue
+            safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in tmpl_id)
+            local_path = os.path.join(
+                config.TEMPLATES_DIR, f"linked_{booking_id}_tmpl_{safe_id}.json"
+            )
+            if os.path.isfile(local_path) and not force_regen:
+                print(f"[LINKED-CLOUD] Behoud user-edit: linked_{booking_id}_tmpl_{safe_id}.json")
+                # Toch de naam onthouden voor default-selectie
+                try:
+                    existing = Template.load(local_path)
+                    name = existing.name
+                except Exception:
+                    name = ct.get("name") or f"Template {safe_id[:8]}"
+                if first_template_name is None:
+                    first_template_name = name
+                if ct.get("is_default") and default_template_name is None:
+                    default_template_name = name
+                continue
+
+            # Download achtergrond (kan leeg zijn → wit)
+            bg_local = ""
+            if ct.get("background_url"):
+                bg_path, bg_err = fetch_template_bg(token, tmpl_id, booking_id)
+                if bg_path:
+                    bg_local = bg_path
+                elif bg_err:
+                    print(f"[LINKED-CLOUD] Bg fetch waarschuwing voor "
+                          f"template {tmpl_id}: {bg_err}")
+
+            try:
+                tmpl = Template.from_cloud_template(ct, bg_local)
+            except Exception as e:
+                print(f"[LINKED-CLOUD] Kan template {tmpl_id} niet parsen: {e}")
+                continue
+
+            # Display-naam: cloud-naam + booking-prefix zodat operator weet
+            # bij welk event hij hoort
+            display_name = ct.get("name") or f"Template {safe_id[:8]}"
+            tmpl.name = f"Event {booking_id[:8]} — {display_name}"
+            try:
+                tmpl.save(local_path)
+                print(f"[LINKED-CLOUD] Template opgeslagen: {os.path.basename(local_path)}")
+            except Exception as e:
+                print(f"[LINKED-CLOUD] Save fout voor {tmpl_id}: {e}")
+                continue
+
+            if first_template_name is None:
+                first_template_name = tmpl.name
+            if ct.get("is_default") and default_template_name is None:
+                default_template_name = tmpl.name
+
+        # Set active template_name als hij nog niet bij een cloud template hoort
+        chosen = default_template_name or first_template_name
+        current = ev.template_name or ""
+        prefix = f"Event {booking_id[:8]} — "
+        if chosen and not current.startswith(prefix):
+            ev.template_name = chosen
+        ev.background_path = ""  # cloud-template wint
+        ev.save(config.EVENTS_DIR)
+        if hasattr(self, '_layout_categories_container'):
+            try:
+                self._load_settings_templates()
+            except Exception as e:
+                print(f"[LINKED-CLOUD] Layout refresh waarschuwing: {e}")
+        return True, ""
+
     def _fetch_and_apply_linked_design(self) -> tuple[bool, str]:
         """Synchroon: download design + delegate naar _apply_design_to_template.
 
@@ -12326,26 +12998,59 @@ class PhotoboothWindow(QMainWindow):
         except Exception as e:
             print(f"[LINKED] Uploader start fout: {e}")
 
-    def _on_printer_mode_changed(self, checked):
-        """Persisteer printer-modus (canon|dnp) booth-wide via active_event.
+    def _on_printer_mode_changed_v2(self, mode: str):
+        """Persisteer printer-modus (4x3 | 4x6 | 3strips) via active_event.
 
-        Wordt in event_model.Event.save() automatisch naar booth_settings.json
-        gepropageerd zodat het over alle events geldt. Ververst de layout-lijst
-        zodat de gebruiker meteen de juiste templates ziet.
+        Triggered door de 3-knop selector boven de Layout-grid. Doet:
+        1. mode persisteren
+        2. linked templates opnieuw genereren voor de nieuwe mode (canvas
+           verschilt per mode — 1200x900 voor 4x3, 600x1800 voor 4x6,
+           600x1200 voor 3strips). User-edits van vorige mode gaan verloren.
+        3. layout-grid verversen
         """
-        if not checked:
-            return  # ignore the unchecking signal of the other radio
-        mode = "canon" if self._printer_mode_canon_radio.isChecked() else "dnp"
+        if mode not in ("4x3", "4x6", "3strips"):
+            return
         if self.active_event:
             self.active_event.printer_mode = mode
             self.active_event.save(config.EVENTS_DIR)
         print(f"[SETTINGS] Printer-modus: {mode}")
-        # Ververs layout-lijst zodat juiste presets zichtbaar worden
+        # Regenereer linked templates voor de nieuwe modus
+        self._regenerate_linked_for_mode_change()
+        # DNP profielen-card zit nu in een verborgen dialog — geen runtime
+        # zichtbaarheid meer op deze plek.
+        # Ververs layout-lijst
         if hasattr(self, '_layout_categories_container'):
             try:
                 self._load_settings_templates()
             except Exception as ex:
                 print(f"[SETTINGS] Layout-refresh overgeslagen: {ex}")
+
+    def _regenerate_linked_for_mode_change(self):
+        """Genereer linked templates opnieuw voor de huidige printer-modus.
+
+        Aangeroepen bij mode-switch. Probeert het bestaande design uit de
+        lokale cloud_cache te hergebruiken; valt terug op wit als geen
+        cache-bestand bestaat. force_regen=True overschrijft user-edits
+        van de vorige modus (canvas-grootte verschilt anders niet matchen).
+        """
+        ev = self.active_event
+        if not ev or ev.booth_mode != 'linked' or not ev.linked_booking_id:
+            return
+        local_design = ""
+        booking_id = ev.linked_booking_id
+        try:
+            from cloud_booking import _design_cache_path
+            for ext in ('png', 'jpg', 'jpeg'):
+                p = _design_cache_path(booking_id, ext)
+                if os.path.isfile(p):
+                    local_design = p
+                    break
+        except Exception as e:
+            print(f"[LINKED] Cache-lookup fout: {e}")
+        try:
+            self._apply_design_to_template(local_design, force_regen=True)
+        except Exception as ex:
+            print(f"[LINKED] Regenerate fout: {ex}")
 
     def _on_pin_button_clicked(self):
         """Open touchscreen PIN keypad to set a new PIN code."""
@@ -13558,6 +14263,7 @@ class PhotoboothWindow(QMainWindow):
 
         t = canvas.template
         is_triple = bool(getattr(t, 'is_triple_strip', False))
+        is_4x3 = bool(getattr(t, 'is_4x3_strip', False))
 
         # Naam-veld lezen — vallen terug op template.name (voor linked-templates
         # zodat de overwrite-by-name match krijgt en de grid-filter werkt)
@@ -13576,6 +14282,7 @@ class PhotoboothWindow(QMainWindow):
             "background_path": t.background_path or "",
             "is_double_strip": t.is_double_strip,
             "is_triple_strip": is_triple,
+            "is_4x3_strip": is_4x3,
             "cut_default": cut_default,
             "frames": [{"x": f.x, "y": f.y, "width": f.width, "height": f.height,
                          "rotation": getattr(f, 'rotation', 0.0)}
@@ -13614,7 +14321,7 @@ class PhotoboothWindow(QMainWindow):
         self.active_event.cut_enabled = cut_default
         self.active_event.save(config.EVENTS_DIR)
         print(f"[EDITOR-SAVE] OK: '{custom_name}' ({len(t.frames)} frames, "
-              f"triple={is_triple}) → {fname}")
+              f"triple={is_triple}, 4x3={is_4x3}) → {fname}")
         # Sanity-check: lees direct het bestand terug zodat we zeker weten
         # dat de write op disk staat vóór de grid-rebuild
         try:

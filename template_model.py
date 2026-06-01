@@ -36,6 +36,10 @@ class Template:
     # dat bij printen 90° gedraaid en 3x gestapeld wordt op het 1200x1800 vel.
     # Bij triple strip wordt is_double_strip genegeerd.
     is_triple_strip: bool = False
+    # Verhuur 4x3 modus: True = 1200x900 canvas (4x3 paper).
+    # Print direct (geen mirror, geen rotatie, geen cut). DNP driver-profiel
+    # PROFILE_4X3 zorgt voor het juiste papierformaat.
+    is_4x3_strip: bool = False
 
     @property
     def num_photos(self):
@@ -50,6 +54,7 @@ class Template:
             "is_double_strip": self.is_double_strip,
             "cut_default": self.cut_default,
             "is_triple_strip": self.is_triple_strip,
+            "is_4x3_strip": self.is_4x3_strip,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -67,6 +72,54 @@ class Template:
             is_double_strip=data.get("is_double_strip", False),
             cut_default=data.get("cut_default", True),
             is_triple_strip=data.get("is_triple_strip", False),
+            is_4x3_strip=data.get("is_4x3_strip", False),
+        )
+
+    @classmethod
+    def from_cloud_template(cls, cloud_data: dict, local_bg_path: str) -> "Template":
+        """Bouw een Template uit een cloud hippe_booking_templates rij.
+
+        Args:
+            cloud_data: dict met velden zoals teruggegeven door de
+                        get-photobooth-booking edge function v2 (templates[]).
+                        Verwacht: name, frames (list of dicts), is_double_strip,
+                        is_triple_strip, is_4x3_strip, cut_default.
+            local_bg_path: lokaal pad naar de gedownloade achtergrond
+                           (uit fetch_template_bg). Lege string → witte bg.
+
+        Returns:
+            Template-object klaar voor gebruik in de photobooth-flow.
+
+        Raises:
+            ValueError als verplichte velden ontbreken of frames-formaat
+            ongeldig is.
+        """
+        name = cloud_data.get("name") or "Cloud template"
+        frames_raw = cloud_data.get("frames") or []
+        if not isinstance(frames_raw, list):
+            raise ValueError(f"cloud frames moet list zijn, niet {type(frames_raw)}")
+        frames = []
+        for i, fd in enumerate(frames_raw):
+            if not isinstance(fd, dict):
+                raise ValueError(f"frame {i} is geen dict")
+            try:
+                frames.append(PhotoFrame(
+                    x=int(fd.get("x", 0)),
+                    y=int(fd.get("y", 0)),
+                    width=int(fd.get("width", 0)),
+                    height=int(fd.get("height", 0)),
+                    rotation=float(fd.get("rotation", 0.0) or 0.0),
+                ))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"frame {i} ongeldig: {e}")
+        return cls(
+            name=name,
+            background_path=local_bg_path or "",
+            frames=frames,
+            is_double_strip=bool(cloud_data.get("is_double_strip", False)),
+            cut_default=bool(cloud_data.get("cut_default", True)),
+            is_triple_strip=bool(cloud_data.get("is_triple_strip", False)),
+            is_4x3_strip=bool(cloud_data.get("is_4x3_strip", False)),
         )
 
     @classmethod
@@ -347,7 +400,11 @@ def make_linked_template(printer_mode: str, photo_count: int,
                           design_path: str, booking_id: str) -> Template:
     """Bouw een Template voor een Linked-modus event.
 
-    printer_mode: 'canon' = dubbele strip 600x1800, 'dnp' = triple 600x1200.
+    printer_mode:
+        '3strips' = DNP triple 600x1200 (3 stripjes via 2-inch cut)
+        '4x6'     = Canon dubbele strip 600x1800 (left half mirrored)
+        '4x3'     = 1 grote print 1200x900 (vol vel, geen mirror)
+        Legacy 'canon' → behandeld als '4x6', 'dnp' → als '3strips'.
     photo_count:  aantal frames verticaal in de strip.
     design_path:  lokaal pad naar het uit-cloud-gehaalde design (PNG/JPG).
     booking_id:   gebruikt in naam.
@@ -359,7 +416,14 @@ def make_linked_template(printer_mode: str, photo_count: int,
     S = 30
     AR = 3.0 / 2.0  # Canon camera aspect
 
-    if printer_mode == "dnp":
+    # Legacy values mappen
+    if printer_mode == "canon":
+        printer_mode = "4x6"
+    elif printer_mode == "dnp":
+        printer_mode = "3strips"
+
+    is_4x3 = False
+    if printer_mode == "3strips":
         # 600x1200 portrait — frames op ~75% van canvas, gelijke marges + spacing
         # aspect: 2 foto's = vierkant, 3 foto's = 3:2 (Surface Pro)
         frames = _make_triple_frames(
@@ -368,7 +432,14 @@ def make_linked_template(printer_mode: str, photo_count: int,
         )
         is_triple = True
         is_double = False
-    else:
+    elif printer_mode == "4x3":
+        # 4x3 paper = 1200x900 px landscape-canvas. Vol vel, geen mirroring.
+        # Frames evenredig verdeeld, 3:2 Canon-aspect.
+        frames = _make_strip_frames_ar(photo_count, 1200, M, S, AR, canvas_h=900)
+        is_triple = False
+        is_double = True  # vol vel, geen mirror
+        is_4x3 = True
+    else:  # '4x6'
         # Canon: 600x1800 single strip (gedupliceerd naar 1200 bij print)
         frames = _make_strip_frames_ar(photo_count, 600, M, S, AR, canvas_h=1800)
         is_triple = False
@@ -382,6 +453,7 @@ def make_linked_template(printer_mode: str, photo_count: int,
         is_double_strip=is_double,
         cut_default=True,
         is_triple_strip=is_triple,
+        is_4x3_strip=is_4x3,
     )
 
 

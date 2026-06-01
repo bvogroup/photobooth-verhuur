@@ -99,8 +99,15 @@ class Event:
     custom_choice_timeout: int = 30       # seconden voor keuzescherm
     custom_payment_timeout: int = 120     # seconden voor betaalscherm
     save_photos_locally: bool = True   # Save photos to local disk
-    # Printer-modus (verhuur-versie): "canon" = oude flow, "dnp" = triple strip.
-    printer_mode: str = "dnp"
+    # Printer-modus (verhuur-versie):
+    #   "4x3"     = 1 grote print op 4x3 paper (geen mirror/cut)
+    #   "4x6"     = oude Canon dubbele strip op 4x6 paper (links gemirrord
+    #               naar rechts; cut tussen 2 helften)
+    #   "3strips" = DNP triple strip — 600x1200 design 3× gestapeld op 4x6
+    #               vel met 2-inch cut
+    # Legacy waarden 'canon' / 'dnp' worden bij load gemigreerd naar
+    # respectievelijk '4x6' / '3strips' (zie _migrate_legacy_printer_mode).
+    printer_mode: str = "3strips"
     # Booth-modus + Linked-koppeling (verhuur-versie)
     booth_mode: str = "standalone"
     linked_booking_id: str = ""
@@ -167,6 +174,11 @@ class Event:
                 ev.payment_method = "sumup"
             elif ev.payment_enabled:
                 ev.payment_method = "stripe"
+        # Migratie printer_mode: legacy 'canon'/'dnp' → '4x6'/'3strips'
+        if ev.printer_mode == "canon":
+            ev.printer_mode = "4x6"
+        elif ev.printer_mode == "dnp":
+            ev.printer_mode = "3strips"
         # Booth-wide overlay: als booth_settings.json bestaat, neem die waarden.
         # Per-event velden (id, name, date, template_name, intro_*, capture_*,
         # session_count, photo_count, etc.) blijven uit het event-JSON komen.

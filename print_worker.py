@@ -6,12 +6,15 @@ Runs print_photo() in an isolated process so Windows GDI calls
 application's HWND geometry when AA_EnableHighDpiScaling is on.
 
 Usage:
-    python print_worker.py <image_path> <printer_name> <copies> <data_dir>
+    python print_worker.py <image_path> <printer_name> <copies> <data_dir> [profile_key]
 
 Exit codes:
     0 = success
     1 = PrinterError (message on stderr)
     2 = unexpected error (message on stderr)
+
+profile_key (optional, 5e arg): DNP-profiel-sleutel ('4x6_nocut', '4x6_cut',
+'4x3') of leeg/'-' om legacy single-profile DEVMODE te gebruiken.
 
 NOTE: In frozen exe mode, the --print-worker branch in splash_starter.pyw
 removes _MEIPASS/cv2/ from sys.path before this module is loaded.
@@ -24,12 +27,16 @@ import os
 
 def main():
     if len(sys.argv) < 5:
-        print("Usage: print_worker.py <image_path> <printer_name> <copies> <data_dir>",
+        print("Usage: print_worker.py <image_path> <printer_name> <copies> <data_dir> [profile_key]",
               file=sys.stderr)
         sys.exit(2)
 
     image_path, printer_name, copies_str, data_dir = sys.argv[1:5]
     copies = int(copies_str)
+    # Optionele 5e arg: profile_key. Leeg of '-' = geen profiel (legacy mode).
+    profile_key = sys.argv[5] if len(sys.argv) > 5 else ""
+    if profile_key in ("", "-"):
+        profile_key = None
 
     # Set DATA_DIR before importing printer (so load_saved_devmode finds DEVMODE).
     # Plain `import config` works here because splash_starter.pyw's --print-worker
@@ -40,7 +47,7 @@ def main():
 
     from printer import print_photo, PrinterError
     try:
-        print_photo(image_path, printer_name, copies)
+        print_photo(image_path, printer_name, copies, profile_key=profile_key)
     except PrinterError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
