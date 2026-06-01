@@ -5528,15 +5528,16 @@ class PhotoboothWindow(QMainWindow):
         screen_w = screen.geometry().width() if screen else 1920
         screen_h = screen.geometry().height() if screen else 1080
 
-        # Doelhoogte cards: ~58% van scherm. Iets ruimer dan eerst
-        # zodat de paper-margin (8% breathing-room rond canvas) goed
-        # zichtbaar is.
-        thumb_h = min(700, int(screen_h * 0.58))
+        # Doelhoogte cards: 50% van scherm — iets kleiner dan eerder zodat
+        # landscape templates met 3:2 aspect proportioneel volledig zichtbaar
+        # zijn (ipv klein-en-zwevend in een te hoge card). Per template krijgt
+        # de card z'n eigen (w,h) op basis van de paper-aspect.
+        target_h = min(560, int(screen_h * 0.50))
 
         # Bouw alle cards 1 keer (totale breedte beperkt door PER_PAGE)
         cards = []
         for tmpl in self._tmpl_picker_choices:
-            thumb_w = self._picker_card_width_for_aspect(tmpl, thumb_h)
+            thumb_w, thumb_h = self._picker_card_size(tmpl, target_h)
             card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
             cards.append(card)
 
@@ -5668,36 +5669,52 @@ class PhotoboothWindow(QMainWindow):
             self._tmpl_picker_stack.setCurrentIndex(self._tmpl_picker_page)
             self._tmpl_picker_update_page_state()
 
-    def _picker_card_width_for_aspect(self, tmpl, thumb_h):
-        """Bereken card-breedte op basis van het paper-aspect van het template.
-
-        - Strip (Canon dubbele OR triple): 1/3 van vol vel → smal portrait
-        - Vol vel landscape (1800x1200): 3:2 → breed
-        - Vol vel portrait (1200x1800): 2:3 → normaal portrait
-        """
-        # Bepaal canvas dimensies uit frames of flags
+    def _picker_canvas_dims(self, tmpl):
+        """Bepaal canvas (paper) afmetingen van een template voor preview-aspect."""
         frames = tmpl.frames or []
         max_x = max((f.x + f.width for f in frames), default=600)
         max_y = max((f.y + f.height for f in frames), default=1200)
 
         if getattr(tmpl, 'is_triple_strip', False):
-            # 600x1200 triple — render als 1 strip-vorm (1/3 sheet width)
-            canvas_w, canvas_h = 600, 1200
-        elif not tmpl.is_double_strip and max_x <= 700 and max_y >= max_x:
+            return 600, 1200
+        if getattr(tmpl, 'is_4x3_strip', False):
+            return 1200, 900
+        if not tmpl.is_double_strip and max_x <= 700 and max_y >= max_x:
             # Canon dubbele strip (mirror) — 600x1800
-            canvas_w, canvas_h = 600, 1800
-        elif max_x > max_y:
-            # Landscape vel
-            canvas_w, canvas_h = 1800, 1200
-        else:
-            # Portrait vel
-            canvas_w, canvas_h = 1200, 1800
+            return 600, 1800
+        if max_x > max_y:
+            return 1800, 1200
+        return 1200, 1800
 
+    def _picker_card_size(self, tmpl, target_h):
+        """Bereken card (thumb_w, thumb_h) zodat het hele velletje proportioneel
+        zichtbaar is binnen een redelijke footprint.
+
+        target_h is het maximum voor card-hoogte. Voor landscape templates wordt
+        de card juist BREDER en KORTER zodat de paper-aspect klopt en geen
+        ruimte wordt verspild boven/onder het vel.
+
+        Strategie: 'footprint area' van max 290.000 px² per card (≈ 540×540
+        equivalent), maar nooit hoger dan target_h en nooit breder dan 720.
+        Vorm = canvas-aspect.
+        """
+        canvas_w, canvas_h = self._picker_canvas_dims(tmpl)
         aspect = canvas_w / canvas_h
-        thumb_w = int(thumb_h * aspect)
-        # Minimum/maximum breedte
-        thumb_w = max(150, min(thumb_w, 600))
-        return thumb_w
+        # Doel: card fits in target_h × 720 box met juiste aspect
+        max_w = 720
+        max_h = target_h
+        # Begin met card op max_h hoog
+        h = max_h
+        w = int(h * aspect)
+        if w > max_w:
+            # Card te breed → schaal naar beneden
+            w = max_w
+            h = int(w / aspect)
+        # Minimum
+        if w < 180:
+            w = 180
+            h = int(w / aspect)
+        return w, h
 
     # ── Carousel navigation helpers ───────────────────────────────────
 
