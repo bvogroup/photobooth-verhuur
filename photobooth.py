@@ -2494,25 +2494,31 @@ class PhotoboothWindow(QMainWindow):
         # via _maybe_route_after_coupling naar de juiste idle-modus.
 
     def _welcome_check_connectivity(self):
-        """Check WiFi + internet status, update de UI. Snelle 1.5s timeout
-        zodat de gebruiker niet lang naar 'controleren' kijkt.
+        """Check WiFi + internet status via direct TCP-socket (bypass DNS).
+
+        urllib.request blokkeert lang (10-30 sec) bij DNS-fail op Windows
+        omdat de DNS-timeout niet gekoppeld is aan de urlopen-timeout.
+        Daarom gebruiken we socket.create_connection direct naar IP-adres,
+        wat met 1 sec timeout snel faalt bij geen netwerk.
+
+        We testen Google DNS (8.8.8.8:53) + Cloudflare DNS (1.1.1.1:53) —
+        beide zijn betrouwbare anycast servers.
         """
         import threading
         def _bg():
-            import urllib.request
+            import socket
             online = False
-            # Probeer 2 endpoints met korte timeout zodat we niet vasthangen
-            for url in ("http://www.gstatic.com/generate_204",
-                        "https://www.google.com/generate_204"):
+            for host, port in (("8.8.8.8", 53), ("1.1.1.1", 53)):
                 try:
-                    urllib.request.urlopen(url, timeout=1.5)
+                    s = socket.create_connection((host, port), timeout=1.0)
+                    s.close()
                     online = True
                     break
-                except Exception:
+                except OSError:
                     continue
             from PyQt5.QtCore import QTimer as _T
             _T.singleShot(0, lambda: self._welcome_apply_connectivity(online))
-            print(f"[WELCOME] Connectivity check: {'online' if online else 'offline'}")
+            print(f"[WELCOME] Connectivity check (socket): {'online' if online else 'offline'}")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
@@ -4942,15 +4948,16 @@ class PhotoboothWindow(QMainWindow):
             if hasattr(self, '_welcome_wifi_timer'):
                 self._welcome_check_connectivity()
                 self._welcome_wifi_timer.start()
-            # Fallback: als de check binnen 4 sec geen resultaat geeft, val
-            # terug op qr-card (assume online — user kan retry via swipe terug)
+            # Fallback: als de check binnen 3 sec geen resultaat geeft, val
+            # terug op WIFI-card (assume offline — safer default zodat user
+            # niet stilletjes op een werkende QR-card lijkt te zitten).
             if not hasattr(self, '_welcome_checking_fallback'):
                 self._welcome_checking_fallback = QTimer(self)
                 self._welcome_checking_fallback.setSingleShot(True)
                 self._welcome_checking_fallback.timeout.connect(
-                    lambda: self._welcome_apply_connectivity(True)
+                    lambda: self._welcome_apply_connectivity(False)
                 )
-            self._welcome_checking_fallback.start(4000)
+            self._welcome_checking_fallback.start(3000)
             # Sync active language to button highlight
             try:
                 from translations import get_language
