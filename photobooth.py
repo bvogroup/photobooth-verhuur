@@ -552,11 +552,14 @@ class LayoutEditorCanvas(QWidget):
             return 600, 1200
         if self.template and getattr(self.template, 'is_4x3_strip', False):
             return 1200, 900
-        # Detecteer landscape via frame-extents (cloud templates)
+        # Detecteer landscape via frame-extents. Eerder gebruikten we
+        # `_max_x >= 1500` als heuristic, maar dat brak als de operator
+        # de frames kleiner schaalde. Nu pure aspect + is_double_strip:
+        # landscape canvas hoort altijd bij vol-vel templates.
         if self.template and self.template.frames:
             _max_x = max(f.x + f.width for f in self.template.frames)
             _max_y = max(f.y + f.height for f in self.template.frames)
-            if _max_x > _max_y and _max_x >= 1500:
+            if _max_x > _max_y and bool(getattr(self.template, 'is_double_strip', False)):
                 return 1800, 1200
         return 1200, 1800
 
@@ -6916,14 +6919,26 @@ class PhotoboothWindow(QMainWindow):
             if getattr(template, 'is_triple_strip', False):
                 return self._build_triple_strip_image(template)
 
-            # Detecteer landscape canvas (cloud template kan 1800x1200 zijn voor
-            # liggend 4x6 ontwerp). We bouwen het composiet op de cloud-canvas-
-            # afmetingen, en bij landscape roteren we het eindbeeld 90° voor de
-            # printer (die print altijd portrait 4x6).
+            # Detecteer landscape canvas via frame-extents. Eerder gebruikten
+            # we een `cloud_w >= 1500` heuristic, maar die brak wanneer de
+            # operator de frames kleiner schaalde — dan viel max_x onder 1500
+            # en werd het ten onrechte als portrait gerenderd. Nu pure
+            # max_x > max_y check; landscape canvas hoort daar altijd bij.
             _frames = list(template.frames) if template and template.frames else []
             cloud_w = max((f.x + f.width) for f in _frames) if _frames else 0
             cloud_h = max((f.y + f.height) for f in _frames) if _frames else 0
-            is_landscape = cloud_w > cloud_h and cloud_w >= 1500  # heuristic: landscape 4x6
+            # Landscape als frames breder dan hoog zijn EN het een 'vol vel'
+            # template is (is_double_strip=True; canvas 1200×… of 1800×1200).
+            # NIET de smalle 600-px Canon mirror-templates.
+            is_landscape = (
+                cloud_w > cloud_h
+                and bool(template.is_double_strip)
+            )
+            print(f"[STRIP] Canvas-detect: max_xy=({cloud_w},{cloud_h}), "
+                  f"is_double={template.is_double_strip}, "
+                  f"is_triple={getattr(template,'is_triple_strip',False)}, "
+                  f"is_4x3={getattr(template,'is_4x3_strip',False)} → "
+                  f"landscape={is_landscape}")
             if getattr(template, 'is_4x3_strip', False):
                 PRINT_W = 1200
                 PRINT_H = 900
@@ -11755,12 +11770,15 @@ class PhotoboothWindow(QMainWindow):
             canvas_w = 1200
             canvas_h = 900
         else:
-            # Detecteer landscape via frame-extents (cloud templates kunnen
-            # landscape zijn zonder expliciete flag)
+            # Detecteer landscape via frame-extents. Eerder gebruikten we
+            # `_max_x >= 1500` als heuristic, maar dat brak wanneer de
+            # operator de frames kleiner schaalde. Nu pure aspect-ratio +
+            # is_double_strip flag — landscape canvas hoort altijd bij een
+            # vol-vel-template, nooit bij de smalle 600 Canon mirror-templates.
             _fr = layout.frames or []
             _max_x = max((f.x + f.width for f in _fr), default=0)
             _max_y = max((f.y + f.height for f in _fr), default=0)
-            if _max_x > _max_y and _max_x >= 1500:
+            if _max_x > _max_y and bool(getattr(layout, 'is_double_strip', False)):
                 canvas_w = 1800
                 canvas_h = 1200
             else:
