@@ -5712,50 +5712,161 @@ class PhotoboothWindow(QMainWindow):
         widget.mouseReleaseEvent = release
 
     def _build_template_picker_card(self, tmpl, thumb_w, thumb_h):
-        """Bouw één klikbare template-kaart voor de picker."""
+        """Bouw één klikbare template-kaart voor de picker (minimalist).
+
+        Toont de paper-vorm zelf als visual hint:
+          - Sheet → afgerond breed/landscape rechthoek
+          - 2 strips → 2 smalle portrait rechthoekjes naast elkaar
+          - 3 strips → 3 smalle portrait rechthoekjes naast elkaar
+        Geen kaders / frames / silhouetten — gewoon de paper-shape.
+        """
         from PyQt5.QtWidgets import QFrame, QVBoxLayout, QLabel
 
         card = QFrame()
         card.setCursor(Qt.PointingHandCursor)
         card.setStyleSheet(
             f"QFrame {{ background: white; border: 3px solid transparent; "
-            f"border-radius: 18px; padding: 14px; }}"
+            f"border-radius: 24px; }}"
             f"QFrame:hover {{ border-color: {config.COLOR_PRIMARY}; }}"
         )
         card_lay = QVBoxLayout(card)
-        card_lay.setContentsMargins(14, 14, 14, 14)
-        card_lay.setSpacing(12)
+        card_lay.setContentsMargins(20, 28, 20, 28)
+        card_lay.setSpacing(20)
+        card_lay.addStretch()
 
-        # Thumbnail-pixmap renderen — gebruik bestaande preview-functie
-        pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
+        # Render minimalist paper-shape
+        pix = self._render_minimal_template_shape(tmpl, thumb_w, thumb_h)
         thumb = QLabel()
         thumb.setPixmap(pix)
         thumb.setAlignment(Qt.AlignCenter)
         thumb.setFixedSize(thumb_w, thumb_h)
-        thumb.setStyleSheet("background: transparent; border: 1px solid #ddd; border-radius: 8px;")
+        thumb.setStyleSheet("background: transparent;")
         card_lay.addWidget(thumb, alignment=Qt.AlignCenter)
 
-        # Naam (zonder "Event <id> —" prefix als die er staat)
+        card_lay.addSpacing(8)
+
+        # Naam (zonder "Event <id> —" prefix als die er staat) — minimalist
         display_name = tmpl.name
         if " — " in display_name:
             display_name = display_name.split(" — ", 1)[1]
         name_lbl = QLabel(display_name)
         name_lbl.setAlignment(Qt.AlignCenter)
-        name_lbl.setFont(QFont("DM Sans", 18, QFont.Bold))
-        name_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        name_lbl.setFont(QFont("DM Sans", 20, QFont.Bold))
+        name_lbl.setStyleSheet(
+            f"color: {config.COLOR_TEXT}; background: transparent; "
+            f"letter-spacing: -0.3px;"
+        )
         name_lbl.setWordWrap(True)
         card_lay.addWidget(name_lbl)
 
-        # Aantal foto's onder de naam
-        info_lbl = QLabel(f"{tmpl.num_photos} foto's")
-        info_lbl.setAlignment(Qt.AlignCenter)
-        info_lbl.setFont(QFont("DM Sans", 13))
-        info_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-        card_lay.addWidget(info_lbl)
+        card_lay.addStretch()
 
-        # Géén directe mousePressEvent op de card zelf — clicks worden door
-        # de carousel-stack widget afgehandeld (swipe vs tap detectie).
+        # Géén directe mousePressEvent op de card — clicks via carousel stack
         return card
+
+    def _picker_visual_type(self, tmpl):
+        """Classificeer template voor minimal-thumbnail rendering.
+
+        Returns: 'sheet_landscape' | 'sheet_portrait' |
+                 '2_strips' | '3_strips' | '4x3'
+        """
+        if getattr(tmpl, 'is_triple_strip', False):
+            return '3_strips'
+        if getattr(tmpl, 'is_4x3_strip', False):
+            return '4x3'
+        # Frame-extents bepalen of het landscape of portrait is
+        frames = tmpl.frames or []
+        max_x = max((f.x + f.width for f in frames), default=0)
+        max_y = max((f.y + f.height for f in frames), default=0)
+        # Canon dubbele strip: frames staan in linkerhelft (max_x ~ 600),
+        # is_double_strip=False (= mirror-mode). Wordt 2 strips bij print.
+        if not tmpl.is_double_strip and max_x <= 700 and max_y >= max_x:
+            return '2_strips'
+        # Anders: vol vel — landscape of portrait gebaseerd op aspect
+        if max_x > max_y:
+            return 'sheet_landscape'
+        return 'sheet_portrait'
+
+    def _render_minimal_template_shape(self, tmpl, w, h):
+        """Render een minimalist paper-shape voor de picker.
+
+        Strip = 1/3 breedte van een sheet (proportie aan papierformaat).
+        Soft brand-color fill, afgeronde hoeken, geen interne details.
+        """
+        from PyQt5.QtGui import QPainter, QColor, QBrush, QPen
+        from PyQt5.QtCore import QRect, QRectF
+        pixmap = QPixmap(w, h)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Soft brand-tinted fill
+        fill_color = QColor(config.COLOR_PRIMARY)
+        fill_color.setAlpha(180)
+        border_color = QColor(config.COLOR_PRIMARY_HOVER)
+        painter.setBrush(QBrush(fill_color))
+        painter.setPen(QPen(border_color, 2))
+
+        vtype = self._picker_visual_type(tmpl)
+        # Berekenen op een vast referentie-grid van breedte-eenheden
+        # zodat strip = 1/3 sheet-width (visueel proportioneel)
+        sheet_w_units = 6.0   # sheet = 6 eenheden breed
+        strip_w_units = 2.0   # strip = 2 eenheden breed (= 1/3 van sheet)
+        gap_units = 0.4
+        radius = 18
+
+        if vtype == 'sheet_landscape':
+            # Landscape sheet 3:2 — wide rect
+            shape_w_units = sheet_w_units
+            shape_h_units = sheet_w_units / 1.5
+            unit = min(w * 0.85 / shape_w_units, h * 0.85 / shape_h_units)
+            shape_w = shape_w_units * unit
+            shape_h = shape_h_units * unit
+            x = (w - shape_w) / 2
+            y = (h - shape_h) / 2
+            painter.drawRoundedRect(QRectF(x, y, shape_w, shape_h), radius, radius)
+
+        elif vtype == 'sheet_portrait':
+            # Portrait sheet 2:3
+            shape_w_units = sheet_w_units / 1.5
+            shape_h_units = sheet_w_units
+            unit = min(w * 0.85 / shape_w_units, h * 0.85 / shape_h_units)
+            shape_w = shape_w_units * unit
+            shape_h = shape_h_units * unit
+            x = (w - shape_w) / 2
+            y = (h - shape_h) / 2
+            painter.drawRoundedRect(QRectF(x, y, shape_w, shape_h), radius, radius)
+
+        elif vtype == '4x3':
+            # 4x3 half-sheet landscape, 4:3 ratio
+            shape_w_units = sheet_w_units * 0.75
+            shape_h_units = sheet_w_units * 0.75 / (4/3)
+            unit = min(w * 0.85 / shape_w_units, h * 0.85 / shape_h_units)
+            shape_w = shape_w_units * unit
+            shape_h = shape_h_units * unit
+            x = (w - shape_w) / 2
+            y = (h - shape_h) / 2
+            painter.drawRoundedRect(QRectF(x, y, shape_w, shape_h), radius, radius)
+
+        elif vtype in ('2_strips', '3_strips'):
+            count = 2 if vtype == '2_strips' else 3
+            # Elke strip = 1/3 sheet-width, hoogte = sheet-height (portrait)
+            strip_h_units = sheet_w_units  # zelfde als sheet width voor proportie
+            total_w_units = count * strip_w_units + (count - 1) * gap_units
+            unit = min(w * 0.85 / total_w_units, h * 0.85 / strip_h_units)
+            strip_w = strip_w_units * unit
+            strip_h = strip_h_units * unit
+            gap = gap_units * unit
+            total_w = count * strip_w + (count - 1) * gap
+            x_start = (w - total_w) / 2
+            y = (h - strip_h) / 2
+            for i in range(count):
+                x = x_start + i * (strip_w + gap)
+                painter.drawRoundedRect(QRectF(x, y, strip_w, strip_h),
+                                         radius * 0.6, radius * 0.6)
+
+        painter.end()
+        return pixmap
 
     def _on_template_picked(self, tmpl):
         """User heeft een template gekozen uit de picker → start sessie."""
