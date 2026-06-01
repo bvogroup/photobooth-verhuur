@@ -5919,16 +5919,28 @@ class PhotoboothWindow(QMainWindow):
                 except Exception as wm_err:
                     print(f"[STRIP] Watermerk fout: {wm_err}")
 
-            # Landscape canvas (bv. 1800x1200) → 90° draaien voor printen
-            # op portrait 4x6 paper. De share-versie blijft landscape voor de
-            # gast (zie _maybe_create_rotated_display_strips verderop).
+            # Landscape canvas (bv. 1800x1200) → bewaar 2 versies:
+            #   - display-versie (landscape, voor sharing-screen)
+            #   - print-versie (90° gedraaid, voor portrait 4x6 paper)
+            strip_dir = self._get_strips_dir()
+            landscape_display_path = None
             if is_landscape:
+                landscape_display_path = os.path.join(
+                    strip_dir,
+                    self._timestamp_filename(ext=".jpg", suffix="_landscape")
+                )
+                try:
+                    strip.save(landscape_display_path, "JPEG", quality=95)
+                    print(f"[STRIP] Landscape display opgeslagen: {landscape_display_path}")
+                except OSError as e:
+                    print(f"[STRIP] Landscape display save fout: {e}")
+                    landscape_display_path = None
+                # Nu roteren voor de print-versie (op portrait 4x6 paper)
                 strip = strip.rotate(-90, expand=True)
                 print(f"[STRIP] Landscape canvas → 90° gedraaid voor portrait print "
                       f"(eindgrootte {strip.size})")
 
-            # Strip-composiet naar photos/<event>/strips/
-            strip_dir = self._get_strips_dir()
+            # Strip-composiet (print-versie) naar photos/<event>/strips/
             strip_path = os.path.join(strip_dir, self._timestamp_filename(ext=".jpg"))
             try:
                 strip.save(strip_path, "JPEG", quality=95)
@@ -5981,6 +5993,13 @@ class PhotoboothWindow(QMainWindow):
             # uitsluitend frames met rotation 90 of 270 heeft). PRINT blijft
             # altijd het originele strip_path gebruiken, niet deze.
             self._maybe_create_rotated_display_strips(strip_path)
+
+            # Landscape templates: gebruik de landscape-versie als display
+            # zodat de gast op sharing-screen het ontwerp horizontaal ziet
+            # (zoals klant het ontwierp), niet de 90° rotated print-versie.
+            if landscape_display_path and os.path.isfile(landscape_display_path):
+                self._display_strip_path = landscape_display_path
+                print(f"[STRIP] Display-pad → landscape versie")
 
             # Free processed photos immediately (can be 24-48MB)
             with self._processed_lock:
@@ -6669,40 +6688,30 @@ class PhotoboothWindow(QMainWindow):
         self._do_print_job(copies=copies)
 
     def _resolve_dnp_profile_key(self, template):
-        """Bepaal welk DNP printer-profiel bij dit template/event hoort.
+        """Bepaal welk DNP printer-profiel bij dit template hoort.
 
-        Mapping (3 modi, alle 3 op DNP QW410):
-          - printer_mode='4x3'     → PROFILE_4X3       (half-size paper)
-          - printer_mode='4x6'     → PROFILE_4X6_NOCUT (vol vel, geen cut)
-          - printer_mode='3strips' → PROFILE_4X6_CUT   (3 stripjes via 2-inch cut)
+        Template flags zijn LEIDEND — printer_mode op het event wordt
+        genegeerd zodat de operator zich geen zorgen hoeft te maken over
+        de printer-modus instelling. Het gekozen template bepaalt alles.
 
-        Legacy fallback: 'canon' → '4x6', 'dnp' → '3strips'.
+        Mapping:
+          - template.is_triple_strip → PROFILE_4X6_CUT  (3 strips, auto-cut)
+          - template.is_4x3_strip    → PROFILE_4X3      (half-size paper)
+          - anders                   → PROFILE_4X6_NOCUT (vol vel, geen cut)
 
         Args:
-            template: huidige Template-object (gebruikt voor extra triple-
-                      strip detectie als printer_mode misbruikt zou zijn).
+            template: Template-object (uit linked of preset library).
 
         Returns:
-            profile_key string. Bij ontbrekende active_event: None (driver-
-            default).
+            profile_key string, of None bij ontbrekend template.
         """
         from printer import PROFILE_4X6_CUT, PROFILE_4X6_NOCUT, PROFILE_4X3
-        ev = self.active_event
-        if not ev:
+        if not template:
             return None
-        mode = getattr(ev, 'printer_mode', '3strips')
-        # Legacy → nieuwe waarden
-        if mode == 'canon':
-            mode = '4x6'
-        elif mode == 'dnp':
-            mode = '3strips'
-        if mode == '4x3':
-            return PROFILE_4X3
-        if mode == '4x6':
-            return PROFILE_4X6_NOCUT
-        # 3strips (of triple-strip template als fallback-signaal)
-        if mode == '3strips' or (template and getattr(template, 'is_triple_strip', False)):
+        if getattr(template, 'is_triple_strip', False):
             return PROFILE_4X6_CUT
+        if getattr(template, 'is_4x3_strip', False):
+            return PROFILE_4X3
         return PROFILE_4X6_NOCUT
 
     def _do_print_job(self, copies=1):
@@ -8118,6 +8127,11 @@ class PhotoboothWindow(QMainWindow):
         self._printer_mode_btn_3strips.setChecked(True)
         pmode_card_lay.addLayout(pmode_btn_row)
         card_layout_lay.addWidget(pmode_card)
+        # Printer-modus card verbergen: wordt nu automatisch afgeleid uit
+        # het gekozen template (is_triple_strip → 3strips cut, is_4x3_strip →
+        # 4x3 paper, anders → 4x6 nocut). Widgets blijven bestaan zodat
+        # _load_settings_for_event/_on_printer_mode_changed_v2 niet crashen.
+        pmode_card.setVisible(False)
 
         # Layout categories container
         self._layout_categories_container = QVBoxLayout()
