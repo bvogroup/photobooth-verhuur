@@ -5482,19 +5482,13 @@ class PhotoboothWindow(QMainWindow):
         return results
 
     def _show_template_picker(self, choices):
-        """Carousel-style fullscreen template-picker met touch swipe support.
+        """Grid template-picker met échte template-previews.
 
-        Layout:
-          - Grote centrale kaart toont huidige selectie
-          - Pijlen [<-] en [->] links/rechts
-          - Page-indicator dots onderaan
-          - Touch swipe links/rechts om door te bladeren
-          - "Gebruik dit ontwerp" knop onderaan om te bevestigen
+        Toont alle templates naast elkaar in een horizontale rij. Elke kaart
+        heeft een breedte gebaseerd op het paper-formaat (stripjes smaller,
+        velletjes breder). Klik op een kaart om te bevestigen.
         """
-        from PyQt5.QtWidgets import (
-            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-            QStackedWidget, QFrame
-        )
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 
         current_page = self.stack.currentWidget()
         if current_page is None:
@@ -5503,11 +5497,10 @@ class PhotoboothWindow(QMainWindow):
         self._tmpl_picker_overlay.setGeometry(0, 0, current_page.width(), current_page.height())
         self._tmpl_picker_overlay.setStyleSheet("background: rgba(20,20,22,0.97);")
         self._tmpl_picker_choices = list(choices)
-        self._tmpl_picker_index = 0
 
         lay = QVBoxLayout(self._tmpl_picker_overlay)
-        lay.setContentsMargins(40, 32, 40, 32)
-        lay.setSpacing(16)
+        lay.setContentsMargins(40, 40, 40, 40)
+        lay.setSpacing(20)
 
         # ── Header ────────────────────────────────────────────────────
         title = QLabel("Kies je ontwerp")
@@ -5516,133 +5509,108 @@ class PhotoboothWindow(QMainWindow):
         title.setStyleSheet("color: white; background: transparent;")
         lay.addWidget(title)
 
-        subtitle = QLabel("Swipe of tik op de pijlen om te bladeren")
+        subtitle = QLabel("Tik op het ontwerp dat je wilt gebruiken")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setFont(QFont("DM Sans", 16))
         subtitle.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
         lay.addWidget(subtitle)
-        lay.addSpacing(8)
+        lay.addStretch()
 
-        # ── Carousel area ────────────────────────────────────────────
+        # ── Bepaal layout-grootte ─────────────────────────────────────
         screen = self.screen()
         screen_w = screen.geometry().width() if screen else 1920
         screen_h = screen.geometry().height() if screen else 1080
-        # Maak de kaart écht groot — ~70% van scherm hoogte, max 700px breed
-        card_w = min(700, screen_w - 360)
-        card_h = min(800, screen_h - 360)
-        thumb_pad = 40
-        thumb_w = card_w - 2 * thumb_pad
-        thumb_h = card_h - 180  # ruimte voor naam + foto-aantal
 
-        carousel_row = QHBoxLayout()
-        carousel_row.setSpacing(20)
-        carousel_row.setContentsMargins(0, 0, 0, 0)
-
-        # Linker pijl
-        self._tmpl_picker_prev_btn = QPushButton("‹")
-        self._tmpl_picker_prev_btn.setCursor(Qt.PointingHandCursor)
-        self._tmpl_picker_prev_btn.setFont(QFont("DM Sans", 56, QFont.Bold))
-        self._tmpl_picker_prev_btn.setFixedSize(80, 200)
-        self._tmpl_picker_prev_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
-            "border: none; border-radius: 18px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.28); }"
-            "QPushButton:disabled { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.25); }"
-        )
-        self._tmpl_picker_prev_btn.clicked.connect(self._tmpl_picker_prev)
-        carousel_row.addWidget(self._tmpl_picker_prev_btn, alignment=Qt.AlignVCenter)
-
-        # Stacked widget met 1 card per template
-        self._tmpl_picker_stack = QStackedWidget()
-        self._tmpl_picker_stack.setStyleSheet("background: transparent;")
-        self._tmpl_picker_stack.setFixedSize(card_w, card_h)
+        # Bereken card sizes — alle cards hebben dezelfde HOOGTE, maar
+        # breedte verschilt per template-type (paper aspect).
+        # Doelhoogte: ~60% van scherm.
+        thumb_h = min(720, int(screen_h * 0.62))
+        cards = []
+        total_width = 0
+        gap = 28
+        # Render cards + bereken totale breedte
         for tmpl in self._tmpl_picker_choices:
+            thumb_w = self._picker_card_width_for_aspect(tmpl, thumb_h)
             card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
-            self._tmpl_picker_stack.addWidget(card)
-        # Touch-swipe support op het stack-widget + tap-to-confirm
-        self._install_swipe_on(self._tmpl_picker_stack,
-                                self._tmpl_picker_prev,
-                                self._tmpl_picker_next,
-                                self._tmpl_picker_confirm)
-        carousel_row.addWidget(self._tmpl_picker_stack, alignment=Qt.AlignCenter)
+            cards.append(card)
+            total_width += thumb_w + 60   # card breedte incl. padding
+        total_width += (len(cards) - 1) * gap
 
-        # Rechter pijl
-        self._tmpl_picker_next_btn = QPushButton("›")
-        self._tmpl_picker_next_btn.setCursor(Qt.PointingHandCursor)
-        self._tmpl_picker_next_btn.setFont(QFont("DM Sans", 56, QFont.Bold))
-        self._tmpl_picker_next_btn.setFixedSize(80, 200)
-        self._tmpl_picker_next_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
-            "border: none; border-radius: 18px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.18); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.28); }"
-            "QPushButton:disabled { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.25); }"
-        )
-        self._tmpl_picker_next_btn.clicked.connect(self._tmpl_picker_next)
-        carousel_row.addWidget(self._tmpl_picker_next_btn, alignment=Qt.AlignVCenter)
+        # Als totale breedte > scherm: schaal naar beneden
+        max_row_w = screen_w - 100
+        if total_width > max_row_w and total_width > 0:
+            scale = max_row_w / total_width
+            thumb_h = int(thumb_h * scale)
+            # Cards opnieuw bouwen op geschaalde hoogte
+            cards = []
+            for tmpl in self._tmpl_picker_choices:
+                thumb_w = self._picker_card_width_for_aspect(tmpl, thumb_h)
+                card = self._build_template_picker_card(tmpl, thumb_w, thumb_h)
+                cards.append(card)
 
-        carousel_wrap = QHBoxLayout()
-        carousel_wrap.addStretch()
-        carousel_wrap.addLayout(carousel_row)
-        carousel_wrap.addStretch()
-        lay.addLayout(carousel_wrap, stretch=1)
+        # ── Grid (horizontale rij) ────────────────────────────────────
+        grid_row = QHBoxLayout()
+        grid_row.setSpacing(gap)
+        grid_row.addStretch()
+        for card in cards:
+            grid_row.addWidget(card, alignment=Qt.AlignCenter)
+        grid_row.addStretch()
+        lay.addLayout(grid_row)
+        lay.addStretch()
 
-        # ── Page-indicator dots ──────────────────────────────────────
-        self._tmpl_picker_dots = []
-        dots_row = QHBoxLayout()
-        dots_row.setSpacing(10)
-        dots_row.addStretch()
-        for i in range(len(self._tmpl_picker_choices)):
-            dot = QLabel()
-            dot.setFixedSize(14, 14)
-            dot.setStyleSheet(
-                f"background: {'white' if i == 0 else 'rgba(255,255,255,0.3)'}; "
-                f"border-radius: 7px;"
-            )
-            self._tmpl_picker_dots.append(dot)
-            dots_row.addWidget(dot)
-        dots_row.addStretch()
-        lay.addLayout(dots_row)
-
-        # ── Bevestig + Annuleer knoppen ──────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(16)
-        btn_row.addStretch()
-
+        # ── Annuleer knop onderaan ───────────────────────────────────
         cancel_btn = QPushButton("✕  Annuleer")
         cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        cancel_btn.setFixedHeight(56)
+        cancel_btn.setFixedHeight(52)
         cancel_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.1); color: white; "
             "border: 1px solid rgba(255,255,255,0.25); border-radius: 14px; "
-            "padding: 8px 32px; }"
+            "padding: 8px 36px; }"
             "QPushButton:hover { background: rgba(255,255,255,0.18); }"
         )
         cancel_btn.clicked.connect(self._on_template_picker_cancel)
-        btn_row.addWidget(cancel_btn)
-
-        confirm_btn = QPushButton("✓  Gebruik dit ontwerp")
-        confirm_btn.setCursor(Qt.PointingHandCursor)
-        confirm_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        confirm_btn.setFixedHeight(56)
-        confirm_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 14px; padding: 8px 36px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
-            f"QPushButton:pressed {{ background: #3A8B5E; }}"
-        )
-        confirm_btn.clicked.connect(self._tmpl_picker_confirm)
-        btn_row.addWidget(confirm_btn)
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        cancel_row.addWidget(cancel_btn)
+        cancel_row.addStretch()
+        lay.addLayout(cancel_row)
 
         self._tmpl_picker_overlay.show()
         self._tmpl_picker_overlay.raise_()
-        self._tmpl_picker_update_buttons()
-        print(f"[TEMPLATE-PICKER] Carousel geopend met {len(choices)} keuzes "
-              f"(card: {card_w}x{card_h})")
+        print(f"[TEMPLATE-PICKER] Grid geopend met {len(choices)} keuzes "
+              f"(thumb h={thumb_h})")
+
+    def _picker_card_width_for_aspect(self, tmpl, thumb_h):
+        """Bereken card-breedte op basis van het paper-aspect van het template.
+
+        - Strip (Canon dubbele OR triple): 1/3 van vol vel → smal portrait
+        - Vol vel landscape (1800x1200): 3:2 → breed
+        - Vol vel portrait (1200x1800): 2:3 → normaal portrait
+        """
+        # Bepaal canvas dimensies uit frames of flags
+        frames = tmpl.frames or []
+        max_x = max((f.x + f.width for f in frames), default=600)
+        max_y = max((f.y + f.height for f in frames), default=1200)
+
+        if getattr(tmpl, 'is_triple_strip', False):
+            # 600x1200 triple — render als 1 strip-vorm (1/3 sheet width)
+            canvas_w, canvas_h = 600, 1200
+        elif not tmpl.is_double_strip and max_x <= 700 and max_y >= max_x:
+            # Canon dubbele strip (mirror) — 600x1800
+            canvas_w, canvas_h = 600, 1800
+        elif max_x > max_y:
+            # Landscape vel
+            canvas_w, canvas_h = 1800, 1200
+        else:
+            # Portrait vel
+            canvas_w, canvas_h = 1200, 1800
+
+        aspect = canvas_w / canvas_h
+        thumb_w = int(thumb_h * aspect)
+        # Minimum/maximum breedte
+        thumb_w = max(150, min(thumb_w, 600))
+        return thumb_w
 
     # ── Carousel navigation helpers ───────────────────────────────────
 
@@ -5712,57 +5680,70 @@ class PhotoboothWindow(QMainWindow):
         widget.mouseReleaseEvent = release
 
     def _build_template_picker_card(self, tmpl, thumb_w, thumb_h):
-        """Bouw één klikbare template-kaart voor de picker (minimalist).
+        """Bouw één klikbare template-kaart voor de picker.
 
-        Toont de paper-vorm zelf als visual hint:
-          - Sheet → afgerond breed/landscape rechthoek
-          - 2 strips → 2 smalle portrait rechthoekjes naast elkaar
-          - 3 strips → 3 smalle portrait rechthoekjes naast elkaar
-        Geen kaders / frames / silhouetten — gewoon de paper-shape.
+        Toont:
+          - De ECHTE template-preview (achtergrond + foto-frames) met
+            rounded corners zodat het op een fotostripje lijkt
+          - Naam onder de preview
+        Click → confirm selectie.
         """
-        from PyQt5.QtWidgets import QFrame, QVBoxLayout, QLabel
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
 
-        card = QFrame()
+        # Outer container — transparent, clickbaar, geen extra rand/bg
+        card = QWidget()
         card.setCursor(Qt.PointingHandCursor)
-        card.setStyleSheet(
-            f"QFrame {{ background: white; border: 3px solid transparent; "
-            f"border-radius: 24px; }}"
-            f"QFrame:hover {{ border-color: {config.COLOR_PRIMARY}; }}"
-        )
+        card.setStyleSheet("background: transparent;")
         card_lay = QVBoxLayout(card)
-        card_lay.setContentsMargins(20, 28, 20, 28)
-        card_lay.setSpacing(20)
-        card_lay.addStretch()
+        card_lay.setContentsMargins(8, 8, 8, 8)
+        card_lay.setSpacing(14)
 
-        # Render minimalist paper-shape
-        pix = self._render_minimal_template_shape(tmpl, thumb_w, thumb_h)
+        # Render ECHTE preview (bg + frame placeholders) + rounded mask
+        raw_pix = self._render_layout_preview(tmpl, thumb_w, thumb_h)
+        rounded_pix = self._apply_rounded_corners(raw_pix, radius=24)
         thumb = QLabel()
-        thumb.setPixmap(pix)
+        thumb.setPixmap(rounded_pix)
         thumb.setAlignment(Qt.AlignCenter)
         thumb.setFixedSize(thumb_w, thumb_h)
         thumb.setStyleSheet("background: transparent;")
         card_lay.addWidget(thumb, alignment=Qt.AlignCenter)
 
-        card_lay.addSpacing(8)
-
-        # Naam (zonder "Event <id> —" prefix als die er staat) — minimalist
+        # Naam (zonder "Event <id> —" prefix)
         display_name = tmpl.name
         if " — " in display_name:
             display_name = display_name.split(" — ", 1)[1]
         name_lbl = QLabel(display_name)
         name_lbl.setAlignment(Qt.AlignCenter)
-        name_lbl.setFont(QFont("DM Sans", 20, QFont.Bold))
+        name_lbl.setFont(QFont("DM Sans", 16, QFont.Bold))
         name_lbl.setStyleSheet(
-            f"color: {config.COLOR_TEXT}; background: transparent; "
-            f"letter-spacing: -0.3px;"
+            "color: white; background: transparent; "
+            "letter-spacing: -0.2px;"
         )
         name_lbl.setWordWrap(True)
+        name_lbl.setMaximumWidth(thumb_w + 20)
         card_lay.addWidget(name_lbl)
 
-        card_lay.addStretch()
-
-        # Géén directe mousePressEvent op de card — clicks via carousel stack
+        # Click handler — direct confirm bij tap
+        def _on_click(_event, t=tmpl):
+            self._on_template_picked(t)
+        card.mousePressEvent = _on_click
         return card
+
+    def _apply_rounded_corners(self, pix, radius=24):
+        """Apply rounded corners to a QPixmap (returns nieuwe pixmap)."""
+        from PyQt5.QtGui import QPainter, QPainterPath
+        from PyQt5.QtCore import QRectF
+        w, h = pix.width(), pix.height()
+        rounded = QPixmap(w, h)
+        rounded.fill(Qt.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, pix)
+        painter.end()
+        return rounded
 
     def _picker_visual_type(self, tmpl):
         """Classificeer template voor minimal-thumbnail rendering.
@@ -10927,21 +10908,46 @@ class PhotoboothWindow(QMainWindow):
             except Exception as e:
                 print(f"[LOCK] PIN-prompt fout: {e}")
                 return
-        # PIN ok → unlink
-        from PyQt5.QtWidgets import QMessageBox
+        # PIN ok → volledig unlink
         ev = self.active_event
+        old_booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
         if ev:
             ev.linked_booking_id = ""
             ev.linked_token = ""
             ev.linked_booking_label = ""
             ev.linked_design_path = ""
+            ev.linked_photo_count = 0
+            # Reset template_name omdat de cloud-templates straks weg zijn
+            ev.template_name = ""
+            ev.background_path = ""
             ev.save(config.EVENTS_DIR)
-            print(f"[LOCK] Event losgekoppeld")
-            try:
-                from cloud_uploader import stop_worker
-                # geen booking-id meer beschikbaar voor stop_worker — skip
-            except Exception:
-                pass
+            print(f"[LOCK] Event losgekoppeld (was: {old_booking_id})")
+            # Stop pending upload worker voor deze booking
+            if old_booking_id:
+                try:
+                    from cloud_uploader import stop_worker
+                    stop_worker(old_booking_id)
+                except Exception as e:
+                    print(f"[LOCK] Stop uploader fout: {e}")
+            # Verwijder lokale cloud-template files voor deze booking
+            if old_booking_id:
+                try:
+                    if os.path.isdir(config.TEMPLATES_DIR):
+                        prefix = f"linked_{old_booking_id}_"
+                        for fname in os.listdir(config.TEMPLATES_DIR):
+                            if fname.startswith(prefix) and fname.endswith(".json"):
+                                try:
+                                    os.remove(os.path.join(config.TEMPLATES_DIR, fname))
+                                    print(f"[LOCK] Lokale template verwijderd: {fname}")
+                                except OSError:
+                                    pass
+                except Exception as e:
+                    print(f"[LOCK] Templates cleanup fout: {e}")
+        # Refresh UI als settings open is (linked-card moet 'Geen event' tonen)
+        try:
+            self._update_linked_card_visibility()
+        except Exception:
+            pass
         dlg.accept()
         # Terug naar welcome-page (idle routeert automatisch)
         self._go_idle()
