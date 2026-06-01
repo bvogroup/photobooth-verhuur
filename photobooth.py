@@ -2543,37 +2543,76 @@ class PhotoboothWindow(QMainWindow):
         import threading
         def _bg():
             import subprocess
-            online = False
+            CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+            # ── STAP 1: Check WiFi adapter state via netsh ────────────
+            # Voorkomt false-positive bij wifi=uit maar wel ethernet/hotspot
+            # actief. Als wifi-adapter expliciet "Disconnected" is, dan is
+            # de gast OFFLINE vanuit hun perspectief — ongeacht of een
+            # andere adapter de ping kan beantwoorden.
+            wifi_connected = None  # None=onbekend, True/False=expliciet
+            try:
+                result = subprocess.run(
+                    ["netsh", "wlan", "show", "interfaces"],
+                    capture_output=True, text=True, timeout=2,
+                    creationflags=CREATE_NO_WINDOW
+                )
+                # Zoek "State : connected" of "State : disconnected" lijn
+                for line in result.stdout.splitlines():
+                    stripped = line.strip().lower()
+                    # NL: "Staat" / EN: "State" — beide kunnen voorkomen
+                    if stripped.startswith(("state", "staat")) and ":" in stripped:
+                        value = stripped.split(":", 1)[1].strip()
+                        wifi_connected = ("connect" in value
+                                          and "disconnect" not in value)
+                        break
+            except Exception as e:
+                print(f"[WELCOME] netsh wlan check skip: {type(e).__name__}({e})")
+
+            # ── STAP 2: ping check ────────────────────────────────────
+            ping_ok = False
             stderr_msg = ""
             used_ip = ""
             for ip in ("8.8.8.8", "1.1.1.1"):
                 try:
-                    # -w 1000 = 1 sec ping timeout (max 2 sec totaal voor beide IPs)
                     result = subprocess.run(
                         ["ping", ip, "-n", "1", "-w", "1000"],
                         capture_output=True, text=True, timeout=2,
-                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                        creationflags=CREATE_NO_WINDOW
                     )
                     if result.returncode == 0:
-                        online = True
+                        ping_ok = True
                         used_ip = ip
                         break
                     else:
-                        stderr_msg = f"{ip}: exit={result.returncode}, " \
-                                     f"out={result.stdout[:80]!r}"
+                        stderr_msg = f"{ip}: exit={result.returncode}"
                 except Exception as e:
                     stderr_msg = f"{ip}: {type(e).__name__}({e})"
                     continue
-            # KRITIEK: emit via pyqtSignal i.p.v. QTimer.singleShot. Dat laatste
-            # werkt NIET vanuit een Python-bg-thread zonder Qt event loop —
-            # de lambda wordt nooit aangeroepen op de main thread.
-            # Signal/slot met auto-connection gebruikt Qt.QueuedConnection
-            # cross-thread, wat de slot WEL netjes op main thread aanroept.
-            self._welcome_connectivity_signal.emit(online)
-            if online:
-                print(f"[WELCOME] Ping OK — online via {used_ip}")
+
+            # ── STAP 3: combineer signalen ────────────────────────────
+            # Wifi expliciet uit → offline (override ping)
+            # Wifi aan + ping OK → online
+            # Wifi aan + ping fout → offline
+            # Wifi onbekend (geen wifi-adapter / netsh fout) → val terug op ping
+            if wifi_connected is False:
+                online = False
+                reason = "wifi-adapter is uit"
+            elif wifi_connected is True and ping_ok:
+                online = True
+                reason = f"wifi aan + ping via {used_ip}"
+            elif wifi_connected is True and not ping_ok:
+                online = False
+                reason = f"wifi aan maar geen internet ({stderr_msg})"
             else:
-                print(f"[WELCOME] Ping mislukt — offline ({stderr_msg})")
+                # wifi onbekend → ping-only mode
+                online = ping_ok
+                reason = (f"ping via {used_ip}" if ping_ok
+                          else f"ping fout: {stderr_msg}")
+
+            self._welcome_connectivity_signal.emit(online)
+            print(f"[WELCOME] Conn check: {'ONLINE' if online else 'OFFLINE'} "
+                  f"(wifi={wifi_connected}, {reason})")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _welcome_apply_connectivity(self, online: bool):
