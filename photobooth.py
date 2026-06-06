@@ -1288,7 +1288,7 @@ class PhotoboothWindow(QMainWindow):
             # settings.json). De UI-scrape opent de bijbehorende
             # Voorkeursinstellingen dialog off-screen.
             self._dnp_poller = StatusPoller(
-                interval_sec=30.0,
+                interval_sec=2.0,
                 printer_name=config.PRINTER_NAME,
             )
             # Cross-thread: poller draait op bg-thread, UI-update gaat via pyqtSignal
@@ -1296,7 +1296,7 @@ class PhotoboothWindow(QMainWindow):
                 lambda st: self._dnp_status_signal.emit(st)
             )
             self._dnp_poller.start()
-            print(f"[DNP-STATUS] Poller gestart (30s interval, "
+            print(f"[DNP-STATUS] Poller gestart (2s interval, "
                   f"printer={config.PRINTER_NAME!r})")
         except Exception as e:
             print(f"[DNP-STATUS] Poller niet gestart: {e}")

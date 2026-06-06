@@ -108,6 +108,173 @@ class DNPStatus:
 
 # ── UI Automation pad (primair) ──────────────────────────────────────
 
+class _PersistentDialog:
+    """Houdt de DPQW410UI Voorkeursinstellingen dialog continu open
+    (off-screen), zodat elke status-poll alleen Update klik + scrape
+    hoeft te doen (~1 sec) ipv volledige open-sluit cyclus (~3.6 sec).
+
+    Thread-safe via interne lock. Auto-recovers als dialog gesloten wordt.
+    """
+    def __init__(self, printer_name: str):
+        self.printer_name = printer_name
+        self._lock = threading.Lock()
+        self._proc: Optional[subprocess.Popen] = None
+        self._dlg = None
+        self._update_btn = None
+        self._tab = None
+        self._tab_selector = None
+        self._update_invoker = None
+        self._fail_count = 0
+
+    def _ensure_open(self) -> bool:
+        """Garandeert dat dialog open + Printer Info tab actief is.
+        Returnt True bij succes."""
+        # Check of bestaande dialog nog leeft
+        if self._dlg is not None:
+            try:
+                if self._dlg.Exists(0.2):
+                    return True
+            except Exception:
+                pass
+            self._dlg = None
+            self._update_invoker = None
+
+        # Spawn nieuwe dialog
+        try:
+            import uiautomation as auto
+        except ImportError:
+            return False
+
+        try:
+            # Subprocess startupinfo: hide eventueel zichtbaar window
+            try:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+            except Exception:
+                si = None
+            self._proc = subprocess.Popen(
+                ["rundll32", "printui.dll,PrintUIEntry", "/e", "/n", self.printer_name],
+                startupinfo=si,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+            # Wacht op dialog (max 6 sec)
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                for w in auto.GetRootControl().GetChildren():
+                    try:
+                        name = w.Name or ""
+                        if self.printer_name in name and w.ControlTypeName == "WindowControl":
+                            if "Settings" not in name and "Instellingen" not in name:
+                                self._dlg = w
+                                break
+                    except Exception:
+                        pass
+                if self._dlg and self._dlg.Exists(0):
+                    break
+                time.sleep(0.1)
+            if not self._dlg:
+                return False
+            # Move off-screen
+            try:
+                self._dlg.MoveWindow(-3000, -3000, 800, 800)
+            except Exception:
+                pass
+            time.sleep(0.2)
+            # Selecteer Printer Info tab
+            self._tab = _find_descendant(self._dlg, lambda c:
+                c.ControlTypeName == "TabItemControl"
+                and "Printer Info" in (c.Name or "")
+            )
+            if self._tab:
+                try:
+                    sel = self._tab.GetPattern(auto.PatternId.SelectionItemPattern)
+                    if sel: sel.Select()
+                except Exception:
+                    pass
+                time.sleep(0.3)
+            # Cache de Update knop
+            self._update_btn = _find_descendant(self._dlg, lambda c:
+                c.ControlTypeName == "ButtonControl"
+                and (c.Name or "").startswith("Update")
+            )
+            if self._update_btn:
+                try:
+                    self._update_invoker = self._update_btn.GetPattern(
+                        auto.PatternId.InvokePattern
+                    )
+                except Exception:
+                    self._update_invoker = None
+            return True
+        except Exception as e:
+            print(f"[DNP-STATUS] _ensure_open faal: {e}")
+            return False
+
+    def read(self) -> Optional[DNPStatus]:
+        """Doe 1 status-read. Returnt None bij faal."""
+        with self._lock:
+            if not self._ensure_open():
+                self._fail_count += 1
+                return None
+            try:
+                # Click Update via Invoke (zonder muis — werkt off-screen)
+                if self._update_invoker:
+                    try:
+                        self._update_invoker.Invoke()
+                    except Exception:
+                        # Cache verlopen — kill & retry next cycle
+                        self.close()
+                        self._fail_count += 1
+                        return None
+                    time.sleep(0.45)  # geef driver tijd voor USB-call
+                # Scrape
+                controls = []
+                def gather(node, depth=0, maxd=10):
+                    if depth > maxd: return
+                    try:
+                        for c in node.GetChildren():
+                            controls.append(c)
+                            gather(c, depth+1, maxd)
+                    except Exception:
+                        pass
+                gather(self._dlg)
+                if not controls:
+                    self._fail_count += 1
+                    return None
+                status = DNPStatus(error_method="ui_automation_persistent")
+                _parse_controls(controls, status)
+                status.connected = True
+                self._fail_count = 0
+                return status
+            except Exception as e:
+                self._fail_count += 1
+                if self._fail_count >= 3:
+                    # 3 keer op rij faal → herstart dialog
+                    self.close()
+                print(f"[DNP-STATUS] read faal #{self._fail_count}: {e}")
+                return None
+
+    def close(self):
+        """Sluit dialog netjes."""
+        with self._lock:
+            try:
+                if self._dlg:
+                    self._dlg.SendKeys("{Esc}")
+            except Exception:
+                pass
+            try:
+                if self._proc:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=2.0)
+            except Exception:
+                pass
+            self._dlg = None
+            self._tab = None
+            self._update_btn = None
+            self._update_invoker = None
+            self._proc = None
+
+
 def read_via_ui_automation(printer_name: str, timeout_sec: float = 8.0) -> Optional[DNPStatus]:
     """Open DPQW410UI Voorkeursinstellingen dialog off-screen, scrape data.
 
@@ -448,7 +615,17 @@ def read_qw410_status(printer_name: str = "DP-QW410 (Kopie 2)",
 # ── Thread-safe poller voor UI-integratie ────────────────────────────
 
 class StatusPoller:
-    def __init__(self, interval_sec: float = 30.0, printer_name: str = "DP-QW410 (Kopie 2)"):
+    """Background-poller met persistent off-screen DPQW410UI dialog.
+
+    Performance:
+      - Setup: ~1.7s eenmalig bij start
+      - Per poll: ~1s (Update klik + scrape)
+      - Standaard interval: 2.0 sec → near-realtime updates
+
+    Tijdens pause (typisch tijdens een actieve print) wordt de poll
+    geskipt maar dialog blijft open — geen heropen-overhead na resume.
+    """
+    def __init__(self, interval_sec: float = 2.0, printer_name: str = "DP-QW410"):
         self._interval = interval_sec
         self._printer_name = printer_name
         self._stop_event = threading.Event()
@@ -457,6 +634,7 @@ class StatusPoller:
         self._status: Optional[DNPStatus] = None
         self._callbacks: list = []
         self._paused = False
+        self._dialog = _PersistentDialog(printer_name)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -469,6 +647,11 @@ class StatusPoller:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10.0)
+        # Sluit dialog netjes bij shutdown
+        try:
+            self._dialog.close()
+        except Exception:
+            pass
 
     def pause(self, paused: bool):
         self._paused = paused
@@ -483,7 +666,7 @@ class StatusPoller:
     def force_refresh(self):
         """Forceer onmiddellijke poll (bv. na 'Opnieuw checken' klik)."""
         try:
-            new_status = read_qw410_status(self._printer_name)
+            new_status = self._dialog.read() or read_via_usb_enum()
         except Exception as e:
             new_status = DNPStatus(
                 level=StatusLevel.UNKNOWN,
@@ -508,10 +691,15 @@ class StatusPoller:
                     print(f"[DNP-STATUS] Callback-fout: {e}")
 
     def _loop(self):
+        # Eerste poll: gebruik persistent dialog (opent dialog)
         while not self._stop_event.is_set():
             if not self._paused:
                 try:
-                    new_status = read_qw410_status(self._printer_name)
+                    new_status = self._dialog.read()
+                    if new_status is None:
+                        # Dialog kapot of UI Automation niet beschikbaar →
+                        # fallback USB-enumeratie
+                        new_status = read_via_usb_enum()
                 except Exception as e:
                     new_status = DNPStatus(
                         level=StatusLevel.UNKNOWN,
