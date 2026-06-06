@@ -6300,9 +6300,11 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_direct_capture(self):
         """Start photo session directly: init session, start live view, begin countdown."""
-        # Pauzeer DNP-poll tijdens sessie — voorkomt focus-interruptie tijdens
-        # eventuele text-input (email, naam) op review/sharing pages.
-        self._pause_dnp_poll(True)
+        # NB: DNP-poller blijft DRAAIEN tijdens capture/review/sharing.
+        # Anders kan de auto-retry-print niet detecteren wanneer de fout
+        # is verholpen. Tijdens capture is er geen typing, dus geen
+        # focus-steal-risico. Eventuele email/naam-input op sharing krijgt
+        # later een gerichte pause rondom dat dialog (TODO).
         # Check internet connectivity in background
         self._has_internet = True  # Assume yes until check completes
         self._check_internet_bg()
