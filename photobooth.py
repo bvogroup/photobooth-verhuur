@@ -3799,6 +3799,43 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_print_btn.clicked.connect(self._sharing_do_print)
         right_lay.addWidget(self._sharing_print_btn)
 
+        # ── Inline print-delay knoppen (verborgen tot 'Ja print' klik) ──
+        # Tijdens de pakket-afhankelijke afkoelperiode (5s premium / 20s
+        # standard) komt hier de print-knop niet meer, maar de mogelijkheid
+        # om de pending print alsnog te annuleren of opnieuw te fotograferen.
+        self._sharing_cancel_print_btn = QPushButton("✕  Annuleer print")
+        self._sharing_cancel_print_btn.setCursor(Qt.PointingHandCursor)
+        self._sharing_cancel_print_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        self._sharing_cancel_print_btn.setMinimumHeight(60)
+        self._sharing_cancel_print_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
+            f"border: none; border-radius: 14px; padding: 10px; }}"
+            f"QPushButton:hover {{ background: #A93223; }}"
+        )
+        self._sharing_cancel_print_btn.clicked.connect(self._on_inline_print_cancel)
+        _spcp = self._sharing_cancel_print_btn.sizePolicy()
+        _spcp.setRetainSizeWhenHidden(False)
+        self._sharing_cancel_print_btn.setSizePolicy(_spcp)
+        self._sharing_cancel_print_btn.hide()
+        right_lay.addWidget(self._sharing_cancel_print_btn)
+
+        self._sharing_redo_print_btn = QPushButton("📸  Foto's opnieuw maken")
+        self._sharing_redo_print_btn.setCursor(Qt.PointingHandCursor)
+        self._sharing_redo_print_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
+        self._sharing_redo_print_btn.setMinimumHeight(56)
+        self._sharing_redo_print_btn.setStyleSheet(
+            f"QPushButton {{ background: rgba(255,255,255,0.12); color: white; "
+            f"border: 1px solid rgba(255,255,255,0.3); border-radius: 14px; "
+            f"padding: 8px; }}"
+            f"QPushButton:hover {{ background: rgba(255,255,255,0.22); }}"
+        )
+        self._sharing_redo_print_btn.clicked.connect(self._on_inline_print_redo)
+        _sprp = self._sharing_redo_print_btn.sizePolicy()
+        _sprp.setRetainSizeWhenHidden(False)
+        self._sharing_redo_print_btn.setSizePolicy(_sprp)
+        self._sharing_redo_print_btn.hide()
+        right_lay.addWidget(self._sharing_redo_print_btn)
+
         # Print remaining indicator
         self._sharing_prints_remaining = QLabel("")
         self._sharing_prints_remaining.setAlignment(Qt.AlignCenter)
@@ -5516,7 +5553,13 @@ class PhotoboothWindow(QMainWindow):
         self._pause_dnp_poll(False)
         # Reset pending-print state — vorige sessie is afgelopen
         self._pending_print_copies = None
-        # Cleanup eventuele open print-delay overlay
+        # Cleanup inline print-delay widgets + timer
+        try:
+            self._cleanup_inline_print_widgets()
+        except Exception:
+            pass
+        # Cleanup eventuele open print-delay overlay (legacy — voor backup
+        # mocht code-path nog ergens triggeren)
         if hasattr(self, '_print_delay_overlay') and self._print_delay_overlay is not None:
             try:
                 self._hide_print_delay_overlay()
@@ -8531,15 +8574,110 @@ class PhotoboothWindow(QMainWindow):
                 return
 
         # Pakket-afhankelijke print-delay: standard wacht langer dan premium.
-        # Tijdens deze delay toont het spinner-overlay dat de gast kan
-        # annuleren of opnieuw fotograferen.
+        # Geen apart fullscreen overlay meer — alles inline op het sharing-
+        # scherm. Tijdens de delay blijft de QR-code zichtbaar zodat de
+        # gast die alvast kan scannen.
         # SAFE DEFAULT: als pakket onbekend, kies "standard" (20 sec) zodat
         # we per ongeluk geen premium service geven aan iemand die er niet
         # voor betaald heeft.
         package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
         delay_sec = {"premium": 5, "standard": 20}.get(package, 20)
         print(f"[PRINTER] Pakket={package or 'onbekend'}, print-delay={delay_sec}s, copies={copies}")
-        self._show_print_delay_overlay(copies=copies, delay_sec=delay_sec)
+        self._start_inline_print_delay(copies=copies, delay_sec=delay_sec)
+
+    def _start_inline_print_delay(self, copies: int, delay_sec: int):
+        """Toon op de sharing-screen 'Foto wordt geprint' + cancel/redo
+        knoppen ipv print-knop, en start de delay-timer."""
+        # Verberg print-knop + remaining-indicator
+        if hasattr(self, '_sharing_print_btn'):
+            self._sharing_print_btn.hide()
+        if hasattr(self, '_sharing_prints_remaining'):
+            self._sharing_prints_remaining.hide()
+        # Status-tekst tonen
+        if hasattr(self, '_sharing_print_status'):
+            self._sharing_print_status.setText("🖨  Foto wordt geprint...")
+            self._sharing_print_status.setStyleSheet(
+                f"color: white; background: transparent; font-weight: bold;"
+            )
+            self._sharing_print_status.show()
+        # Annuleer + Opnieuw knoppen tonen
+        if hasattr(self, '_sharing_cancel_print_btn'):
+            self._sharing_cancel_print_btn.show()
+        if hasattr(self, '_sharing_redo_print_btn'):
+            self._sharing_redo_print_btn.show()
+        # Pauzeer ook de auto-print-na-timeout countdown — anders zou de
+        # review_timer alsnog _sharing_do_print kunnen retriggeren.
+        try:
+            if hasattr(self, '_sharing_countdown_timer'):
+                self._sharing_countdown_timer.stop()
+            if hasattr(self, 'review_timer'):
+                self.review_timer.stop()
+        except Exception:
+            pass
+        # Bewaar copies + start delay-timer
+        self._inline_print_copies = copies
+        self._inline_print_delay_timer = QTimer(self)
+        self._inline_print_delay_timer.setSingleShot(True)
+        self._inline_print_delay_timer.timeout.connect(
+            self._on_inline_print_delay_done
+        )
+        self._inline_print_delay_timer.start(int(delay_sec * 1000))
+        print(f"[PRINTER] Inline delay gestart: {delay_sec}s")
+
+    def _on_inline_print_delay_done(self):
+        """Delay afgelopen — verberg cancel/redo knoppen + stuur de print."""
+        copies = getattr(self, '_inline_print_copies', 1)
+        self._cleanup_inline_print_widgets()
+        # Status-tekst aanpassen tot daadwerkelijke print
+        if hasattr(self, '_sharing_print_status'):
+            self._sharing_print_status.setText("🖨  Print verzonden")
+            self._sharing_print_status.show()
+        self._actually_send_print(copies)
+
+    def _on_inline_print_cancel(self):
+        """User klikt 'Annuleer print' op sharing-screen tijdens de delay.
+
+        Print wordt niet verzonden, print-optie verdwijnt voor deze sessie,
+        maar QR-code blijft zichtbaar zodat de gast nog steeds kan downloaden."""
+        print("[PRINTER] Inline print geannuleerd door gebruiker")
+        self._cleanup_inline_print_widgets()
+        # Print-knop blijft verborgen (gast koos niet voor printen)
+        if hasattr(self, '_sharing_print_btn'):
+            self._sharing_print_btn.hide()
+        if hasattr(self, '_sharing_prints_remaining'):
+            self._sharing_prints_remaining.hide()
+        if hasattr(self, '_sharing_print_status'):
+            self._sharing_print_status.setText("Print geannuleerd")
+            self._sharing_print_status.show()
+            QTimer.singleShot(3000, self._sharing_print_status.hide)
+        # Hervat de auto-done timeout zodat gast niet vast komt te zitten
+        try:
+            if hasattr(self, '_start_sharing_countdown'):
+                self._start_sharing_countdown()
+        except Exception:
+            pass
+
+    def _on_inline_print_redo(self):
+        """User klikt 'Foto's opnieuw maken' tijdens de delay — restart sessie."""
+        print("[PRINTER] Inline print geannuleerd, opnieuw fotograferen")
+        self._cleanup_inline_print_widgets()
+        # Hergebruik bestaande 'opnieuw'-flow van review-scherm
+        self._on_review_photos_redo()
+
+    def _cleanup_inline_print_widgets(self):
+        """Verberg cancel/redo knoppen + stop delay-timer (idempotent)."""
+        if hasattr(self, '_inline_print_delay_timer') and self._inline_print_delay_timer is not None:
+            try:
+                self._inline_print_delay_timer.stop()
+            except Exception:
+                pass
+            self._inline_print_delay_timer = None
+        if hasattr(self, '_sharing_cancel_print_btn') and self._sharing_cancel_print_btn is not None:
+            try: self._sharing_cancel_print_btn.hide()
+            except Exception: pass
+        if hasattr(self, '_sharing_redo_print_btn') and self._sharing_redo_print_btn is not None:
+            try: self._sharing_redo_print_btn.hide()
+            except Exception: pass
 
     def _actually_send_print(self, copies):
         """Stuur de print naar de driver (gebeurt na de pakket-delay)."""

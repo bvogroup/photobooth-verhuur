@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.83"
+VERSION = "v1.99.84"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -85,7 +85,7 @@ COUNTDOWN_SECONDS = 5
 INTRO_DURATION_SEC = 2       # Intro screen duration before countdown
 ZERO_HOLD_MS = 200           # How long "0" is shown before capture
 CAPTURE_SCREEN_DURATION_MS = 500  # How long capture screen is shown (ms)
-REVIEW_TIMEOUT_SEC = 30  # Auto-print after this many seconds on review page
+REVIEW_TIMEOUT_SEC = 60  # Auto-print after this many seconds on review page
 THANK_YOU_DURATION_SEC = 4
 COUNTDOWN_BEEP = True     # Play beep sound during countdown
 
