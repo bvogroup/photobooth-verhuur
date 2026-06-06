@@ -3846,7 +3846,68 @@ class PhotoboothWindow(QMainWindow):
 
         right_lay.addSpacing(8)
 
-        # --- QR-CODE button ---
+        # ── Inline QR-block: direct zichtbaar op sharing-screen ─────
+        # (Vervangt de oude '📱 QR-code' knop die een fullscreen overlay
+        # opende. Nu de QR + downloadprompt direct in beeld zodat de
+        # gast 'm meteen kan scannen, geen klik nodig.)
+        self._inline_qr_box = QWidget()
+        self._inline_qr_box.setStyleSheet(
+            "QWidget { background: white; border-radius: 16px; padding: 14px; }"
+        )
+        qr_box_lay = QVBoxLayout(self._inline_qr_box)
+        qr_box_lay.setContentsMargins(14, 14, 14, 14)
+        qr_box_lay.setSpacing(8)
+
+        self._inline_qr_label = QLabel()
+        self._inline_qr_label.setAlignment(Qt.AlignCenter)
+        self._inline_qr_label.setMinimumSize(220, 220)
+        self._inline_qr_label.setMaximumSize(320, 320)
+        self._inline_qr_label.setScaledContents(True)
+        self._inline_qr_label.setStyleSheet("background: white;")
+        qr_box_lay.addWidget(self._inline_qr_label, alignment=Qt.AlignCenter)
+
+        # Animated 'uploading...' fallback (zichtbaar tot QR-pixmap er is)
+        self._inline_qr_loading = QLabel("⏳  " + t("uploading"))
+        self._inline_qr_loading.setAlignment(Qt.AlignCenter)
+        self._inline_qr_loading.setFont(QFont("DM Sans", 14))
+        self._inline_qr_loading.setStyleSheet(
+            "color: #555; background: transparent;"
+        )
+        self._inline_qr_loading.hide()
+        qr_box_lay.addWidget(self._inline_qr_loading)
+
+        # Pijl + "Download op telefoon" prompt onder de QR
+        self._inline_qr_prompt = QLabel(
+            "↓\nDownload foto's op je telefoon"
+        )
+        self._inline_qr_prompt.setAlignment(Qt.AlignCenter)
+        self._inline_qr_prompt.setFont(QFont("DM Sans", 13, QFont.Bold))
+        self._inline_qr_prompt.setStyleSheet(
+            "color: #1a1a1a; background: transparent;"
+        )
+        qr_box_lay.addWidget(self._inline_qr_prompt)
+        right_lay.addWidget(self._inline_qr_box)
+
+        # Alternatieve TIP-box voor wanneer er geen wifi is. Tonen we
+        # ipv de QR-box. Compact paneel met de instructie.
+        self._inline_no_wifi_tip = QLabel(
+            "💡  TIP\n"
+            "Verbind de photobooth met wifi om de foto's\n"
+            "via een QR-code op je telefoon te downloaden."
+        )
+        self._inline_no_wifi_tip.setAlignment(Qt.AlignCenter)
+        self._inline_no_wifi_tip.setFont(QFont("DM Sans", 14, QFont.Bold))
+        self._inline_no_wifi_tip.setWordWrap(True)
+        self._inline_no_wifi_tip.setStyleSheet(
+            "QLabel { background: rgba(255,255,255,0.10); color: white; "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
+            "padding: 22px 18px; }"
+        )
+        self._inline_no_wifi_tip.hide()
+        right_lay.addWidget(self._inline_no_wifi_tip)
+
+        # Oude knop blijft bestaan voor backwards-compat (legacy code-paden
+        # kunnen 'm nog refereren), maar staat altijd verborgen.
         self._sharing_qr_btn = QPushButton("📱  " + t("btn_qr"))
         self._sharing_qr_btn.setCursor(Qt.PointingHandCursor)
         self._sharing_qr_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
@@ -3854,10 +3915,9 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_qr_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_PRIMARY}; color: white; "
             f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
-            f"QPushButton:pressed {{ background: {config.COLOR_PRIMARY_PRESSED}; }}"
         )
         self._sharing_qr_btn.clicked.connect(self._sharing_show_qr)
+        self._sharing_qr_btn.hide()
         right_lay.addWidget(self._sharing_qr_btn)
 
         right_lay.addSpacing(8)
@@ -8236,7 +8296,10 @@ class PhotoboothWindow(QMainWindow):
         else:
             # auto_print stond uit — manuele print-knop blijft beschikbaar
             self._sharing_print_status.hide()
-        # QR-code voorbereiden + countdown starten zoals oude flow
+        # QR-code voorbereiden + countdown starten zoals oude flow.
+        # Inline QR-box of wifi-tip nu meteen op de juiste state zetten
+        # zodat de gast direct ziet wat er beschikbaar is.
+        self._update_inline_qr(None, "", ready=False)
         if getattr(self, '_review_pending_qr', False):
             QTimer.singleShot(200, self._prepare_qr_code)
         self._start_sharing_countdown()
@@ -8246,7 +8309,10 @@ class PhotoboothWindow(QMainWindow):
         if hasattr(self, '_review_panel_stack'):
             self._review_panel_stack.setCurrentIndex(2)
         self._sharing_print_status.hide()
-        # QR-code voorbereiden + countdown starten zoals oude flow
+        # QR-code voorbereiden + countdown starten zoals oude flow.
+        # Inline QR-box of wifi-tip nu meteen op de juiste state zetten
+        # zodat de gast direct ziet wat er beschikbaar is.
+        self._update_inline_qr(None, "", ready=False)
         if getattr(self, '_review_pending_qr', False):
             QTimer.singleShot(200, self._prepare_qr_code)
         self._start_sharing_countdown()
@@ -8919,6 +8985,8 @@ class PhotoboothWindow(QMainWindow):
                 self.qr_url_label.show()
                 self._stop_qr_spinner()
                 self._qr_ready = True
+                # Inline-QR ook updaten (nieuwe sharing-screen layout)
+                self._update_inline_qr(qr_pixmap, url, ready=True)
                 print(f"[QR] Voorbereid met cloud URL: {url}")
             else:
                 # Cloud upload still in progress — show animated spinner
@@ -8926,12 +8994,61 @@ class PhotoboothWindow(QMainWindow):
                 self.qr_url_label.hide()
                 self._start_qr_spinner()
                 self._qr_ready = False
+                self._update_inline_qr(None, "", ready=False)
                 print("[QR] Cloud upload nog bezig, spinner getoond")
                 # Register local session anyway (for fallback)
                 generate_session_url(session_id, config.WEB_SERVER_PORT)
         except Exception as e:
             print(f"[QR] Fout bij voorbereiden: {e}")
             self._qr_ready = False
+
+    def _update_inline_qr(self, pixmap, url, ready: bool):
+        """Werk de INLINE QR-display bij. Toont of de pixmap of de
+        'uploading...' fallback. Beslist ook QR-box vs no-wifi-tip op
+        basis van wifi/gallery_enabled.
+
+        - ready=True + wifi → QR-box zichtbaar, tip verborgen
+        - ready=False + wifi → spinner-fallback in QR-box
+        - geen wifi of gallery uit → tip-box zichtbaar, QR verborgen
+        """
+        if not hasattr(self, '_inline_qr_box') or self._inline_qr_box is None:
+            return
+        ev = self.active_event
+        wifi_ok = bool(getattr(self, '_has_internet', True))
+        gallery_ok = bool(getattr(ev, 'gallery_enabled', True)) if ev else True
+        # Bij gallery_enabled=False is QR niet beschikbaar — verberg allebei
+        if not gallery_ok:
+            try:
+                self._inline_qr_box.setVisible(False)
+                self._inline_no_wifi_tip.setVisible(False)
+            except Exception:
+                pass
+            return
+        # Wifi-conditie bepaalt QR-box vs tip-box
+        show_qr_box = wifi_ok
+        try:
+            self._inline_qr_box.setVisible(show_qr_box)
+            self._inline_no_wifi_tip.setVisible(not show_qr_box)
+        except Exception:
+            pass
+        if not show_qr_box:
+            return
+        if ready and pixmap is not None:
+            try:
+                self._inline_qr_label.setPixmap(pixmap)
+                self._inline_qr_label.show()
+                self._inline_qr_loading.hide()
+                self._inline_qr_prompt.show()
+            except Exception:
+                pass
+        else:
+            try:
+                self._inline_qr_label.clear()
+                self._inline_qr_label.hide()
+                self._inline_qr_loading.show()
+                self._inline_qr_prompt.hide()
+            except Exception:
+                pass
 
     def _sharing_show_qr(self):
         """Show QR code overlay on sharing screen."""
@@ -8981,6 +9098,8 @@ class PhotoboothWindow(QMainWindow):
                 self.qr_url_label.show()
                 self._stop_qr_spinner()
                 self._qr_ready = True
+                # Inline QR óók updaten
+                self._update_inline_qr(qr_pixmap, cloud_url, ready=True)
                 print("[QR] Cloud URL ontvangen, QR code getoond")
             except Exception as e:
                 print(f"[QR] Fout bij updaten QR: {e}")
