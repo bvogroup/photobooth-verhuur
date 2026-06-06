@@ -53,11 +53,14 @@ import config
 
 # ── Constants ─────────────────────────────────────────────────────────
 
-_BACKOFF_SECONDS = [30, 60, 120, 300]  # tot 5 min cap
-_TICK_INTERVAL = 5                      # hoe vaak de loop wakker wordt
-_UPLOAD_TIMEOUT = 60                    # seconden per PUT
-_CLEANUP_AFTER_DAYS = 30                # uploaded/ files na deze tijd weg
-_TICKET_LEAD_TIME_HOURS = 1             # vernieuw URL als < 1u geldig
+# Backoff: kort starten, snel terug naar 60s cap zodat we elke minuut
+# blijven proberen tot 't lukt. Geen "geef het op na X pogingen".
+_BACKOFF_NETWORK = [10, 20, 40, 60]      # netwerk-fout: snelle retry
+_BACKOFF_SERVER = [30, 60, 60, 60]       # server-fout: max 1 min cap
+_TICK_INTERVAL = 5                       # hoe vaak de loop wakker wordt
+_UPLOAD_TIMEOUT = 60                     # seconden per PUT
+_CLEANUP_AFTER_DAYS = 30                 # uploaded/ files na deze tijd weg
+_TICKET_LEAD_TIME_HOURS = 1              # vernieuw URL als < 1u geldig
 
 # Per-booking lock om race tussen enqueue() en worker te voorkomen.
 # enqueue() schrijft nieuwe entries; worker leest queue + uploadt + schrijft
@@ -109,9 +112,17 @@ def _write_queue(booking_id: str, q: dict) -> None:
     _atomic_write_json(os.path.join(queue_dir(booking_id), "queue.json"), q)
 
 
-def _backoff(attempts: int) -> float:
-    idx = min(attempts, len(_BACKOFF_SECONDS) - 1)
-    return _BACKOFF_SECONDS[idx]
+def _backoff(attempts: int, kind: str = "server") -> float:
+    """Bepaal retry-wachttijd in seconden.
+
+    kind="network" → snel terug (10/20/40/60s) — wifi-glitch is meestal kort.
+    kind="server"  → 30→60s en blijft 60s — server-fout vereist niet veel
+                     druk maar wel constante poging.
+    Beide cap op 60s zodat we ALTIJD minstens 1× per minuut proberen.
+    """
+    table = _BACKOFF_NETWORK if kind == "network" else _BACKOFF_SERVER
+    idx = min(max(0, attempts - 1), len(table) - 1)
+    return float(table[idx])
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -283,17 +294,28 @@ class UploadWorker(QObject):
         if not files:
             return
 
-        now_mono = time.monotonic()
+        # WALL-CLOCK (time.time) ipv monotonic — overleeft PC reboot.
+        # Eerdere bug: monotonic reset bij boot, dus alle next_retry_at
+        # waardes zaten in de "toekomst" → uploads bleven eeuwig gepauzeerd.
+        now_wall = time.time()
         progress = False
 
         for filename, meta in files.items():
             if self._stop.is_set():
                 break
             state = meta.get("state", "pending")
-            if state in ("uploaded", "failed"):
+            # 'failed' wordt na de fix NIET meer gezet (we blijven retryen)
+            # maar we respecteren oude failed-entries en zetten ze
+            # automatisch terug naar pending zodat ze alsnog kans krijgen.
+            if state == "uploaded":
                 continue
+            if state == "failed":
+                meta["state"] = "pending"
+                meta["attempts"] = 0
+                meta["next_retry_at"] = 0.0
+                state = "pending"
             next_retry = meta.get("next_retry_at", 0.0)
-            if next_retry and next_retry > now_mono:
+            if next_retry and next_retry > now_wall:
                 continue  # nog niet tijd voor retry
 
             # Probeer te uploaden (kan minuten duren)
@@ -327,18 +349,22 @@ class UploadWorker(QObject):
         meta["state"] = "uploading"
 
         # 1. Pre-signed URL ophalen (gecached)
-        ticket = self._get_ticket(filename)
+        ticket, ticket_err = self._get_ticket(filename)
         if not ticket:
             meta["state"] = "pending"
             meta["attempts"] = meta.get("attempts", 0) + 1
-            meta["last_error"] = "kon geen upload-ticket krijgen"
-            meta["next_retry_at"] = time.monotonic() + _backoff(meta["attempts"])
+            meta["last_error"] = f"ticket: {ticket_err}"
+            # Onderscheid network vs server — 401/403 (auth) blijven we proberen
+            # want token kan terugkomen na re-couple; geen permanent fail.
+            kind = "network" if "network" in (ticket_err or "").lower() else "server"
+            meta["next_retry_at"] = time.time() + _backoff(meta["attempts"], kind)
             return False, meta["last_error"]
 
         # 2. Pre-check: bestaat al in R2? (HEAD via signed URL is lastig;
         #    we vertrouwen op UNIQUE in mark-photobooth-upload + idempotente PUT)
 
         # 3. PUT naar R2
+        network_err = False
         try:
             with open(src, "rb") as f:
                 resp = requests.put(
@@ -347,21 +373,28 @@ class UploadWorker(QObject):
                     headers={"Content-Type": ticket.get("content_type", "image/jpeg")},
                     timeout=_UPLOAD_TIMEOUT,
                 )
-        except Exception as e:
+        except (requests.ConnectionError, requests.Timeout) as e:
+            network_err = True
             meta["state"] = "pending"
             meta["attempts"] = meta.get("attempts", 0) + 1
             meta["last_error"] = f"network: {e}"
-            meta["next_retry_at"] = time.monotonic() + _backoff(meta["attempts"])
+            meta["next_retry_at"] = time.time() + _backoff(meta["attempts"], "network")
+            return False, meta["last_error"]
+        except Exception as e:
+            meta["state"] = "pending"
+            meta["attempts"] = meta.get("attempts", 0) + 1
+            meta["last_error"] = f"unexpected: {e}"
+            meta["next_retry_at"] = time.time() + _backoff(meta["attempts"], "server")
             return False, meta["last_error"]
 
         if resp.status_code not in (200, 201):
             meta["state"] = "pending"
             meta["attempts"] = meta.get("attempts", 0) + 1
             meta["last_error"] = f"R2 PUT {resp.status_code}: {resp.text[:200]}"
-            meta["next_retry_at"] = time.monotonic() + _backoff(meta["attempts"])
-            # Permanent fail na 10 pogingen → markeer failed (handmatige check nodig)
-            if meta["attempts"] >= 10:
-                meta["state"] = "failed"
+            meta["next_retry_at"] = time.time() + _backoff(meta["attempts"], "server")
+            # GEEN permanent fail meer — blijft retryen elke minuut tot het
+            # lukt. Operator kan via Settings → Geavanceerd handmatig
+            # "Probeer alles opnieuw" doen, of failed wegsmijten.
             return False, meta["last_error"]
 
         # 4. Succes: log naar mark-photobooth-upload + verplaats naar uploaded/
@@ -387,12 +420,16 @@ class UploadWorker(QObject):
         self._url_cache.pop(filename, None)
         return True, ""
 
-    def _get_ticket(self, filename: str) -> Optional[dict]:
-        """Haal pre-signed PUT-URL op. Cache 23 uur lokaal."""
-        now = time.monotonic()
+    def _get_ticket(self, filename: str) -> tuple[Optional[dict], str]:
+        """Haal pre-signed PUT-URL op. Cache 23 uur lokaal.
+
+        Returns (ticket_dict, error_str). Bij succes: (dict, "").
+        Bij faal: (None, "network: ..." | "server: ..." | "auth: ...").
+        """
+        now_wall = time.time()
         cached = self._url_cache.get(filename)
-        if cached and cached.get("expires_at_mono", 0) > now + _TICKET_LEAD_TIME_HOURS * 3600:
-            return cached
+        if cached and cached.get("expires_at_wall", 0) > now_wall + _TICKET_LEAD_TIME_HOURS * 3600:
+            return cached, ""
 
         url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photobooth-r2-ticket"
         try:
@@ -406,19 +443,26 @@ class UploadWorker(QObject):
                 json={"token": self.token, "filename": filename, "content_type": "image/jpeg"},
                 timeout=15,
             )
+        except (requests.ConnectionError, requests.Timeout) as e:
+            return None, f"network: {e}"
         except Exception as e:
-            print(f"[UPLOAD] Ticket-request fout: {e}")
-            return None
+            return None, f"unexpected: {e}"
 
+        if r.status_code in (401, 403):
+            # Auth-fout — token mogelijk verlopen / event ontkoppeld in portal.
+            # We blijven retryen want token kan via re-couple weer geldig zijn.
+            return None, f"auth: token afgekeurd ({r.status_code})"
         if r.status_code != 200:
-            print(f"[UPLOAD] Ticket-status {r.status_code}: {r.text[:200]}")
-            return None
+            return None, f"server: status {r.status_code}: {r.text[:120]}"
 
-        data = r.json()
-        # 24u geldig; we cachen monotonic-aware
-        data["expires_at_mono"] = now + 23 * 3600
+        try:
+            data = r.json()
+        except Exception as e:
+            return None, f"server: ongeldige response ({e})"
+        # 24u geldig; we cachen wall-clock based zodat reboot 'm niet wegschiet
+        data["expires_at_wall"] = now_wall + 23 * 3600
         self._url_cache[filename] = data
-        return data
+        return data, ""
 
     def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str]) -> None:
         url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
@@ -491,3 +535,202 @@ def stop_all_workers() -> None:
         _active_workers.clear()
     for w in workers:
         w.stop()
+
+
+# ── Force-retry helpers (operator-actie via Settings UI) ─────────────
+
+def force_retry_all(booking_id: str) -> dict:
+    """Reset alle pending+failed entries naar 'klaar voor onmiddellijke retry'.
+
+    Schaalt failed → pending, attempts → 0, next_retry_at → 0. De
+    actieve worker pakt ze direct op bij z'n volgende tick (binnen 5s).
+    Returns telling van wat is gereset: {failed_reset, pending_reset}.
+    """
+    lock = _get_queue_lock(booking_id)
+    with lock:
+        q = _read_queue(booking_id)
+        files = q.setdefault("files", {})
+        n_failed = 0
+        n_pending = 0
+        for fname, meta in files.items():
+            state = meta.get("state", "pending")
+            if state == "failed":
+                meta["state"] = "pending"
+                meta["attempts"] = 0
+                meta["last_error"] = "manueel gereset door operator"
+                meta["next_retry_at"] = 0.0
+                n_failed += 1
+            elif state == "pending" and meta.get("next_retry_at", 0):
+                meta["attempts"] = 0
+                meta["next_retry_at"] = 0.0
+                meta["last_error"] = "manueel gereset door operator"
+                n_pending += 1
+        _write_queue(booking_id, q)
+    return {"failed_reset": n_failed, "pending_reset": n_pending}
+
+
+def clear_uploaded(booking_id: str) -> int:
+    """Verwijder alle 'uploaded'-entries uit queue.json + uploaded/ files.
+
+    Returns aantal verwijderd. Bedoeld voor schoonmaak via Settings.
+    """
+    qd = queue_dir(booking_id)
+    uploaded_dir = os.path.join(qd, "uploaded")
+    lock = _get_queue_lock(booking_id)
+    n = 0
+    with lock:
+        q = _read_queue(booking_id)
+        files = q.setdefault("files", {})
+        to_remove = [f for f, m in files.items() if m.get("state") == "uploaded"]
+        for f in to_remove:
+            files.pop(f, None)
+            try:
+                os.remove(os.path.join(uploaded_dir, f))
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(f"[QUEUE] Kon uploaded file niet verwijderen: {e}")
+            n += 1
+        _write_queue(booking_id, q)
+    return n
+
+
+# ── Token-registry: vindt tokens uit events JSONs ────────────────────
+
+def discover_pending_uploads(events_dir: str) -> dict:
+    """Scan alle upload_queue/<booking_id>/ mappen en map ze naar tokens
+    uit Documents/Bootharoo/events/*.json.
+
+    Returns dict: {booking_id: {token, total, pending, failed, uploaded}}
+    voor alle queues die op disk staan. Inclusief queues waar GEEN token
+    voor gevonden is — die kunnen we niet uploaden tot er een coupling
+    is, maar we tellen ze wel zodat de UI duidelijk maakt wat er stuck zit.
+    """
+    upload_root = os.path.join(_data_root(), "upload_queue")
+    if not os.path.isdir(upload_root):
+        return {}
+
+    # Stap 1: verzamel tokens uit alle event-JSONs (linked_token velden)
+    token_map = {}  # booking_id → token
+    if os.path.isdir(events_dir):
+        for f in os.listdir(events_dir):
+            if not f.lower().endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(events_dir, f), "r", encoding="utf-8") as fp:
+                    ev = json.load(fp)
+                bid = ev.get("linked_booking_id") or ""
+                tok = ev.get("linked_token") or ""
+                if bid and tok:
+                    token_map[bid] = tok
+            except Exception:
+                continue
+
+    # Stap 2: scan upload_queue/<booking_id>/ folders
+    result = {}
+    for entry in os.listdir(upload_root):
+        bdir = os.path.join(upload_root, entry)
+        if not os.path.isdir(bdir):
+            continue
+        counts = get_status(entry)
+        if counts["total"] == 0:
+            continue
+        result[entry] = {
+            "token": token_map.get(entry, ""),
+            **counts,
+        }
+    return result
+
+
+# ── Watchdog: altijd-actieve global retry-loop ───────────────────────
+
+class CloudWatchdog:
+    """Globale background-service die ALLE pending uploads in de gaten houdt.
+
+    Start bij app-boot. Scant elke 30 sec de upload_queue/ folder; voor
+    elke booking_id met een queue én een bekend token start hij een
+    UploadWorker (of laat de bestaande draaien). Zo blijven oude
+    queues uploaden ook als het event nooit meer wordt herkoppeld.
+
+    Eén globaal singleton: gebruik get_watchdog() / start_watchdog().
+    """
+
+    def __init__(self, events_dir: str, scan_interval: float = 30.0):
+        self._events_dir = events_dir
+        self._scan_interval = scan_interval
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="CloudWatchdog")
+        self._thread.start()
+        print("[WATCHDOG] Cloud-watchdog gestart (scan elke 30s)")
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        print("[WATCHDOG] Gestopt")
+
+    def _run(self):
+        # Eerste scan onmiddellijk, daarna elke `scan_interval` seconden
+        while not self._stop.is_set():
+            try:
+                self._tick()
+            except Exception as e:
+                print(f"[WATCHDOG] Loop-fout: {e}")
+            # Sleep maar reageer snel op stop
+            for _ in range(int(self._scan_interval)):
+                if self._stop.is_set():
+                    return
+                time.sleep(1)
+
+    def _tick(self):
+        """Eén ronde: vind nieuwe queues, start workers, log stale."""
+        snapshots = discover_pending_uploads(self._events_dir)
+        active_keys = set()
+        with _workers_lock:
+            active_keys = set(_active_workers.keys())
+
+        for booking_id, info in snapshots.items():
+            token = info.get("token", "")
+            if not token:
+                if info["pending"] > 0 or info.get("failed", 0) > 0:
+                    print(f"[WATCHDOG] {booking_id}: "
+                          f"{info['pending']}p/{info.get('failed', 0)}f maar GEEN token "
+                          f"in events/. Koppel event opnieuw om te uploaden.")
+                continue
+            # Worker draait al? Skip.
+            if booking_id in active_keys:
+                continue
+            # Pending of failed? Start worker.
+            if info["pending"] > 0 or info.get("failed", 0) > 0:
+                print(f"[WATCHDOG] Start worker voor {booking_id} "
+                      f"({info['pending']}p/{info.get('failed', 0)}f)")
+                start_worker(booking_id, token)
+
+
+_watchdog_instance: Optional[CloudWatchdog] = None
+_watchdog_lock = threading.Lock()
+
+
+def start_watchdog(events_dir: str) -> CloudWatchdog:
+    """Singleton — start de globale watchdog. Idempotent."""
+    global _watchdog_instance
+    with _watchdog_lock:
+        if _watchdog_instance is None:
+            _watchdog_instance = CloudWatchdog(events_dir)
+            _watchdog_instance.start()
+        return _watchdog_instance
+
+
+def stop_watchdog():
+    global _watchdog_instance
+    with _watchdog_lock:
+        if _watchdog_instance is not None:
+            _watchdog_instance.stop()
+            _watchdog_instance = None

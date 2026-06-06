@@ -1278,6 +1278,17 @@ class PhotoboothWindow(QMainWindow):
         self._periodic_refresh_timer.timeout.connect(self._periodic_refresh_tick)
         self._periodic_refresh_timer.start()
 
+        # Cloud-watchdog — altijd-actieve uploader die ALLE pending queues
+        # in de gaten houdt, ongeacht event-coupling status. Maakt zeker
+        # dat oude foto's geüpload worden zodra wifi terugkomt en/of het
+        # event opnieuw gekoppeld wordt.
+        try:
+            from cloud_uploader import start_watchdog
+            self._cloud_watchdog = start_watchdog(config.EVENTS_DIR)
+        except Exception as e:
+            print(f"[WATCHDOG] Niet gestart: {e}")
+            self._cloud_watchdog = None
+
         # DNP QW410 status-poller — leest via UI Automation (geen filter,
         # geen extra setup). Werkt graceful: als de DNP-driver/dialog
         # niet beschikbaar is valt 'm terug op USB-enumeratie (alleen
