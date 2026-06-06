@@ -5344,6 +5344,12 @@ class PhotoboothWindow(QMainWindow):
         self._pause_dnp_poll(False)
         # Reset pending-print state — vorige sessie is afgelopen
         self._pending_print_copies = None
+        # Cleanup eventuele open print-delay overlay
+        if hasattr(self, '_print_delay_overlay') and self._print_delay_overlay is not None:
+            try:
+                self._hide_print_delay_overlay()
+            except Exception:
+                pass
         # Custom flow opruimen (idempotent — geen effect als niet actief)
         self._custom_flow_active = False
         self._custom_flow_paid_path = False
@@ -8352,6 +8358,16 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[PRINT-QUOTA] Blokkeer: used={used}, quota={quota}, gevraagd={copies}")
                 return
 
+        # Pakket-afhankelijke print-delay: standard wacht langer dan premium.
+        # Tijdens deze delay toont het spinner-overlay dat de gast kan
+        # annuleren of opnieuw fotograferen.
+        package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
+        delay_sec = {"premium": 5, "standard": 20}.get(package, 5)
+        print(f"[PRINTER] Pakket={package or '?'}, print-delay={delay_sec}s, copies={copies}")
+        self._show_print_delay_overlay(copies=copies, delay_sec=delay_sec)
+
+    def _actually_send_print(self, copies):
+        """Stuur de print naar de driver (gebeurt na de pakket-delay)."""
         profile_key = self._resolve_dnp_profile_key(self.selected_template)
         # Pauzeer DNP status-poller tijdens print om USB-conflict te vermijden.
         # Resume gebeurt in _on_print_complete_with_quota + _on_print_failed.
@@ -8369,9 +8385,147 @@ class PhotoboothWindow(QMainWindow):
         self.print_thread.print_failed.connect(self._on_print_failed)
         self.print_thread.print_status.connect(self._on_print_status)
         self.print_thread.start()
-        self._sharing_print_status.setText(t("checking_printer"))
-        self._sharing_print_status.show()
+        if hasattr(self, '_sharing_print_status'):
+            self._sharing_print_status.setText(t("checking_printer"))
+            self._sharing_print_status.show()
         print(f"[PRINTER] Printen: {copies} kopie(ën)")
+
+    def _show_print_delay_overlay(self, copies, delay_sec):
+        """Fullscreen 'Foto wordt geprint' spinner-overlay met countdown.
+
+        Toont een spinning indicator + 'Annuleer' (terug naar idle) en
+        'Maak foto's opnieuw' (restart sessie). Pas na `delay_sec`
+        seconden wordt de eigenlijke print verzonden via
+        _actually_send_print.
+
+        Pakket-onderscheid:
+          - premium: 5 sec (snelle service)
+          - standard: 20 sec (langere wachttijd als upgrade-prikkel)
+        """
+        from PyQt5.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+            QProgressBar,
+        )
+
+        overlay = QWidget(self)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+        overlay.setStyleSheet("background: rgba(15,15,18,0.97);")
+
+        lay = QVBoxLayout(overlay)
+        lay.setContentsMargins(60, 60, 60, 60)
+        lay.setSpacing(28)
+        lay.addStretch()
+
+        # Spinner (indeterminate progress bar — visueel als ring/balk)
+        spinner = QProgressBar()
+        spinner.setRange(0, 0)
+        spinner.setTextVisible(False)
+        spinner.setFixedHeight(8)
+        spinner.setMaximumWidth(480)
+        spinner.setStyleSheet(
+            "QProgressBar { background: rgba(255,255,255,0.12); border: none; "
+            "border-radius: 4px; }"
+            "QProgressBar::chunk { background: white; border-radius: 4px; }"
+        )
+        lay.addWidget(spinner, alignment=Qt.AlignCenter)
+
+        title = QLabel("Foto wordt geprint")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 38, QFont.Bold))
+        title.setStyleSheet("color: white; background: transparent;")
+        lay.addWidget(title)
+
+        subtitle = QLabel("Even geduld — we bereiden je print voor")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(QFont("DM Sans", 17))
+        subtitle.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        lay.addStretch()
+
+        # Knoppen-rij onderaan: [Opnieuw fotograferen — stretch — Annuleer]
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(20)
+
+        redo = QPushButton("📸  Maak foto's opnieuw")
+        redo.setFixedHeight(58)
+        redo.setFont(QFont("DM Sans", 15, QFont.Bold))
+        redo.setCursor(Qt.PointingHandCursor)
+        redo.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.16); color: white; "
+            "border: 1px solid rgba(255,255,255,0.3); border-radius: 14px; "
+            "padding: 10px 28px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.26); }"
+        )
+        redo.clicked.connect(self._on_print_delay_redo)
+        btn_row.addWidget(redo)
+
+        btn_row.addStretch()
+
+        cancel = QPushButton("✕  Annuleer")
+        cancel.setFixedHeight(58)
+        cancel.setFont(QFont("DM Sans", 15, QFont.Bold))
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setStyleSheet(
+            "QPushButton { background: #C0392B; color: white; border: none; "
+            "border-radius: 14px; padding: 10px 32px; }"
+            "QPushButton:hover { background: #A93223; }"
+        )
+        cancel.clicked.connect(self._on_print_delay_cancel)
+        btn_row.addWidget(cancel)
+        lay.addLayout(btn_row)
+
+        overlay.show()
+        overlay.raise_()
+        self._print_delay_overlay = overlay
+
+        # Timer voor de delay
+        self._print_delay_timer = QTimer(self)
+        self._print_delay_timer.setSingleShot(True)
+        self._print_delay_timer.timeout.connect(
+            lambda c=copies: self._on_print_delay_done(c)
+        )
+        self._print_delay_timer.start(int(delay_sec * 1000))
+
+    def _on_print_delay_done(self, copies):
+        """Delay afgelopen — verberg overlay en stuur de echte print."""
+        self._hide_print_delay_overlay()
+        self._actually_send_print(copies)
+
+    def _on_print_delay_cancel(self):
+        """User klikt Annuleer — abort print, terug naar idle."""
+        print("[PRINTER] Print geannuleerd door gebruiker tijdens delay")
+        if hasattr(self, '_print_delay_timer') and self._print_delay_timer is not None:
+            try: self._print_delay_timer.stop()
+            except Exception: pass
+        self._hide_print_delay_overlay()
+        # Sessie afronden — terug naar idle/welcome
+        self._go_idle()
+
+    def _on_print_delay_redo(self):
+        """User klikt 'Maak foto's opnieuw' — abort print, restart sessie."""
+        print("[PRINTER] Print geannuleerd, opnieuw fotograferen")
+        if hasattr(self, '_print_delay_timer') and self._print_delay_timer is not None:
+            try: self._print_delay_timer.stop()
+            except Exception: pass
+        self._hide_print_delay_overlay()
+        # Hergebruik de bestaande "opnieuw"-flow van review-scherm
+        self._on_review_photos_redo()
+
+    def _hide_print_delay_overlay(self):
+        """Sluit het spinner-overlay netjes."""
+        if hasattr(self, '_print_delay_overlay') and self._print_delay_overlay is not None:
+            try:
+                self._print_delay_overlay.hide()
+                self._print_delay_overlay.deleteLater()
+            except Exception:
+                pass
+            self._print_delay_overlay = None
+        if hasattr(self, '_print_delay_timer') and self._print_delay_timer is not None:
+            try: self._print_delay_timer.stop()
+            except Exception: pass
+            self._print_delay_timer = None
 
     def _on_print_complete_with_quota(self, copies):
         """Wrapper rond _on_print_complete die ook het event-quotum bijwerkt."""
@@ -14887,6 +15041,14 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.printer_mode = "3strips"
         elif cloud_pm == "standard":
             self.active_event.printer_mode = "4x6"
+        # Pakket-type bewaren voor pakket-afhankelijke print-delay.
+        # Eerst proberen booking.package (officieel veld), dan fallback
+        # op printer_mode mapping (oudere bookings).
+        pkg = (b.get("package") or "").lower().strip()
+        if not pkg and cloud_pm in ("premium", "standard"):
+            pkg = cloud_pm
+        if pkg in ("premium", "standard"):
+            self.active_event.linked_package = pkg
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):

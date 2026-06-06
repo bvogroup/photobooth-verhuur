@@ -115,6 +115,9 @@ class Event:
     linked_booking_label: str = ""
     linked_design_path: str = ""
     linked_photo_count: int = 3
+    # Pakket-type uit booking ("standard"/"premium"/"" indien onbekend).
+    # Stuurt de print-delay aan op de "Foto wordt geprint" spinner.
+    linked_package: str = ""
     session_count: int = 0           # Number of sessions run
     photo_count: int = 0             # Total photos taken
     # Print-quotum per event — onafhankelijk van auto_print_copies/max_prints

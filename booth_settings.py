@@ -214,6 +214,7 @@ _EVENT_ONLY_FIELDS: Set[str] = {
     "linked_booking_label",
     "linked_design_path",
     "linked_photo_count",
+    "linked_package",
     # booth_mode is wel booth-wide — forced naar "linked" in _apply_verhuur_overrides
     # zodat de verhuur-versie altijd in Linked-modus draait, geen Standalone meer.
 }
