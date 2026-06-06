@@ -3906,19 +3906,18 @@ class PhotoboothWindow(QMainWindow):
         self._inline_no_wifi_tip.hide()
         right_lay.addWidget(self._inline_no_wifi_tip)
 
-        # Oude knop blijft bestaan voor backwards-compat (legacy code-paden
-        # kunnen 'm nog refereren), maar staat altijd verborgen.
-        self._sharing_qr_btn = QPushButton("📱  " + t("btn_qr"))
-        self._sharing_qr_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_qr_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._sharing_qr_btn.setMinimumHeight(72)
-        self._sharing_qr_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_PRIMARY}; color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-        )
+        # Oude '📱 QR-code'-knop is volledig vervangen door de inline QR-box
+        # hierboven. We houden de attribute voor backwards-compat van legacy
+        # code-paden die hem nog refereren (setVisible/setEnabled in andere
+        # branches), maar plaatsen 'm NIET in de layout en geven een fixed
+        # size van 0 zodat hij ook bij setVisible(True) niet visueel
+        # opduikt. Show wordt monkey-patched naar no-op.
+        self._sharing_qr_btn = QPushButton(page)
+        self._sharing_qr_btn.setFixedSize(0, 0)
         self._sharing_qr_btn.clicked.connect(self._sharing_show_qr)
         self._sharing_qr_btn.hide()
-        right_lay.addWidget(self._sharing_qr_btn)
+        self._sharing_qr_btn.show = lambda: None  # no-op show — kan nooit verschijnen
+        self._sharing_qr_btn.setVisible = lambda _v=False: None
 
         right_lay.addSpacing(8)
 
