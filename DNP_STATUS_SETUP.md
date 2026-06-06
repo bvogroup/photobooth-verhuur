@@ -1,114 +1,75 @@
-# DNP QW410 status-rapportage — eenmalige setup
+# DNP QW410 status-rapportage
 
-De Photobooth-verhuur software leest QW410-foutcodes (klep open, lint op,
-papier op, jam, etc.) en telemetrie (resterende prints op de rol) rechtstreeks
-uit de printer — *mits* een libusb-win32 filter-driver is geïnstalleerd.
+## ⚠️ Belangrijke conclusie na praktijk-test (juni 2026)
 
-**Belangrijk:** de filter-driver vervangt NIETS. De DNP-printer-driver blijft
-volledig functioneel voor printen. libusb-win32 voegt zich er parallel naast
-als read-only kanaal voor status-queries.
+De libusb-win32 filter-driver — zelfs in de meest recente release (v1.4.0.2,
+jan 2025) — **breekt het printen op de DNP QW410 onder Windows 11**.
 
-## Setup (5 min, eenmalig per PC) — Windows 10/11
+Specifiek gedrag dat werd waargenomen:
+- ✅ Status lezen via libusb0 werkt perfect (codes 1200 "Lint op", 1100
+  "Papier op", 1000 "Klep open", media, serial, life counter — alles correct)
+- ✅ Windows print spooler accepteert de jobs ("Normal" status)
+- ❌ Maar er komt fysiek **niks** uit de printer — de USB pipe naar de
+  DNP-driver wordt door de filter onderbroken
+- ❌ Spooler-restart, USB replug, en device-reset lossen het niet op zolang
+  de filter actief is
 
-> **Gebruik versie 1.4.0.2 of nieuwer.** De oudere 1.2.7.3 (van SourceForge) is
-> niet Windows-11 compatibel — driver-signing werkt niet meer.
+**Daarom: in deze setup wordt de filter NIET geïnstalleerd.** De software
+detecteert dit automatisch en valt terug op basis-detectie via libusb-1.0
+enumeratie zonder claim.
 
-### Stap 1 — Download
+## Wat werkt zonder filter (huidige fallback)
 
-Ga naar: <https://github.com/mcuee/libusb-win32/releases/latest>
+| Conditie | Detectie |
+|---|---|
+| USB-kabel losgekoppeld | ✅ "Printer niet bereikbaar" overlay binnen 5s |
+| Printer uitgezet | ✅ idem (device verdwijnt uit USB enum) |
+| Printer aan + verbonden | ✅ "USB aangesloten" in lock-info popup |
+| Klep open | ❌ niet detecteerbaar |
+| Papier op | ❌ niet detecteerbaar |
+| Lint op | ❌ niet detecteerbaar |
+| Papier vast | ❌ niet detecteerbaar |
 
-Download deze twee files:
-- `libusb-win32-devel-filter-1.4.0.2.exe` (officiële installer, ~1.8 MB)
-- `libusb-win32-bin-1.4.0.2.zip` (heeft de nieuwe Win11-signed .sys, ~2.5 MB)
+Voor de niet-detecteerbare condities: operator ziet de fysieke LEDs op de
+printer (POWER + ERROR) en handelt manueel.
 
-Sla beide op in `C:\temp\` (of een andere tijdelijke locatie).
+## Toekomstige opties (nog niet getest)
 
-### Stap 2 — Installer runnen
+Als er ooit detail-status nodig is:
 
-1. **Sluit Bootharoo eerst af** (anders houdt 'm de printer-USB nog vast).
-2. Right-click `libusb-win32-devel-filter-1.4.0.2.exe` → **"Run as administrator"**.
-3. Klik door de wizard: **Next → I Agree → Next → Install → Finish**.
-4. Bij Windows compatibiliteits-assistent: kies **"Dit programma is correct geïnstalleerd"**.
+1. **USBDK** (Daynix) — alternatieve USB-redirect layer; werkt op architectureel
+   ander niveau dan filter-drivers. **Risico:** kan ook printen breken.
+2. **libusbK** filter — modernere variant; **risico:** vergelijkbaar met
+   libusb-win32.
+3. **DNP IDW SDK** aanvragen via NDA bij DNP-support. Officiële API met C-DLL
+   + ctypes binding mogelijk.
 
-### Stap 3 — Verse .sys file forceren
+Geen van deze opties heeft een gegarandeerde uitkomst — elke test betekent
+risico op weer een gebroken print-pipeline.
 
-De installer plaatst niet altijd de nieuwste `libusb0.sys` in `System32\drivers\`.
-Pak `libusb-win32-bin-1.4.0.2.zip` uit en kopieer handmatig:
+## Code-structuur in `dnp_status.py`
 
-```cmd
-copy /Y "C:\temp\libusb-win32-bin-1.4.0.2\bin\amd64\libusb0.sys" "C:\Windows\System32\drivers\libusb0.sys"
-```
+De module is zo gebouwd dat hij **automatisch** detecteert welke methode
+beschikbaar is en graceful degradeert:
 
-(Open Command Prompt **als administrator** voor dit commando.)
+1. **Pad libusb0** (libusb-win32 filter actief) → volledige detail-status met
+   alle 13+ foutcodes + telemetrie. **In huidige QW410-setup niet bruikbaar
+   wegens print-breakage.**
+2. **Pad libusb1** (libusb-1.0 generic) → alleen device-enumeratie, geen claim.
+   Geeft `connected=True/False`. **Huidige actieve pad.**
 
-### Stap 4 — Filter koppelen aan de QW410
+De UI (lock-info popup + fullscreen overlay) past zich automatisch aan op
+basis van `level` en `connected` velden.
 
-Open Command Prompt **als administrator** en run:
+## Verwijderen filter (mocht 'm ooit nog ergens hangen)
 
-```cmd
-"C:\Program Files\LibUSB-Win32\bin\install-filter.exe" install --device="USB\VID_1452&PID_9201"
-```
-
-Verwachte output:
-```
-install-filter:[install_service] creating libusb0 service..
-install-filter:[insert_device_filter] inserting device upper filter VID_1452&PID_9201&REV_0100..
-install-filter:[insert_device_filter] restarting device VID_1452&PID_9201&REV_0100..
-```
-
-Een waarschuwing `err [set_device_state] calling class installer failed` mag je
-negeren — die wordt opgelost door de volgende stap.
-
-### Stap 5 — USB-kabel los/aansluiten
-
-Trek de USB-kabel van de printer los, wacht 3 seconden, en sluit weer aan. Dit
-forceert Windows om de filter-driver te laden voor het device.
-
-### Stap 6 — Testen
-
-```cmd
-cd C:\Photobooth-verhuur
-python dnp_status.py
-```
-
-**Bij succes** zie je iets als:
-```
-Level:        ok
-Code:         0
-Label:        Klaar
-Connected:    True
-Media:        4×6" (QW410)
-Life counter: 38
-Serial:       'QW4C45020823'
-Method:       libusb (libusb0)
-Blocking:     False
-```
-
-Bij `Level: unknown` + `Method: claim_failed`: filter niet correct geladen —
-controleer of de libusb0-service draait (`sc query libusb0`), of herhaal
-stap 3-5.
-
-## Wat de software doet ná installatie
-
-- Polling om de 5 seconden in idle (skipt automatisch tijdens een sessie)
-- Fullscreen rode overlay als de printer een fout meldt (klep open / lint op /
-  papier op / jam / etc.) met exacte foutcode + Nederlands advies
-- Print-knop wordt grijs zolang er een blokkerende fout staat
-- Live "X prints geprint" indicator + serial + media-formaat in de lock-info popup
-
-## Verwijderen (mocht het ooit nodig zijn)
+Als de filter eerder is geïnstalleerd:
 
 ```cmd
 "C:\Program Files\LibUSB-Win32\bin\install-filter.exe" uninstall --device="USB\VID_1452&PID_9201"
+sc stop libusb0
+sc delete libusb0
 ```
 
-Daarna kun je LibUSB-Win32 volledig deinstalleren via Configuratiescherm →
-Apps → LibUSB-Win32 v1.4.0.2.
-
-## Wat als ik geen filter installeer?
-
-De software werkt onverminderd door — alleen mis je de gedetailleerde
-foutrapportage. Je krijgt nog wel:
-- USB plug/unplug detectie (printer uit / kabel los → overlay)
-- "USB-printer aangesloten" indicator in de lock-info popup
-- Bij blocking fout zie je geen specifieke code, alleen "USB niet bereikbaar"
+Daarna LibUSB-Win32 deinstalleren via Configuratiescherm → Apps. USB-kabel
+los/aansluiten zodat de device-stack vers initialiseert.

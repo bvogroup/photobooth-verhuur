@@ -5,10 +5,20 @@ Protocol gebaseerd op Gutenprint dnpds40 backend (reverse-engineered,
 open-source). Print blijft via Windows-driver / printer.py — deze module
 draait er parallel naast voor read-only status queries.
 
-Vereist één-malige setup: installeer libusb-win32 (filter mode) via
-Zadig, target de QW410 (VID=0x1452 PID=0x9201). Zonder die filter-driver
-faalt de claim en geeft de module DNPStatus(level='unknown') terug —
-de rest van de app blijft werken.
+╔══════════════════════════════════════════════════════════════════════╗
+║  PRAKTIJK-NOTITIE (juni 2026, Windows 11 + QW410)                    ║
+║                                                                       ║
+║  libusb-win32 v1.4.0.2 filter werkt voor STATUS-uitlezen, maar       ║
+║  BREEKT TEGELIJK HET PRINTEN — fysiek komt er niks uit de printer.   ║
+║  De libusb0 backend wordt daarom in praktijk NIET gebruikt; module   ║
+║  valt automatisch terug op libusb-1.0 enumeratie (USB plug/unplug).  ║
+║                                                                       ║
+║  Zie DNP_STATUS_SETUP.md voor de volledige analyse.                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Zonder filter-driver geeft de module DNPStatus(level='unknown',
+method='claim_failed') terug — de rest van de app blijft werken en
+toont de USB-aansluiting (connected: True/False).
 
 Protocol-frame (32 bytes, header):
   byte  0:    0x1B (ESC)
@@ -444,6 +454,7 @@ def _decode_media(code: str) -> str:
     except ValueError:
         pass
     # Tabel uit Gutenprint dnpds40_print.c voor DS40/DS620/QW410-familie
+    # plus QW410-specifieke 100-serie codes (geverifieerd op echte hardware)
     table = {
         "0": "Geen media geladen",
         "1": "5×3.5\" (DS40)",
@@ -459,6 +470,11 @@ def _decode_media(code: str) -> str:
         "105": "4.5×4.5\" (QW410)",
         "106": "4.5×6\" (QW410)",
         "107": "4.5×8\" (QW410)",
+        # Nieuwe firmware / dye-sub QW410 media-codes
+        "150": "4×6\" (QW410, nieuwe firmware)",
+        "151": "4×4.5\" (QW410, nieuwe firmware)",
+        "152": "4×4\" (QW410, nieuwe firmware)",
+        "153": "4×8\" (QW410, nieuwe firmware)",
     }
     return table.get(code, f"Media-code {code}")
 
