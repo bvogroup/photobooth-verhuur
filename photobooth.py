@@ -11212,6 +11212,88 @@ class PhotoboothWindow(QMainWindow):
             st_lay.addWidget(no_lbl)
         lay.addWidget(status_frame)
 
+        # ── Printer-block ──────────────────────────────────────────
+        printer_frame = QFrame()
+        printer_frame.setStyleSheet(
+            f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
+            f"border: 1px solid {config.COLOR_BORDER}; border-radius: 10px; padding: 14px; }}"
+        )
+        pr_lay = QVBoxLayout(printer_frame)
+        pr_lay.setSpacing(6)
+
+        pr_title = QLabel(f"🖨️  Printer  ·  {config.PRINTER_NAME}")
+        pr_title.setFont(QFont("DM Sans", 13, QFont.Bold))
+        pr_title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        pr_lay.addWidget(pr_title)
+
+        # Bouw status-string uit laatste DNP-poll
+        st = getattr(self, '_dnp_last_status', None)
+        if st is None:
+            pr_status_text = "⏳  Status nog niet bekend (poller start binnen 5s)..."
+            pr_color = config.COLOR_TEXT_DIM
+        else:
+            from dnp_status import StatusLevel
+            if st.level == StatusLevel.OK:
+                pr_status_text = "✅  Klaar voor gebruik"
+                pr_color = config.COLOR_SUCCESS
+            elif st.level == StatusLevel.INFO:
+                pr_status_text = f"ℹ️  {st.label}"
+                pr_color = config.COLOR_TEXT
+            elif st.level == StatusLevel.WARNING:
+                pr_status_text = f"⚠️  {st.label}"
+                pr_color = "#B07A00"
+            elif st.level == StatusLevel.ERROR:
+                if st.connected:
+                    code = f" (code {st.code})" if st.code is not None else ""
+                    pr_status_text = f"❌  {st.label}{code}"
+                else:
+                    pr_status_text = "❌  Printer niet bereikbaar (USB?)"
+                pr_color = config.COLOR_DANGER
+            else:  # UNKNOWN
+                if st.connected:
+                    pr_status_text = (
+                        "🔧  USB-printer aangesloten, maar geen libusb-toegang.\n"
+                        "Installeer libusb-win32 filter (zie DNP_STATUS_SETUP.md) "
+                        "voor klep-open / papier-op / lint-op detectie."
+                    )
+                else:
+                    pr_status_text = "🔌  Printer niet gevonden op USB"
+                pr_color = config.COLOR_TEXT_DIM
+
+        pr_status = QLabel(pr_status_text)
+        pr_status.setFont(QFont("DM Sans", 12))
+        pr_status.setWordWrap(True)
+        pr_status.setStyleSheet(f"color: {pr_color}; background: transparent;")
+        pr_lay.addWidget(pr_status)
+
+        # Telemetrie-regel (alleen als beschikbaar)
+        if st and (st.media or st.life_counter is not None or st.firmware or st.serial):
+            telem_parts = []
+            if st.media:
+                telem_parts.append(f"📐 {st.media}")
+            if st.life_counter is not None:
+                telem_parts.append(f"🔢 {st.life_counter:,} totaal geprint".replace(",", "."))
+            if st.firmware:
+                telem_parts.append(f"📦 fw {st.firmware}")
+            if st.serial:
+                telem_parts.append(f"🆔 {st.serial}")
+            telem = QLabel("   ·   ".join(telem_parts))
+            telem.setFont(QFont("DM Sans", 10))
+            telem.setWordWrap(True)
+            telem.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+            pr_lay.addWidget(telem)
+
+        # Debug-regel (alleen als verbose interessant — methode + timestamp)
+        if st:
+            import time as _t
+            age_sec = int(_t.time() - st.timestamp)
+            method_lbl = QLabel(f"   methode: {st.error_method}  ·  laatst gemeten: {age_sec}s geleden")
+            method_lbl.setFont(QFont("DM Sans", 9))
+            method_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
+            pr_lay.addWidget(method_lbl)
+
+        lay.addWidget(printer_frame)
+
         # ── Actie-knoppen ──────────────────────────────────────────
         def _btn(label, color_bg, color_hover, font_size=14):
             b = QPushButton(label)
