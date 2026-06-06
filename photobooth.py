@@ -1477,6 +1477,22 @@ class PhotoboothWindow(QMainWindow):
         elif not should_show and self._dnp_error_overlay is not None:
             self._hide_dnp_error_overlay()
 
+        # Welcome-page printer-banner update
+        if hasattr(self, '_welcome_printer_banner'):
+            try:
+                if status.is_blocking():
+                    code_str = f" (code {status.code})" if status.code else ""
+                    label = status.label or "Printer-fout"
+                    advice = self._dnp_advice_for(status)
+                    self._welcome_printer_banner.setText(
+                        f"⚠  Printer: {label}{code_str}\n{advice}"
+                    )
+                    self._welcome_printer_banner.show()
+                else:
+                    self._welcome_printer_banner.hide()
+            except Exception:
+                pass
+
     def _show_dnp_error_overlay(self, status):
         """Toon fullscreen rode overlay met printer-fout. Idempotent."""
         from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
@@ -1545,6 +1561,40 @@ class PhotoboothWindow(QMainWindow):
         # Stash widget-refs voor latere updates
         self._dnp_overlay_msg = msg
         self._dnp_overlay_detail = detail
+
+        # Slotje rechts-onder — altijd bereikbaar zelfs bij fout
+        # zodat de operator kan uitloggen / settings openen.
+        overlay_lock = QPushButton("🔒", overlay)
+        overlay_lock.setFixedSize(60, 60)
+        overlay_lock.setCursor(Qt.PointingHandCursor)
+        overlay_lock.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); "
+            "border: 1px solid rgba(255,255,255,0.35); "
+            "border-radius: 30px; font-size: 24px; color: white; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
+        )
+        overlay_lock.clicked.connect(self._on_lock_clicked)
+        overlay_lock.move(overlay.width() - 80, overlay.height() - 80)
+        overlay_lock.raise_()
+        # 'Printer-info' knop links-onder — opent event-info popup direct
+        overlay_info = QPushButton("ℹ  Printer-info", overlay)
+        overlay_info.setFixedHeight(48)
+        overlay_info.setFont(QFont("DM Sans", 14, QFont.Bold))
+        overlay_info.setCursor(Qt.PointingHandCursor)
+        overlay_info.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); color: white; "
+            "border: 1px solid rgba(255,255,255,0.35); border-radius: 10px; "
+            "padding: 6px 22px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
+        )
+        overlay_info.clicked.connect(self._show_event_info_dialog)
+        overlay_info.adjustSize()
+        overlay_info.move(40, overlay.height() - overlay_info.height() - 40)
+        overlay_info.raise_()
+        # Stash refs voor resize handling
+        self._dnp_overlay_lock_btn = overlay_lock
+        self._dnp_overlay_info_btn = overlay_info
+
         self._update_dnp_overlay_content(status)
 
     def _update_dnp_overlay_content(self, status):
@@ -2298,6 +2348,17 @@ class PhotoboothWindow(QMainWindow):
         outer.addWidget(self._welcome_action_container)
 
         outer.addStretch(2)
+
+        # ── Printer-status banner (alleen zichtbaar bij fout/warning) ─
+        self._welcome_printer_banner = QLabel(page)
+        self._welcome_printer_banner.setAlignment(Qt.AlignCenter)
+        self._welcome_printer_banner.setFont(QFont("DM Sans", 14, QFont.Bold))
+        self._welcome_printer_banner.setWordWrap(True)
+        self._welcome_printer_banner.setStyleSheet(
+            "QLabel { background: #b01e1e; color: white; padding: 14px 24px; }"
+        )
+        self._welcome_printer_banner.hide()
+        outer.addWidget(self._welcome_printer_banner)
 
         # ── Slotje rechts-onder ───────────────────────────────────────
         # Maakt direct PIN-prompt en opent settings (geen info-dialog).
@@ -8202,9 +8263,33 @@ class PhotoboothWindow(QMainWindow):
         Event-quotum handhaving: als event.event_print_quota > 0 wordt
         gecontroleerd of er nog ruimte is. Bij overschrijding: toon
         "Maximum prints bereikt" en print niet.
+
+        Pre-print check: vraagt direct verse DNP-status; als blocking
+        fout (klep open / papier op / lint op / etc.) wordt de print
+        NIET verstuurd en verschijnt de fullscreen error-overlay zodat
+        de operator de fout eerst kan verhelpen. Dit voorkomt half
+        gestarte print-jobs die alsnog wegtellen op de teller.
         """
         if not self.strip_path:
             self._sharing_print_status.setText(t("no_strip"))
+            return
+
+        # Pre-print DNP status-check — fresh poll, niet gecached
+        if getattr(self, '_dnp_poller', None) is not None:
+            try:
+                self._dnp_poller.force_refresh()
+            except Exception as e:
+                print(f"[PRINT-PRECHECK] force_refresh fout (niet kritiek): {e}")
+        st = getattr(self, '_dnp_last_status', None)
+        if st is not None and st.is_blocking():
+            print(f"[PRINT-PRECHECK] Blokkerende fout — print niet verstuurd "
+                  f"(level={st.level.value}, code={st.code}, label={st.label!r})")
+            # Toon overlay (verschijnt of update bestaande)
+            self._show_dnp_error_overlay(st)
+            # Print-knop status text
+            if hasattr(self, '_sharing_print_status'):
+                self._sharing_print_status.setText("Printer-fout — eerst verhelpen")
+                self._sharing_print_status.show()
             return
 
         # Eventlimiet-check (per-event quotum, onafhankelijk van session-limits)
