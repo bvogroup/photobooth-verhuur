@@ -255,13 +255,10 @@ class _PersistentDialog:
                 return None
 
     def close(self):
-        """Sluit dialog netjes."""
+        """Sluit dialog netjes — GEEN SendKeys (steelt keyboard-focus van
+        actieve apps). Alleen subprocess terminate; Windows ruimt z'n
+        eigen dialog op."""
         with self._lock:
-            try:
-                if self._dlg:
-                    self._dlg.SendKeys("{Esc}")
-            except Exception:
-                pass
             try:
                 if self._proc:
                     self._proc.terminate()

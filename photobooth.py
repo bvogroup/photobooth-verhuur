@@ -1555,45 +1555,49 @@ class PhotoboothWindow(QMainWindow):
         retry.clicked.connect(self._on_dnp_retry_clicked)
         lay.addWidget(retry, alignment=Qt.AlignCenter)
 
+        lay.addStretch()
+
+        # ── Onderste rij: [info-knop  ◇  slotje] — altijd bereikbaar ─
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+
+        info_btn = QPushButton("ℹ  Printer-info")
+        info_btn.setFixedHeight(48)
+        info_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
+        info_btn.setCursor(Qt.PointingHandCursor)
+        info_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); color: white; "
+            "border: 1px solid rgba(255,255,255,0.35); border-radius: 10px; "
+            "padding: 6px 22px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
+        )
+        info_btn.clicked.connect(self._show_event_info_dialog)
+        bottom_row.addWidget(info_btn)
+
+        bottom_row.addStretch()
+
+        lock_btn = QPushButton("🔒")
+        lock_btn.setFixedSize(60, 60)
+        lock_btn.setCursor(Qt.PointingHandCursor)
+        lock_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); "
+            "border: 1px solid rgba(255,255,255,0.35); "
+            "border-radius: 30px; font-size: 24px; color: white; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
+        )
+        lock_btn.clicked.connect(self._on_lock_clicked)
+        bottom_row.addWidget(lock_btn)
+
+        lay.addLayout(bottom_row)
+
         overlay.show()
         overlay.raise_()
         self._dnp_error_overlay = overlay
         # Stash widget-refs voor latere updates
         self._dnp_overlay_msg = msg
         self._dnp_overlay_detail = detail
-
-        # Slotje rechts-onder — altijd bereikbaar zelfs bij fout
-        # zodat de operator kan uitloggen / settings openen.
-        overlay_lock = QPushButton("🔒", overlay)
-        overlay_lock.setFixedSize(60, 60)
-        overlay_lock.setCursor(Qt.PointingHandCursor)
-        overlay_lock.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.18); "
-            "border: 1px solid rgba(255,255,255,0.35); "
-            "border-radius: 30px; font-size: 24px; color: white; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
-        )
-        overlay_lock.clicked.connect(self._on_lock_clicked)
-        overlay_lock.move(overlay.width() - 80, overlay.height() - 80)
-        overlay_lock.raise_()
-        # 'Printer-info' knop links-onder — opent event-info popup direct
-        overlay_info = QPushButton("ℹ  Printer-info", overlay)
-        overlay_info.setFixedHeight(48)
-        overlay_info.setFont(QFont("DM Sans", 14, QFont.Bold))
-        overlay_info.setCursor(Qt.PointingHandCursor)
-        overlay_info.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.18); color: white; "
-            "border: 1px solid rgba(255,255,255,0.35); border-radius: 10px; "
-            "padding: 6px 22px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
-        )
-        overlay_info.clicked.connect(self._show_event_info_dialog)
-        overlay_info.adjustSize()
-        overlay_info.move(40, overlay.height() - overlay_info.height() - 40)
-        overlay_info.raise_()
-        # Stash refs voor resize handling
-        self._dnp_overlay_lock_btn = overlay_lock
-        self._dnp_overlay_info_btn = overlay_info
+        self._dnp_overlay_lock_btn = lock_btn
+        self._dnp_overlay_info_btn = info_btn
 
         self._update_dnp_overlay_content(status)
 
@@ -1651,6 +1655,22 @@ class PhotoboothWindow(QMainWindow):
             self._dnp_error_overlay = None
             self._dnp_overlay_msg = None
             self._dnp_overlay_detail = None
+
+    def _pause_dnp_poll(self, paused: bool):
+        """Pauzeer/hervat de DNP-poller. Veilig om vaker te roepen.
+
+        Reden: de UI Automation poll-cyclus kan keyboard-focus stelen
+        wanneer Windows tussen actieve windows wisselt. Touch input
+        gebruikt een andere driver-pad (WM_POINTER) dus blijft werken,
+        maar pc-toetsenbord/muis kan onderbroken raken. We pauzeren
+        dus alles wat niet IDLE is.
+        """
+        if getattr(self, '_dnp_poller', None) is None:
+            return
+        try:
+            self._dnp_poller.pause(paused)
+        except Exception:
+            pass
 
     def _on_dnp_retry_clicked(self):
         """User klikt 'Opnieuw checken' — forceer een poller-tick."""
@@ -5308,6 +5328,9 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_idle(self):
         print(f"[UI] _go_idle aangeroepen (was state={self.state})", flush=True)
+        # Resume DNP-poll bij terugkeer naar idle (UI-Automation focus-steal
+        # is alleen risico wanneer er pc-input wordt gegeven).
+        self._pause_dnp_poll(False)
         # Custom flow opruimen (idempotent — geen effect als niet actief)
         self._custom_flow_active = False
         self._custom_flow_paid_path = False
@@ -6264,6 +6287,9 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_direct_capture(self):
         """Start photo session directly: init session, start live view, begin countdown."""
+        # Pauzeer DNP-poll tijdens sessie — voorkomt focus-interruptie tijdens
+        # eventuele text-input (email, naam) op review/sharing pages.
+        self._pause_dnp_poll(True)
         # Check internet connectivity in background
         self._has_internet = True  # Assume yes until check completes
         self._check_internet_bg()
@@ -11534,6 +11560,9 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_settings_after_pin(self):
         """Open settings panel ZONDER opnieuw PIN te vragen (al gevalideerd)."""
+        # Pauzeer DNP-poll tijdens settings — anders kan UI Automation
+        # focus stelen tijdens typen.
+        self._pause_dnp_poll(True)
         self.state = State.SETTINGS
         self.setWindowFlags(
             Qt.Window
