@@ -34,6 +34,8 @@ a = Analysis(
         (os.path.join(app_dir, 'web', 'templates'), os.path.join('web', 'templates')),
         # Default idle screens for different resolutions
         (os.path.join(app_dir, 'idle_defaults'), 'idle_defaults'),
+        # Sound effects (printer-busy MP3, evt. beeps)
+        (os.path.join(app_dir, 'sounds'), 'sounds'),
         # Print worker subprocess script
         (os.path.join(app_dir, 'print_worker.py'), '.'),
         # Camera logo (no text version, used in login screen and splash)

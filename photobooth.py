@@ -5613,7 +5613,11 @@ class PhotoboothWindow(QMainWindow):
         self._pause_dnp_poll(False)
         # Reset pending-print state — vorige sessie is afgelopen
         self._pending_print_copies = None
-        # Cleanup inline print-delay widgets + timer
+        # Cleanup inline print-delay widgets + timer + audio
+        try:
+            self._stop_printer_busy_sound()
+        except Exception:
+            pass
         try:
             self._cleanup_inline_print_widgets()
         except Exception:
@@ -8651,9 +8655,70 @@ class PhotoboothWindow(QMainWindow):
         print(f"[PRINTER] Pakket={package or 'onbekend'}, print-delay={delay_sec}s, copies={copies}")
         self._start_inline_print_delay(copies=copies, delay_sec=delay_sec)
 
+    def _play_printer_busy_sound(self, total_duration_sec: float):
+        """Speel printer-busy geluid af voor `total_duration_sec` seconden.
+
+        Gebruikt QMediaPlayer (Windows Media Foundation) om de MP3 in
+        sounds/printer_busy.mp3 af te spelen. Stopt automatisch na de
+        opgegeven duur via QTimer. Veilig om herhaald aan te roepen —
+        eventuele vorige player wordt eerst gestopt.
+        """
+        try:
+            from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+            from PyQt5.QtCore import QUrl
+        except Exception as e:
+            print(f"[AUDIO] QMediaPlayer niet beschikbaar: {e}")
+            return
+        # Stop eventuele oude player
+        self._stop_printer_busy_sound()
+        # Vind sound-file in bundle of source dir
+        sound_path = os.path.join(config.BUNDLE_DIR, "sounds", "printer_busy.mp3")
+        if not os.path.isfile(sound_path):
+            sound_path = os.path.join(config.BASE_DIR, "sounds", "printer_busy.mp3")
+        if not os.path.isfile(sound_path):
+            print(f"[AUDIO] Sound-file niet gevonden: {sound_path}")
+            return
+        try:
+            self._printer_busy_player = QMediaPlayer(self)
+            self._printer_busy_player.setMedia(
+                QMediaContent(QUrl.fromLocalFile(sound_path))
+            )
+            self._printer_busy_player.setVolume(70)
+            self._printer_busy_player.play()
+            # Stop-timer na de gevraagde duur
+            self._printer_busy_stop_timer = QTimer(self)
+            self._printer_busy_stop_timer.setSingleShot(True)
+            self._printer_busy_stop_timer.timeout.connect(self._stop_printer_busy_sound)
+            self._printer_busy_stop_timer.start(int(total_duration_sec * 1000))
+            print(f"[AUDIO] Printer-busy geluid gestart ({total_duration_sec}s)")
+        except Exception as e:
+            print(f"[AUDIO] Afspelen mislukt: {e}")
+
+    def _stop_printer_busy_sound(self):
+        """Stop eventuele printer-busy audio + cancel z'n stop-timer."""
+        player = getattr(self, '_printer_busy_player', None)
+        if player is not None:
+            try:
+                player.stop()
+                player.deleteLater()
+            except Exception:
+                pass
+            self._printer_busy_player = None
+        timer = getattr(self, '_printer_busy_stop_timer', None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            self._printer_busy_stop_timer = None
+
     def _start_inline_print_delay(self, copies: int, delay_sec: int):
         """Toon op de sharing-screen 'Foto wordt geprint' + cancel/redo
-        knoppen ipv print-knop, en start de delay-timer."""
+        knoppen ipv print-knop, en start de delay-timer.
+
+        Speelt tegelijk een printer-busy geluid af (delay + 3s marge) zodat
+        de echte printer naadloos het geluid overneemt — gast hoort
+        continu een 'er gebeurt iets' indicator."""
         # Verberg print-knop + remaining-indicator
         if hasattr(self, '_sharing_print_btn'):
             self._sharing_print_btn.hide()
@@ -8688,7 +8753,10 @@ class PhotoboothWindow(QMainWindow):
             self._on_inline_print_delay_done
         )
         self._inline_print_delay_timer.start(int(delay_sec * 1000))
-        print(f"[PRINTER] Inline delay gestart: {delay_sec}s")
+        # Speel printer-busy sound af, +3s marge zodat de echte printer
+        # naadloos kan overnemen (anders denkt de gast dat er niks gebeurt).
+        self._play_printer_busy_sound(delay_sec + 3)
+        print(f"[PRINTER] Inline delay gestart: {delay_sec}s (audio {delay_sec + 3}s)")
 
     def _on_inline_print_delay_done(self):
         """Delay afgelopen — verberg cancel/redo knoppen + stuur de print."""
@@ -8706,6 +8774,7 @@ class PhotoboothWindow(QMainWindow):
         Print wordt niet verzonden, print-optie verdwijnt voor deze sessie,
         maar QR-code blijft zichtbaar zodat de gast nog steeds kan downloaden."""
         print("[PRINTER] Inline print geannuleerd door gebruiker")
+        self._stop_printer_busy_sound()
         self._cleanup_inline_print_widgets()
         # Print-knop blijft verborgen (gast koos niet voor printen)
         if hasattr(self, '_sharing_print_btn'):
@@ -8726,6 +8795,7 @@ class PhotoboothWindow(QMainWindow):
     def _on_inline_print_redo(self):
         """User klikt 'Foto's opnieuw maken' tijdens de delay — restart sessie."""
         print("[PRINTER] Inline print geannuleerd, opnieuw fotograferen")
+        self._stop_printer_busy_sound()
         self._cleanup_inline_print_widgets()
         # Hergebruik bestaande 'opnieuw'-flow van review-scherm
         self._on_review_photos_redo()
