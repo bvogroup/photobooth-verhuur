@@ -11666,6 +11666,100 @@ class PhotoboothWindow(QMainWindow):
         """
         self._show_event_info_dialog()
 
+    def _on_evinfo_dialog_closed(self, _result):
+        """Stop de live-refresh timer wanneer de event-info dialog sluit."""
+        try:
+            if hasattr(self, '_evinfo_refresh_timer') and self._evinfo_refresh_timer:
+                self._evinfo_refresh_timer.stop()
+                self._evinfo_refresh_timer = None
+        except Exception:
+            pass
+        self._evinfo_event_lbl = None
+        self._evinfo_printer_lbl = None
+        self._evinfo_dialog = None
+
+    def _refresh_event_info_labels(self):
+        """Update de event + printer regels in de info-dialog. Live update."""
+        # Safety: dialog kan tussentijds gesloten zijn
+        if not hasattr(self, '_evinfo_event_lbl') or self._evinfo_event_lbl is None:
+            return
+        if not hasattr(self, '_evinfo_printer_lbl') or self._evinfo_printer_lbl is None:
+            return
+
+        # ── Event-regel opbouwen ─────────────────────────────────
+        ev = self.active_event
+        booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
+        booking_label = getattr(ev, 'linked_booking_label', '') if ev else ''
+        if not booking_id:
+            self._evinfo_event_lbl.setText("Geen event gekoppeld")
+            self._evinfo_event_lbl.setStyleSheet(
+                f"color: {config.COLOR_TEXT_DIM}; background: transparent;"
+            )
+        else:
+            # Naam · datum komen al gecombineerd uit linked_booking_label
+            # ("ron-debbygroet · 2026-06-05" typisch).
+            name_date = booking_label or booking_id[:8]
+            upload_part = ""
+            try:
+                from cloud_uploader import get_status
+                s = get_status(booking_id)
+                if s["total"] > 0:
+                    pct = int(100 * s["uploaded"] / max(1, s["total"]))
+                    upload_part = f"  ·  📤 {s['uploaded']}/{s['total']} ({pct}%)"
+                    if s["failed"] > 0:
+                        upload_part += f"  ·  ⚠ {s['failed']} mislukt"
+                else:
+                    upload_part = "  ·  📤 nog niets geüpload"
+            except Exception:
+                pass
+            self._evinfo_event_lbl.setText(f"🟢  {name_date}{upload_part}")
+            self._evinfo_event_lbl.setStyleSheet(
+                f"color: {config.COLOR_TEXT}; background: transparent;"
+            )
+
+        # ── Printer-regel opbouwen ───────────────────────────────
+        st = getattr(self, '_dnp_last_status', None)
+        from dnp_status import StatusLevel
+        if st is None:
+            text = "⏳  Status nog niet bekend..."
+            color = config.COLOR_TEXT_DIM
+        elif st.level == StatusLevel.OK:
+            text = "✅  Klaar"
+            color = config.COLOR_SUCCESS
+        elif st.level == StatusLevel.INFO:
+            text = f"ℹ️  {st.label}"
+            color = config.COLOR_TEXT
+        elif st.level == StatusLevel.WARNING:
+            text = f"⚠️  {st.label}"
+            color = "#B07A00"
+        elif st.level == StatusLevel.ERROR:
+            if st.connected:
+                code = f" (code {st.code})" if st.code is not None else ""
+                text = f"❌  {st.label}{code}"
+            else:
+                text = "❌  Printer niet bereikbaar (USB?)"
+            color = config.COLOR_DANGER
+        else:  # UNKNOWN
+            if st.connected:
+                text = "🔧  USB-printer aangesloten, geen libusb-toegang"
+            else:
+                text = "🔌  Printer niet gevonden op USB"
+            color = config.COLOR_TEXT_DIM
+
+        # Voeg prints-over toe achter de status indien beschikbaar
+        if (st is not None
+                and getattr(st, 'prints_remaining', None) is not None
+                and getattr(st, 'prints_total', None)):
+            remain = st.prints_remaining
+            total = st.prints_total
+            pct = int(100 * remain / max(1, total))
+            text += f"  ·  {remain}/{total} prints over  ·  {pct}%"
+
+        self._evinfo_printer_lbl.setText(text)
+        self._evinfo_printer_lbl.setStyleSheet(
+            f"color: {color}; background: transparent;"
+        )
+
     def _show_event_info_dialog(self):
         """Modal met event-info + acties: Ververs / Loskoppel / Geavanceerd.
 
@@ -11690,7 +11784,7 @@ class PhotoboothWindow(QMainWindow):
         title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
         lay.addWidget(title)
 
-        # ── Status-block ────────────────────────────────────────────
+        # ── Event-block (compact, 1 regel met live update) ─────────
         status_frame = QFrame()
         status_frame.setStyleSheet(
             f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
@@ -11700,49 +11794,16 @@ class PhotoboothWindow(QMainWindow):
         st_lay.setSpacing(6)
 
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
-        booking_label = getattr(ev, 'linked_booking_label', '') if ev else ''
 
-        if booking_id:
-            name_lbl = QLabel(f"🟢  {booking_label or booking_id}")
-            name_lbl.setFont(QFont("DM Sans", 14, QFont.Bold))
-            name_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
-            name_lbl.setWordWrap(True)
-            st_lay.addWidget(name_lbl)
-
-            id_lbl = QLabel(f"ID: {booking_id}")
-            id_lbl.setFont(QFont("DM Sans", 10))
-            id_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-            st_lay.addWidget(id_lbl)
-
-            # Upload-progress (zelfde data als _update_linked_progress)
-            upload_lbl = QLabel("")
-            upload_lbl.setFont(QFont("DM Sans", 11))
-            upload_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-            upload_lbl.setWordWrap(True)
-            try:
-                from cloud_uploader import get_status
-                s = get_status(booking_id)
-                if s["total"] > 0:
-                    pct = int(100 * s["uploaded"] / max(1, s["total"]))
-                    msg = f"📤  Uploaded: {s['uploaded']}/{s['total']} foto's ({pct}%)"
-                    if s["pending"] > 0:
-                        msg += f"  ·  {s['pending']} wachten"
-                    if s["failed"] > 0:
-                        msg += f"  ·  ⚠ {s['failed']} mislukt"
-                    upload_lbl.setText(msg)
-                else:
-                    upload_lbl.setText("📤  Nog geen foto's geüpload")
-            except Exception:
-                upload_lbl.setText("📤  Upload-status niet beschikbaar")
-            st_lay.addWidget(upload_lbl)
-        else:
-            no_lbl = QLabel("Geen event gekoppeld")
-            no_lbl.setFont(QFont("DM Sans", 13))
-            no_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-            st_lay.addWidget(no_lbl)
+        # 1 regel: 🟢 naam · datum · 📤 X/Y (Z%)
+        self._evinfo_event_lbl = QLabel("")
+        self._evinfo_event_lbl.setFont(QFont("DM Sans", 14, QFont.Bold))
+        self._evinfo_event_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        self._evinfo_event_lbl.setWordWrap(True)
+        st_lay.addWidget(self._evinfo_event_lbl)
         lay.addWidget(status_frame)
 
-        # ── Printer-block ──────────────────────────────────────────
+        # ── Printer-block (compact) ────────────────────────────────
         printer_frame = QFrame()
         printer_frame.setStyleSheet(
             f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
@@ -11756,91 +11817,24 @@ class PhotoboothWindow(QMainWindow):
         pr_title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
         pr_lay.addWidget(pr_title)
 
-        # Bouw status-string uit laatste DNP-poll
-        st = getattr(self, '_dnp_last_status', None)
-        if st is None:
-            pr_status_text = "⏳  Status nog niet bekend (poller start binnen 5s)..."
-            pr_color = config.COLOR_TEXT_DIM
-        else:
-            from dnp_status import StatusLevel
-            if st.level == StatusLevel.OK:
-                pr_status_text = "✅  Klaar voor gebruik"
-                pr_color = config.COLOR_SUCCESS
-            elif st.level == StatusLevel.INFO:
-                pr_status_text = f"ℹ️  {st.label}"
-                pr_color = config.COLOR_TEXT
-            elif st.level == StatusLevel.WARNING:
-                pr_status_text = f"⚠️  {st.label}"
-                pr_color = "#B07A00"
-            elif st.level == StatusLevel.ERROR:
-                if st.connected:
-                    code = f" (code {st.code})" if st.code is not None else ""
-                    pr_status_text = f"❌  {st.label}{code}"
-                else:
-                    pr_status_text = "❌  Printer niet bereikbaar (USB?)"
-                pr_color = config.COLOR_DANGER
-            else:  # UNKNOWN
-                if st.connected:
-                    pr_status_text = (
-                        "🔧  USB-printer aangesloten, maar geen libusb-toegang.\n"
-                        "Installeer libusb-win32 filter (zie DNP_STATUS_SETUP.md) "
-                        "voor klep-open / papier-op / lint-op detectie."
-                    )
-                else:
-                    pr_status_text = "🔌  Printer niet gevonden op USB"
-                pr_color = config.COLOR_TEXT_DIM
-
-        pr_status = QLabel(pr_status_text)
-        pr_status.setFont(QFont("DM Sans", 12))
-        pr_status.setWordWrap(True)
-        pr_status.setStyleSheet(f"color: {pr_color}; background: transparent;")
-        pr_lay.addWidget(pr_status)
-
-        # Prints-remaining indicator (PROMINENT — operator wil dit altijd zien)
-        if st and getattr(st, 'prints_remaining', None) is not None \
-                and getattr(st, 'prints_total', None):
-            remain = st.prints_remaining
-            total = st.prints_total
-            pct = int(100 * remain / max(1, total))
-            # Kleur: groen >50%, oranje 10-50%, rood <10%
-            if pct >= 50:
-                rem_color = config.COLOR_SUCCESS
-            elif pct >= 10:
-                rem_color = "#B07A00"
-            else:
-                rem_color = config.COLOR_DANGER
-            rem_lbl = QLabel(f"📊  {remain} / {total} prints over op de rol  ·  {pct}%")
-            rem_lbl.setFont(QFont("DM Sans", 13, QFont.Bold))
-            rem_lbl.setStyleSheet(f"color: {rem_color}; background: transparent;")
-            pr_lay.addWidget(rem_lbl)
-
-        # Telemetrie-regel (alleen als beschikbaar)
-        if st and (st.media or st.life_counter is not None or st.firmware or st.serial):
-            telem_parts = []
-            if st.media:
-                telem_parts.append(f"📐 {st.media}")
-            if st.life_counter is not None:
-                telem_parts.append(f"🔢 {st.life_counter:,} totaal geprint".replace(",", "."))
-            if st.firmware:
-                telem_parts.append(f"📦 fw {st.firmware}")
-            if st.serial:
-                telem_parts.append(f"🆔 {st.serial}")
-            telem = QLabel("   ·   ".join(telem_parts))
-            telem.setFont(QFont("DM Sans", 10))
-            telem.setWordWrap(True)
-            telem.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-            pr_lay.addWidget(telem)
-
-        # Debug-regel (alleen als verbose interessant — methode + timestamp)
-        if st:
-            import time as _t
-            age_sec = int(_t.time() - st.timestamp)
-            method_lbl = QLabel(f"   methode: {st.error_method}  ·  laatst gemeten: {age_sec}s geleden")
-            method_lbl.setFont(QFont("DM Sans", 9))
-            method_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; background: transparent;")
-            pr_lay.addWidget(method_lbl)
+        # 1 regel: <icoon> Status · X/Y prints over · Z%
+        self._evinfo_printer_lbl = QLabel("")
+        self._evinfo_printer_lbl.setFont(QFont("DM Sans", 12, QFont.Bold))
+        self._evinfo_printer_lbl.setWordWrap(True)
+        pr_lay.addWidget(self._evinfo_printer_lbl)
 
         lay.addWidget(printer_frame)
+
+        # ── Live refresh: elke 1.5s de labels bijwerken ───────────
+        self._evinfo_dialog = dlg
+        self._evinfo_refresh_timer = QTimer(dlg)
+        self._evinfo_refresh_timer.setInterval(1500)
+        self._evinfo_refresh_timer.timeout.connect(self._refresh_event_info_labels)
+        self._evinfo_refresh_timer.start()
+        # Stop timer bij sluiten van dialog (anders draait 'm tot app sluit)
+        dlg.finished.connect(self._on_evinfo_dialog_closed)
+        # Eerste render direct
+        self._refresh_event_info_labels()
 
         # ── Actie-knoppen ──────────────────────────────────────────
         def _btn(label, color_bg, color_hover, font_size=14):
