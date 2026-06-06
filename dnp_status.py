@@ -1,120 +1,37 @@
 """
-DNP QW410 status-module — leest fout-codes en telemetrie via libusb.
+DNP QW410 status-module — leest live status van de printer.
 
-Protocol gebaseerd op Gutenprint dnpds40 backend (reverse-engineered,
-open-source). Print blijft via Windows-driver / printer.py — deze module
-draait er parallel naast voor read-only status queries.
+Hoofdpad: **UI Automation** scrape van de DNP "Voorkeursinstellingen → Printer
+Info" dialog (DPQW410UI.DLL). De DNP-driver doet zelf intern de USB-I/O voor
+deze dialog; wij openen het off-screen, lezen de waardes, sluiten het.
 
-╔══════════════════════════════════════════════════════════════════════╗
-║  PRAKTIJK-NOTITIE (juni 2026, Windows 11 + QW410)                    ║
-║                                                                       ║
-║  libusb-win32 v1.4.0.2 filter werkt voor STATUS-uitlezen, maar       ║
-║  BREEKT TEGELIJK HET PRINTEN — fysiek komt er niks uit de printer.   ║
-║  De libusb0 backend wordt daarom in praktijk NIET gebruikt; module   ║
-║  valt automatisch terug op libusb-1.0 enumeratie (USB plug/unplug).  ║
-║                                                                       ║
-║  Zie DNP_STATUS_SETUP.md voor de volledige analyse.                  ║
-╚══════════════════════════════════════════════════════════════════════╝
+Voordelen t.o.v. libusb-win32 filter (geprobeerd, faalde):
+  - GEEN filter-driver nodig (printen blijft 100% werkend)
+  - GEEN eenmalige setup per PC (uiautomation + pywin32 zijn pip-installs)
+  - ALLE 13+ DNP statuscodes + counter + serial + firmware + media
 
-Zonder filter-driver geeft de module DNPStatus(level='unknown',
-method='claim_failed') terug — de rest van de app blijft werken en
-toont de USB-aansluiting (connected: True/False).
+Fallback: libusb-1.0 USB-device-enumeratie (alleen plug/unplug detectie)
+voor wanneer uiautomation niet beschikbaar is.
 
-Protocol-frame (32 bytes, header):
-  byte  0:    0x1B (ESC)
-  byte  1:    0x50 ('P')
-  bytes 2-7:  command   (6 bytes, space-padded)
-  bytes 8-23: argument  (16 bytes, space-padded)
-  bytes 24-31: payload-len (8 bytes, decimal-ASCII)
-
-Response uitlezen:
-  - 8 bytes: decimal-ASCII lengte van payload N
-  - N bytes: payload data
+Geverifieerd op echte hardware (QW410 SN QW4C45020823, juni 2026).
 """
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-# Lazy imports — laat de hele module overleven zonder pyusb/libusb
-_USB_BACKEND = None
-_USB_BACKEND_ERR = ""
-
-# libusb0 DLL (van libusb-win32 filter — Premium status pad).
-# Eerst nieuwste install-locaties proberen, dan ingebouwde fallback uit
-# de libusb pip-package (libusb-1.0 generic — werkt alleen zonder filter).
-_LIBUSB0_DLL_CANDIDATES = [
-    r"C:\Program Files\LibUSB-Win32\bin\amd64\libusb0.dll",
-    r"C:\Program Files (x86)\LibUSB-Win32\bin\amd64\libusb0.dll",
-    r"C:\temp\libusb-bin-1.4.0.2\libusb-win32-bin-1.4.0.2\bin\amd64\libusb0.dll",
-]
-
-try:
-    import usb.core
-    import usb.util
-    import usb.backend.libusb0
-    import usb.backend.libusb1
-
-    # ── Pad 1: libusb0 (libusb-win32 filter) ── geeft volledige status
-    _libusb0_dll = next((p for p in _LIBUSB0_DLL_CANDIDATES if os.path.isfile(p)), None)
-    if _libusb0_dll:
-        try:
-            _USB_BACKEND = usb.backend.libusb0.get_backend(
-                find_library=lambda x: _libusb0_dll
-            )
-            if _USB_BACKEND is not None:
-                _USB_BACKEND_NAME = "libusb0"
-        except Exception as e:
-            _USB_BACKEND_ERR = f"libusb0 backend faal: {e}"
-
-    # ── Pad 2: libusb-1.0 (generic) ── alleen voor USB-enumeratie
-    # zonder claim. Filter niet vereist maar geen detail-status mogelijk.
-    if _USB_BACKEND is None:
-        try:
-            import libusb as _libusb_pkg
-            _dll_dir = os.path.join(
-                os.path.dirname(_libusb_pkg.__file__),
-                "_platform", "windows", "x86_64",
-            )
-            if os.path.isdir(_dll_dir):
-                try:
-                    os.add_dll_directory(_dll_dir)
-                except Exception:
-                    pass
-                _USB_BACKEND = usb.backend.libusb1.get_backend(
-                    find_library=lambda x: os.path.join(_dll_dir, "libusb-1.0.dll")
-                )
-                if _USB_BACKEND is not None:
-                    _USB_BACKEND_NAME = "libusb1"
-        except Exception as e:
-            _USB_BACKEND_ERR = f"libusb1 fallback faal: {e}"
-
-    if _USB_BACKEND is None and not _USB_BACKEND_ERR:
-        _USB_BACKEND_ERR = "geen libusb0.dll of libusb-1.0.dll gevonden"
-except Exception as e:
-    _USB_BACKEND_ERR = f"pyusb/libusb import faal: {e}"
-    _USB_BACKEND_NAME = "none"
-else:
-    if "_USB_BACKEND_NAME" not in dir():
-        _USB_BACKEND_NAME = "none"
-
-
-# DNP QW410 USB identifiers (van Gutenprint dnpds40_backend.c)
-DNP_VENDOR_ID = 0x1452
-QW410_PRODUCT_IDS = (0x9201,)  # andere DS40-family PIDs zouden hier kunnen
-
 
 # ── Status-codes uit Gutenprint dnpds40_print.c ─────────────────────
+# (gemapt op de UI-strings die DPQW410UI.DLL toont)
 STATUS_CODES = {
     0:    ("Klaar",                 "ok"),
     1:    ("Bezig",                 "info"),
     500:  ("Bezig met printen",     "info"),
-    510:  ("Bezig — buffer vol",    "info"),
-    900:  ("Onderhouden",           "info"),
     1000: ("Klep open",             "error"),
     1010: ("Geen opvangbak",        "error"),
     1100: ("Papier op",             "error"),
@@ -125,40 +42,35 @@ STATUS_CODES = {
     1600: ("Data-fout",             "error"),
     2000: ("Kop-voltage fout",      "error"),
     2100: ("Kop-positie fout",      "error"),
-    2200: ("Voeding-fout",          "error"),
     2300: ("Cutter-fout",           "error"),
-    2400: ("Pinch-roller fout",     "error"),
     2500: ("Kop te heet",           "warning"),
-    2600: ("Motor te heet",         "warning"),
-    2610: ("Papier-stuck",          "error"),
-    2700: ("Ribbon-tension fout",   "error"),
-    2800: ("RFID lees-fout",        "error"),
     3000: ("Systeem-fout",          "error"),
-    3010: ("Plate-fout",            "error"),
     9999: ("Communicatie-fout",     "error"),
 }
 
-
-# ── Media-codes (uit INFO MEDIA response) ────────────────────────────
-MEDIA_CODES = {
-    "4x6":   "4×6 inch (DNP standaard)",
-    "5x7":   "5×7 inch",
-    "6x8":   "6×8 inch",
-    "6x9":   "6×9 inch",
-    "8x10":  "8×10 inch",
-    "8x12":  "8×12 inch",
-    "4x8":   "4×8 inch (QW410)",
-    "4x4":   "4×4 inch (QW410)",
-    "4x4.5": "4×4.5 inch (QW410)",
-    "4x4_5": "4×4.5 inch (QW410)",
-    "4.5x4": "4.5×4 inch (QW410)",
-    "4_5x4": "4.5×4 inch (QW410)",
-    "4.5x4.5": "4.5×4.5 inch (QW410)",
-    "4_5x4_5": "4.5×4.5 inch (QW410)",
-    "4.5x6": "4.5×6 inch (QW410)",
-    "4_5x6": "4.5×6 inch (QW410)",
-    "4.5x8": "4.5×8 inch (QW410)",
-    "4_5x8": "4.5×8 inch (QW410)",
+# Map de Engelse UI-string die de DNP-driver toont naar de DNP-foutcode.
+# Vastgesteld empirisch op echte hardware. Lowercased match.
+UI_STATUS_TO_CODE = {
+    "waiting":             0,    # OK / klaar
+    "ready":               0,
+    "printing":            500,
+    "paused":              1,
+    "top door open":       1000,
+    "no scrap box":        1010,
+    "paper end":           1100,
+    "ribbon end":          1200,
+    "paper jam":           1300,
+    "ribbon error":        1400,
+    "paper error":         1500,
+    "media error":         1500,
+    "data error":          1600,
+    "head voltage error":  2000,
+    "head position error": 2100,
+    "cutter error":        2300,
+    "head over heat":      2500,
+    "head temperature":    2500,
+    "system error":        3000,
+    "communication error": 9999,
 }
 
 
@@ -167,328 +79,378 @@ class StatusLevel(Enum):
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
-    UNKNOWN = "unknown"  # filter niet geinstalleerd / device weg / etc.
+    UNKNOWN = "unknown"
 
 
 @dataclass
 class DNPStatus:
-    """Volledige snapshot van de QW410-status."""
+    """Snapshot van de QW410-status."""
     level: StatusLevel = StatusLevel.UNKNOWN
     code: Optional[int] = None
     label: str = ""
-    detail: str = ""              # vrije tekst, bv. "Sluit de klep en wacht 10s"
-    media: str = ""               # "4×6 inch (DNP standaard)" etc.
-    media_code: str = ""          # rauwe code zoals uit printer komt
+    detail: str = ""
+    media: str = ""
+    media_code: str = ""           # rauwe code
+    prints_remaining: Optional[int] = None
+    prints_total: Optional[int] = None
     life_counter: Optional[int] = None
     serial: str = ""
     firmware: str = ""
-    error_method: str = ""        # debug: hoe is dit gemeten
-    connected: bool = False       # USB-aanwezig?
+    color_profile_300dpi: str = ""
+    color_profile_low_speed: str = ""
+    error_method: str = ""
+    connected: bool = False
     timestamp: float = field(default_factory=time.time)
 
     def is_blocking(self) -> bool:
-        """True als deze status het printen blokkeert."""
         return self.level == StatusLevel.ERROR or not self.connected
 
 
-# ── USB-laag ────────────────────────────────────────────────────────
+# ── UI Automation pad (primair) ──────────────────────────────────────
 
-def _build_cmd(arg1: bytes, arg2: bytes = b"", payload: bytes = b"") -> bytes:
-    """Bouw een 32-byte DNP-commando-frame + payload."""
-    hdr = bytearray(b" " * 32)
-    hdr[0] = 0x1B
-    hdr[1] = 0x50
-    hdr[2:2+min(len(arg1), 6)] = arg1[:6]
-    hdr[8:8+min(len(arg2), 16)] = arg2[:16]
-    plen = f"{len(payload):08d}".encode("ascii")
-    hdr[24:32] = plen
-    return bytes(hdr) + payload
+def read_via_ui_automation(printer_name: str, timeout_sec: float = 8.0) -> Optional[DNPStatus]:
+    """Open DPQW410UI Voorkeursinstellingen dialog off-screen, scrape data.
+
+    Returnt None als uiautomation niet beschikbaar of de dialog niet
+    binnen `timeout_sec` opent. Verstoort het printen NIET — gebruikt
+    geen libusb, alleen de bestaande Windows-driver via z'n eigen UI.
+    """
+    try:
+        import uiautomation as auto
+    except ImportError:
+        return None
+
+    status = DNPStatus(error_method="ui_automation")
+    proc = None
+    dlg = None
+    try:
+        # 1. Start dialog
+        proc = subprocess.Popen([
+            "rundll32", "printui.dll,PrintUIEntry",
+            "/e", "/n", printer_name
+        ], creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+
+        # 2. Wacht op dialog. We zoeken een venster waarvan de naam
+        # ontwerp-onafhankelijk de printernaam bevat. Localisatie-veilig:
+        # zowel "Voorkeursinstellingen voor afdrukken voor X" (NL) als
+        # "Printing preferences for X" (EN) en varianten matchen.
+        deadline = time.monotonic() + timeout_sec
+        dlg = None
+        while time.monotonic() < deadline:
+            for w in auto.GetRootControl().GetChildren():
+                try:
+                    name = w.Name or ""
+                    if printer_name in name and w.ControlTypeName == "WindowControl":
+                        # Niet het hoofdscherm van Windows Settings
+                        if "Settings" in name or "Instellingen" in name:
+                            continue
+                        dlg = w
+                        break
+                except Exception:
+                    pass
+            if dlg and dlg.Exists(0):
+                break
+            time.sleep(0.1)
+        if not dlg:
+            return None
+
+        # 3. Move off-screen
+        try:
+            dlg.MoveWindow(-3000, -3000, 800, 800)
+        except Exception:
+            pass
+
+        # 4. Vind Printer Info tab + selecteer via UIA pattern (geen muis)
+        time.sleep(0.2)
+        tab = _find_descendant(dlg, lambda c:
+            c.ControlTypeName == "TabItemControl"
+            and ("Printer Info" in (c.Name or "") or "Printerinfo" in (c.Name or ""))
+        )
+        if tab:
+            try:
+                sel = tab.GetPattern(auto.PatternId.SelectionItemPattern)
+                if sel: sel.Select()
+            except Exception:
+                pass
+            time.sleep(0.4)
+
+        # 5. Klik Update knop via Invoke pattern
+        btn = _find_descendant(dlg, lambda c:
+            c.ControlTypeName == "ButtonControl"
+            and (c.Name or "").startswith("Update")
+        )
+        if btn:
+            try:
+                inv = btn.GetPattern(auto.PatternId.InvokePattern)
+                if inv: inv.Invoke()
+            except Exception:
+                pass
+            time.sleep(0.8)
+
+        # 6. Scrape alle text en edit controls met posities
+        controls = []
+        def gather(node, depth=0, maxd=10):
+            if depth > maxd: return
+            try:
+                for c in node.GetChildren():
+                    controls.append(c)
+                    gather(c, depth+1, maxd)
+            except Exception:
+                pass
+        gather(dlg)
+
+        # 7. Map naar status-velden via positie heuristiek + label-match
+        _parse_controls(controls, status)
+        status.connected = True
+        return status
+
+    except Exception as e:
+        status.detail = f"UIA fout: {e}"
+        return status if status.serial or status.code is not None else None
+    finally:
+        # Cleanup: sluit dialog
+        try:
+            if dlg:
+                dlg.SendKeys("{Esc}")
+        except Exception:
+            pass
+        try:
+            if proc:
+                proc.terminate()
+                proc.wait(timeout=2.0)
+        except Exception:
+            pass
 
 
-def _find_device():
-    """Zoek de QW410. Returnt (device, error_str)."""
+def _find_descendant(node, predicate, maxd=10):
+    """Zoek recursief eerste descendant die voldoet."""
+    if maxd <= 0: return None
+    try:
+        for c in node.GetChildren():
+            try:
+                if predicate(c):
+                    return c
+            except Exception:
+                pass
+            r = _find_descendant(c, predicate, maxd-1)
+            if r: return r
+    except Exception:
+        pass
+    return None
+
+
+def _parse_controls(controls: list, status: DNPStatus):
+    """Heuristisch alle waardes uit de scraped controls extraheren.
+
+    De DPQW410UI Printer Info tab heeft een vaste layout:
+      - Bovenin: "<media>" + "<remaining> / <total>" + progressbar
+      - Printer Status: EditControl met statustekst ("Waiting"/"Top door open"/...)
+      - Total Count: TextControl met integer
+      - Firmware Version: TextControl met versie-string
+      - Serial No.: TextControl met serial
+      - Color Control Data: TextControls met "QW410_SD_*.CWD" + 4-char checksum
+
+    We pakken dit door positie + content-match.
+    """
+    # Verzamel alleen Text/Edit controls met niet-lege text
+    items = []
+    for c in controls:
+        try:
+            tn = c.ControlTypeName
+            if tn not in ("EditControl", "TextControl"):
+                continue
+            text = (c.Name or "").strip()
+            if tn == "EditControl":
+                try:
+                    vp = c.GetValuePattern()
+                    if vp and vp.Value: text = vp.Value.strip()
+                except Exception:
+                    pass
+            if not text:
+                continue
+            rect = c.BoundingRectangle
+            items.append((rect.top, rect.left, tn, text))
+        except Exception:
+            pass
+    items.sort()
+
+    # Heuristieken — patroon-gebaseerd (positie-onafhankelijk want off-screen
+    # dialog heeft negatieve coordinaten)
+    integers = []  # collect raw ints, decide later
+    for top, left, tn, text in items:
+        # Edit met statustekst → status code
+        if tn == "EditControl":
+            tl = text.lower()
+            if tl in UI_STATUS_TO_CODE:
+                code = UI_STATUS_TO_CODE[tl]
+                status.code = code
+                if code in STATUS_CODES:
+                    lbl, lvl = STATUS_CODES[code]
+                    status.label = lbl
+                    status.level = StatusLevel(lvl)
+            else:
+                # Bekende fout-substring zoeken
+                matched = False
+                for ui_text, code in UI_STATUS_TO_CODE.items():
+                    if ui_text in tl:
+                        status.code = code
+                        if code in STATUS_CODES:
+                            lbl, lvl = STATUS_CODES[code]
+                            status.label = lbl
+                            status.level = StatusLevel(lvl)
+                        matched = True
+                        break
+                if not matched and not status.label:
+                    status.label = text
+                    status.level = StatusLevel.WARNING
+            continue
+
+        # Firmware: "QW410 X.YZ" — bevat spatie + punt
+        if text.startswith("QW410 ") and "." in text and len(text) < 20:
+            status.firmware = text
+            continue
+        # Color profiles: "QW410_SD_*.CWD"
+        if "QW410_SD_300_" in text:
+            status.color_profile_300dpi = text
+            continue
+        if "QW410_SD_310_" in text:
+            status.color_profile_low_speed = text
+            continue
+        # Serial: alphanum-only, geen spatie/punt/underscore, lengte 10-14
+        if (text.startswith("QW")
+            and " " not in text
+            and "." not in text
+            and "_" not in text
+            and 10 <= len(text) <= 14):
+            status.serial = text
+            continue
+        # Media (typisch "4x6", "4.5x6", etc.)
+        if not status.media and "x" in text and len(text) < 10:
+            try:
+                parts = text.lower().split("x")
+                if len(parts) == 2 and all(p.replace(".", "").isdigit() for p in parts):
+                    status.media = f"{parts[0]}×{parts[1]} inch"
+                    status.media_code = text
+                    continue
+            except Exception:
+                pass
+        # Verzamel pure integers voor later
+        if text.isdigit() and len(text) <= 7:
+            integers.append(int(text))
+
+    # Integers: heuristisch verdelen.
+    # Bij QW410 zien we typisch:
+    #   - prints_remaining: 100-9999 (klein)
+    #   - prints_total:     100-9999 (vaak iets groter)
+    #   - life_counter:     0-999999 (totale levensduur)
+    # Plus duplicaten (de progressbar toont total 2×).
+    # Strategie: unieke set, sorteer, kleinste = life_counter, mid = remaining,
+    # grootste in 100-9999 range = total. NB: life kan groter zijn dan remaining
+    # dus we doen het op MOMENT van verzameling: als we al 2 ints in 'remaining'
+    # range hebben, daarna komen weer ints, dat is life_counter.
+    unique = []
+    seen = set()
+    for v in integers:
+        if v not in seen:
+            unique.append(v); seen.add(v)
+    # Eerste 2 grote ints (50-9999): remaining + total
+    # Andere: life_counter (typisch klein bij nieuwe printer)
+    pr_total_candidates = [v for v in unique if 50 <= v <= 9999]
+    other = [v for v in unique if v not in pr_total_candidates]
+    if len(pr_total_candidates) >= 2:
+        # Eerste = remaining (kleiner, telt af), tweede = total
+        status.prints_remaining = pr_total_candidates[0]
+        status.prints_total = pr_total_candidates[1]
+        # Resterende ints in deze categorie = life_counter mogelijk
+        if len(pr_total_candidates) >= 3:
+            other.append(pr_total_candidates[2])
+    if other and status.life_counter is None:
+        # Pak de kleinste als life counter (begin-printer telt nog laag op)
+        # of grootste — beide kunnen. Voor QW410 met 41 prints is dat 41.
+        status.life_counter = min(other) if min(other) > 0 else max(other)
+
+
+# ── Libusb-1.0 fallback pad (enumeratie only — geen claim) ──────────
+
+_USB_BACKEND = None
+_USB_BACKEND_ERR = ""
+try:
+    import usb.core
+    import usb.backend.libusb1
+    import libusb as _libusb_pkg
+    _dll_dir = os.path.join(
+        os.path.dirname(_libusb_pkg.__file__),
+        "_platform", "windows", "x86_64",
+    )
+    if os.path.isdir(_dll_dir):
+        try:
+            os.add_dll_directory(_dll_dir)
+        except Exception:
+            pass
+        _USB_BACKEND = usb.backend.libusb1.get_backend(
+            find_library=lambda x: os.path.join(_dll_dir, "libusb-1.0.dll")
+        )
     if _USB_BACKEND is None:
-        return None, f"USB-backend niet beschikbaar: {_USB_BACKEND_ERR}"
+        _USB_BACKEND_ERR = "libusb-1.0.dll niet gevonden"
+except Exception as e:
+    _USB_BACKEND_ERR = f"pyusb/libusb import faal: {e}"
+
+
+DNP_VENDOR_ID = 0x1452
+QW410_PRODUCT_IDS = (0x9201,)
+
+
+def read_via_usb_enum() -> DNPStatus:
+    """Enumereer USB-devices, return DNPStatus met alleen connected-veld."""
+    status = DNPStatus(error_method="libusb1_enum")
+    if _USB_BACKEND is None:
+        status.detail = _USB_BACKEND_ERR
+        status.level = StatusLevel.UNKNOWN
+        return status
     try:
         for dev in usb.core.find(find_all=True, backend=_USB_BACKEND):
             if dev.idVendor == DNP_VENDOR_ID and dev.idProduct in QW410_PRODUCT_IDS:
-                return dev, ""
+                status.connected = True
+                status.level = StatusLevel.UNKNOWN  # we weten verder niks
+                status.label = "USB-printer aangesloten"
+                return status
     except Exception as e:
-        return None, f"USB-enumeratie fout: {e}"
-    return None, "QW410 niet aangesloten"
-
-
-def _claim_interface(dev):
-    """Open device + claim interface. Returnt (in_ep, out_ep, intf_num, error).
-
-    Voor libusb-win32 filter: set_configuration() is verplicht vóór claim.
-    Voor libusb-1.0 zonder filter: claim faalt (DNP-driver houdt device),
-    we returnen graceful met error-string.
-    """
-    # set_configuration verplicht voor libusb0; faalt veilig bij libusb1
-    try:
-        dev.set_configuration()
-    except Exception:
-        pass
-    try:
-        cfg = dev.get_active_configuration()
-    except Exception as e:
-        return None, None, None, (
-            f"Geen libusb-toegang: {e} "
-            f"(libusb-win32 filter niet geïnstalleerd of niet actief?)"
-        )
-
-    # Zoek bulk IN + bulk OUT endpoints op interface 0 (printer-class)
-    in_ep = None
-    out_ep = None
-    intf_num = None
-    for intf in cfg:
-        try:
-            usb.util.claim_interface(dev, intf.bInterfaceNumber)
-        except Exception as e:
-            return None, None, None, f"claim_interface({intf.bInterfaceNumber}) fout: {e}"
-        intf_num = intf.bInterfaceNumber
-        for ep in intf:
-            ep_type = ep.bmAttributes & 0x03
-            if ep_type != 0x02:  # BULK
-                continue
-            if ep.bEndpointAddress & 0x80:
-                in_ep = ep
-            else:
-                out_ep = ep
-        if in_ep and out_ep:
-            break
-    if not (in_ep and out_ep):
-        return None, None, intf_num, "Geen bulk IN/OUT endpoints gevonden"
-    return in_ep, out_ep, intf_num, ""
-
-
-def _send_cmd_get_response(dev, in_ep, out_ep, cmd_bytes, timeout_ms=2000):
-    """Stuur een DNP-commando + lees response. Returnt (response_bytes, error)."""
-    try:
-        out_ep.write(cmd_bytes, timeout=timeout_ms)
-    except Exception as e:
-        return None, f"write fout: {e}"
-    # Eerst 8-byte length header
-    try:
-        len_buf = in_ep.read(8, timeout=timeout_ms)
-    except Exception as e:
-        return None, f"read len fout: {e}"
-    try:
-        length = int(bytes(len_buf).decode("ascii").strip())
-    except Exception as e:
-        return None, f"len parse fout: {e} (raw={bytes(len_buf)!r})"
-    if length <= 0:
-        return b"", ""
-    # Dan de data
-    try:
-        data = in_ep.read(length, timeout=timeout_ms)
-    except Exception as e:
-        return None, f"read data fout: {e}"
-    return bytes(data), ""
+        status.detail = f"USB-enumeratie fout: {e}"
+        return status
+    # Niet gevonden
+    status.connected = False
+    status.level = StatusLevel.ERROR
+    status.label = "Printer niet aangesloten"
+    status.detail = "Controleer USB-kabel en stroom"
+    return status
 
 
 # ── Hoog-niveau API ─────────────────────────────────────────────────
 
-def read_qw410_status(detailed: bool = True, timeout_ms: int = 2000) -> DNPStatus:
-    """Lees de QW410-status. Returnt altijd een DNPStatus-object — nooit raise.
+def read_qw410_status(printer_name: str = "DP-QW410 (Kopie 2)",
+                       detailed: bool = True,
+                       timeout_ms: int = 8000) -> DNPStatus:
+    """Lees de QW410-status. Returnt altijd een DNPStatus-object.
 
-    Bij elke faal-modus krijg je een sensible default zodat de UI iets
-    kan tonen:
-      - geen pyusb/libusb beschikbaar      → level=UNKNOWN, error_method="no_backend"
-      - QW410 niet aangesloten             → level=ERROR,   connected=False
-      - filter-driver niet geïnstalleerd   → level=UNKNOWN, error_method="claim_failed"
-      - timeout                            → level=UNKNOWN, error_method="timeout"
-      - succes                             → level=ok/warning/error obv code, connected=True
+    1. Probeer UI Automation (volledige status). Vereist uiautomation +
+       printer met DNP-driver geïnstalleerd.
+    2. Bij faal: fallback naar USB-enumeratie (alleen plug/unplug).
     """
-    status = DNPStatus()
+    # Pad 1: UI Automation
+    ui_status = read_via_ui_automation(printer_name, timeout_sec=timeout_ms/1000)
+    if ui_status and (ui_status.serial or ui_status.code is not None or ui_status.firmware):
+        return ui_status
 
-    dev, err = _find_device()
-    if dev is None:
-        if "niet aangesloten" in err:
-            status.level = StatusLevel.ERROR
-            status.connected = False
-            status.label = "Printer niet aangesloten"
-            status.detail = "Controleer USB-kabel en stroom"
-            status.error_method = "not_found"
-        else:
-            status.level = StatusLevel.UNKNOWN
-            status.error_method = "no_backend"
-            status.detail = err
-        return status
-
-    status.connected = True
-
-    in_ep, out_ep, intf_num, err = _claim_interface(dev)
-    if in_ep is None:
-        status.level = StatusLevel.UNKNOWN
-        status.error_method = "claim_failed"
-        status.detail = f"Filter-driver niet geïnstalleerd of niet actief? ({err})"
-        try:
-            usb.util.dispose_resources(dev)
-        except Exception:
-            pass
-        return status
-
-    try:
-        # 1. STATUS query — pure numeriek antwoord (bv "01200")
-        resp, err = _send_cmd_get_response(
-            dev, in_ep, out_ep,
-            _build_cmd(b"STATUS"),
-            timeout_ms=timeout_ms,
-        )
-        if resp is None:
-            status.level = StatusLevel.UNKNOWN
-            status.error_method = "timeout"
-            status.detail = err
-            return status
-
-        code = _parse_int(resp)
-        status.code = code
-        if code in STATUS_CODES:
-            label, level_str = STATUS_CODES[code]
-            status.label = label
-            status.level = StatusLevel(level_str)
-        else:
-            status.label = f"Onbekende code {code}"
-            status.level = StatusLevel.WARNING
-        status.error_method = f"libusb ({_USB_BACKEND_NAME})"
-
-        if detailed:
-            # 2. INFO MEDIA — antwoord "MT00000" → mediatype 0
-            resp, _err = _send_cmd_get_response(
-                dev, in_ep, out_ep,
-                _build_cmd(b"INFO", b"MEDIA"),
-                timeout_ms=timeout_ms,
-            )
-            if resp:
-                media_raw = _strip_prefix(resp, b"MT")
-                status.media_code = media_raw
-                status.media = _decode_media(media_raw)
-
-            # 3. MNT_RD COUNTER_LIFE — antwoord "CL0000038"
-            resp, _err = _send_cmd_get_response(
-                dev, in_ep, out_ep,
-                _build_cmd(b"MNT_RD", b"COUNTER_LIFE"),
-                timeout_ms=timeout_ms,
-            )
-            if resp:
-                cnt_str = _strip_prefix(resp, b"CL")
-                try:
-                    status.life_counter = int(cnt_str.strip())
-                except Exception:
-                    pass
-
-            # 4. INFO SERIAL_NUMBER — antwoord "QW4C45020823" gevolgd door \r + padding
-            resp, _err = _send_cmd_get_response(
-                dev, in_ep, out_ep,
-                _build_cmd(b"INFO", b"SERIAL_NUMBER"),
-                timeout_ms=timeout_ms,
-            )
-            if resp:
-                status.serial = _clean_response(resp)
-
-            # 5. INFO FW_VER — niet door alle modellen ondersteund (QW410 lijkt te timeouten)
-            try:
-                resp, _err = _send_cmd_get_response(
-                    dev, in_ep, out_ep,
-                    _build_cmd(b"INFO", b"FW_VER"),
-                    timeout_ms=max(timeout_ms // 2, 500),
-                )
-                if resp:
-                    status.firmware = _clean_response(resp)
-            except Exception:
-                pass  # FW_VER unsupported = OK
-
-        return status
-    finally:
-        # Altijd interface release + dispose, anders kan de DNP-driver er
-        # niet meer bij voor de volgende print
-        try:
-            if intf_num is not None:
-                usb.util.release_interface(dev, intf_num)
-        except Exception:
-            pass
-        try:
-            usb.util.dispose_resources(dev)
-        except Exception:
-            pass
-
-
-# ── Response-parsers (DNP-specifieke prefixes) ──────────────────────
-
-def _clean_response(b: bytes) -> str:
-    """Strip \\r, null-bytes, en trailing whitespace."""
-    try:
-        s = b.decode("ascii", errors="replace")
-    except Exception:
-        return ""
-    # Knip op \r en \x00, dan strippen
-    for sep in ("\r", "\x00"):
-        idx = s.find(sep)
-        if idx >= 0:
-            s = s[:idx]
-    return s.strip()
-
-
-def _strip_prefix(b: bytes, prefix: bytes) -> str:
-    """Strip de DNP-respons prefix (bv "MT" of "CL") en clean."""
-    if b.startswith(prefix):
-        b = b[len(prefix):]
-    return _clean_response(b)
-
-
-def _parse_int(b: bytes) -> int:
-    """Parse een numerieke DNP-respons. Return -1 bij faal."""
-    try:
-        return int(_clean_response(b))
-    except Exception:
-        return -1
-
-
-def _decode_media(code: str) -> str:
-    """Decode DNP media-code naar leesbare omschrijving."""
-    # Strip leading zeros (response is meestal zero-padded "00000")
-    try:
-        code = str(int(code)) if code.strip() else "0"
-    except ValueError:
-        pass
-    # Tabel uit Gutenprint dnpds40_print.c voor DS40/DS620/QW410-familie
-    # plus QW410-specifieke 100-serie codes (geverifieerd op echte hardware)
-    table = {
-        "0": "Geen media geladen",
-        "1": "5×3.5\" (DS40)",
-        "2": "6×4\"",
-        "3": "5×7\"",
-        "4": "6×8\"",
-        "5": "6×9\"",
-        "100": "4×4\" (QW410)",
-        "101": "4×4.5\" (QW410)",
-        "102": "4×6\" (QW410)",
-        "103": "4×8\" (QW410)",
-        "104": "4.5×4\" (QW410)",
-        "105": "4.5×4.5\" (QW410)",
-        "106": "4.5×6\" (QW410)",
-        "107": "4.5×8\" (QW410)",
-        # Nieuwe firmware / dye-sub QW410 media-codes
-        "150": "4×6\" (QW410, nieuwe firmware)",
-        "151": "4×4.5\" (QW410, nieuwe firmware)",
-        "152": "4×4\" (QW410, nieuwe firmware)",
-        "153": "4×8\" (QW410, nieuwe firmware)",
-    }
-    return table.get(code, f"Media-code {code}")
+    # Pad 2: USB enumeratie fallback
+    return read_via_usb_enum()
 
 
 # ── Thread-safe poller voor UI-integratie ────────────────────────────
 
 class StatusPoller:
-    """Background-poller met thread-safe access tot de laatste DNPStatus.
-
-    Niet automatisch gestart — caller doet .start() / .stop().
-    Read laatste status via .get(); registreer callback met .on_change().
-    """
-    def __init__(self, interval_sec: float = 5.0):
+    def __init__(self, interval_sec: float = 30.0, printer_name: str = "DP-QW410 (Kopie 2)"):
         self._interval = interval_sec
+        self._printer_name = printer_name
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -506,11 +468,9 @@ class StatusPoller:
     def stop(self):
         self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=3.0)
+            self._thread.join(timeout=10.0)
 
     def pause(self, paused: bool):
-        """Tijdelijk pauzeren — bv. tijdens print zelf (anders kunnen we
-        de USB-toegang verstoren)."""
         self._paused = paused
 
     def get(self) -> Optional[DNPStatus]:
@@ -518,33 +478,47 @@ class StatusPoller:
             return self._status
 
     def on_change(self, callback):
-        """Callback ontvangt nieuwe DNPStatus bij elke verandering van level/code."""
         self._callbacks.append(callback)
+
+    def force_refresh(self):
+        """Forceer onmiddellijke poll (bv. na 'Opnieuw checken' klik)."""
+        try:
+            new_status = read_qw410_status(self._printer_name)
+        except Exception as e:
+            new_status = DNPStatus(
+                level=StatusLevel.UNKNOWN,
+                error_method="exception",
+                detail=str(e),
+            )
+        self._update(new_status)
+
+    def _update(self, new_status: DNPStatus):
+        with self._lock:
+            changed = (
+                self._status is None
+                or self._status.level != new_status.level
+                or self._status.code != new_status.code
+            )
+            self._status = new_status
+        if changed:
+            for cb in list(self._callbacks):
+                try:
+                    cb(new_status)
+                except Exception as e:
+                    print(f"[DNP-STATUS] Callback-fout: {e}")
 
     def _loop(self):
         while not self._stop_event.is_set():
             if not self._paused:
                 try:
-                    new_status = read_qw410_status(detailed=True, timeout_ms=2000)
+                    new_status = read_qw410_status(self._printer_name)
                 except Exception as e:
                     new_status = DNPStatus(
                         level=StatusLevel.UNKNOWN,
                         error_method="poller_exception",
                         detail=str(e),
                     )
-                with self._lock:
-                    changed = (
-                        self._status is None
-                        or self._status.level != new_status.level
-                        or self._status.code != new_status.code
-                    )
-                    self._status = new_status
-                if changed:
-                    for cb in list(self._callbacks):
-                        try:
-                            cb(new_status)
-                        except Exception as e:
-                            print(f"[DNP-STATUS] Callback-fout (niet kritiek): {e}")
+                self._update(new_status)
             self._stop_event.wait(self._interval)
 
 
@@ -553,24 +527,24 @@ class StatusPoller:
 if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-    print("=" * 60)
-    print("  DNP QW410 status-test (libusb)")
-    print("=" * 60)
-    if _USB_BACKEND is None:
-        print(f"⚠️  USB-backend niet beschikbaar: {_USB_BACKEND_ERR}")
-    else:
-        print(f"✓ libusb-backend geladen")
-    print()
-
-    status = read_qw410_status(detailed=True)
+    print("=" * 64)
+    print("  DNP QW410 status-test (UI Automation pad)")
+    print("=" * 64)
+    t0 = time.monotonic()
+    status = read_qw410_status()
+    dt = time.monotonic() - t0
+    print(f"Tijd:         {dt:.1f}s")
     print(f"Level:        {status.level.value}")
     print(f"Code:         {status.code}")
     print(f"Label:        {status.label}")
-    print(f"Detail:       {status.detail}")
     print(f"Connected:    {status.connected}")
     print(f"Media:        {status.media} (raw: {status.media_code!r})")
+    print(f"Prints left:  {status.prints_remaining}/{status.prints_total}")
     print(f"Life counter: {status.life_counter}")
     print(f"Serial:       {status.serial!r}")
     print(f"Firmware:     {status.firmware!r}")
+    print(f"Color300dpi:  {status.color_profile_300dpi!r}")
+    print(f"ColorLowSpd:  {status.color_profile_low_speed!r}")
     print(f"Method:       {status.error_method}")
+    print(f"Detail:       {status.detail}")
     print(f"Blocking:     {status.is_blocking()}")

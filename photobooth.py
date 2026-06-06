@@ -1278,18 +1278,26 @@ class PhotoboothWindow(QMainWindow):
         self._periodic_refresh_timer.timeout.connect(self._periodic_refresh_tick)
         self._periodic_refresh_timer.start()
 
-        # DNP QW410 status-poller (libusb-route — vereist Zadig filter).
-        # Werkt graceful zonder filter (level=unknown, app blijft draaien).
-        # Zie DNP_STATUS_SETUP.md voor installatie-instructies.
+        # DNP QW410 status-poller — leest via UI Automation (geen filter,
+        # geen extra setup). Werkt graceful: als de DNP-driver/dialog
+        # niet beschikbaar is valt 'm terug op USB-enumeratie (alleen
+        # plug/unplug detectie).
         try:
             from dnp_status import StatusPoller
-            self._dnp_poller = StatusPoller(interval_sec=5.0)
+            # Printer-naam: gebruik de geconfigureerde printer (per
+            # settings.json). De UI-scrape opent de bijbehorende
+            # Voorkeursinstellingen dialog off-screen.
+            self._dnp_poller = StatusPoller(
+                interval_sec=30.0,
+                printer_name=config.PRINTER_NAME,
+            )
             # Cross-thread: poller draait op bg-thread, UI-update gaat via pyqtSignal
             self._dnp_poller.on_change(
                 lambda st: self._dnp_status_signal.emit(st)
             )
             self._dnp_poller.start()
-            print("[DNP-STATUS] Poller gestart (5s interval)")
+            print(f"[DNP-STATUS] Poller gestart (30s interval, "
+                  f"printer={config.PRINTER_NAME!r})")
         except Exception as e:
             print(f"[DNP-STATUS] Poller niet gestart: {e}")
             self._dnp_poller = None
@@ -11265,6 +11273,24 @@ class PhotoboothWindow(QMainWindow):
         pr_status.setWordWrap(True)
         pr_status.setStyleSheet(f"color: {pr_color}; background: transparent;")
         pr_lay.addWidget(pr_status)
+
+        # Prints-remaining indicator (PROMINENT — operator wil dit altijd zien)
+        if st and getattr(st, 'prints_remaining', None) is not None \
+                and getattr(st, 'prints_total', None):
+            remain = st.prints_remaining
+            total = st.prints_total
+            pct = int(100 * remain / max(1, total))
+            # Kleur: groen >50%, oranje 10-50%, rood <10%
+            if pct >= 50:
+                rem_color = config.COLOR_SUCCESS
+            elif pct >= 10:
+                rem_color = "#B07A00"
+            else:
+                rem_color = config.COLOR_DANGER
+            rem_lbl = QLabel(f"📊  {remain} / {total} prints over op de rol  ·  {pct}%")
+            rem_lbl.setFont(QFont("DM Sans", 13, QFont.Bold))
+            rem_lbl.setStyleSheet(f"color: {rem_color}; background: transparent;")
+            pr_lay.addWidget(rem_lbl)
 
         # Telemetrie-regel (alleen als beschikbaar)
         if st and (st.media or st.life_counter is not None or st.firmware or st.serial):
