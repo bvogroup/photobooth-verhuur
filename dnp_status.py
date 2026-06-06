@@ -34,27 +34,63 @@ from typing import Optional
 _USB_BACKEND = None
 _USB_BACKEND_ERR = ""
 
+# libusb0 DLL (van libusb-win32 filter — Premium status pad).
+# Eerst nieuwste install-locaties proberen, dan ingebouwde fallback uit
+# de libusb pip-package (libusb-1.0 generic — werkt alleen zonder filter).
+_LIBUSB0_DLL_CANDIDATES = [
+    r"C:\Program Files\LibUSB-Win32\bin\amd64\libusb0.dll",
+    r"C:\Program Files (x86)\LibUSB-Win32\bin\amd64\libusb0.dll",
+    r"C:\temp\libusb-bin-1.4.0.2\libusb-win32-bin-1.4.0.2\bin\amd64\libusb0.dll",
+]
+
 try:
     import usb.core
     import usb.util
+    import usb.backend.libusb0
     import usb.backend.libusb1
-    import libusb as _libusb_pkg
-    _dll_dir = os.path.join(
-        os.path.dirname(_libusb_pkg.__file__),
-        "_platform", "windows", "x86_64",
-    )
-    if os.path.isdir(_dll_dir):
+
+    # ── Pad 1: libusb0 (libusb-win32 filter) ── geeft volledige status
+    _libusb0_dll = next((p for p in _LIBUSB0_DLL_CANDIDATES if os.path.isfile(p)), None)
+    if _libusb0_dll:
         try:
-            os.add_dll_directory(_dll_dir)
-        except Exception:
-            pass
-        _USB_BACKEND = usb.backend.libusb1.get_backend(
-            find_library=lambda x: os.path.join(_dll_dir, "libusb-1.0.dll")
-        )
+            _USB_BACKEND = usb.backend.libusb0.get_backend(
+                find_library=lambda x: _libusb0_dll
+            )
+            if _USB_BACKEND is not None:
+                _USB_BACKEND_NAME = "libusb0"
+        except Exception as e:
+            _USB_BACKEND_ERR = f"libusb0 backend faal: {e}"
+
+    # ── Pad 2: libusb-1.0 (generic) ── alleen voor USB-enumeratie
+    # zonder claim. Filter niet vereist maar geen detail-status mogelijk.
     if _USB_BACKEND is None:
-        _USB_BACKEND_ERR = "libusb-1.0.dll niet gevonden"
+        try:
+            import libusb as _libusb_pkg
+            _dll_dir = os.path.join(
+                os.path.dirname(_libusb_pkg.__file__),
+                "_platform", "windows", "x86_64",
+            )
+            if os.path.isdir(_dll_dir):
+                try:
+                    os.add_dll_directory(_dll_dir)
+                except Exception:
+                    pass
+                _USB_BACKEND = usb.backend.libusb1.get_backend(
+                    find_library=lambda x: os.path.join(_dll_dir, "libusb-1.0.dll")
+                )
+                if _USB_BACKEND is not None:
+                    _USB_BACKEND_NAME = "libusb1"
+        except Exception as e:
+            _USB_BACKEND_ERR = f"libusb1 fallback faal: {e}"
+
+    if _USB_BACKEND is None and not _USB_BACKEND_ERR:
+        _USB_BACKEND_ERR = "geen libusb0.dll of libusb-1.0.dll gevonden"
 except Exception as e:
     _USB_BACKEND_ERR = f"pyusb/libusb import faal: {e}"
+    _USB_BACKEND_NAME = "none"
+else:
+    if "_USB_BACKEND_NAME" not in dir():
+        _USB_BACKEND_NAME = "none"
 
 
 # DNP QW410 USB identifiers (van Gutenprint dnpds40_backend.c)
@@ -173,27 +209,35 @@ def _find_device():
 
 
 def _claim_interface(dev):
-    """Open device + claim interface. Returnt (in_ep, out_ep, error)."""
+    """Open device + claim interface. Returnt (in_ep, out_ep, intf_num, error).
+
+    Voor libusb-win32 filter: set_configuration() is verplicht vóór claim.
+    Voor libusb-1.0 zonder filter: claim faalt (DNP-driver houdt device),
+    we returnen graceful met error-string.
+    """
+    # set_configuration verplicht voor libusb0; faalt veilig bij libusb1
     try:
-        # Probeer de active configuration te zetten — soms nodig op Windows
-        try:
-            dev.set_configuration()
-        except Exception:
-            # In gebruik door driver → mogelijk al geconfigureerd
-            pass
+        dev.set_configuration()
+    except Exception:
+        pass
+    try:
         cfg = dev.get_active_configuration()
     except Exception as e:
-        return None, None, f"Geen libusb-toegang: {e} (Zadig filter niet geïnstalleerd?)"
+        return None, None, None, (
+            f"Geen libusb-toegang: {e} "
+            f"(libusb-win32 filter niet geïnstalleerd of niet actief?)"
+        )
 
-    # Zoek bulk IN + bulk OUT endpoints
+    # Zoek bulk IN + bulk OUT endpoints op interface 0 (printer-class)
     in_ep = None
     out_ep = None
+    intf_num = None
     for intf in cfg:
-        # DNP-printers gebruiken doorgaans interface 0
         try:
             usb.util.claim_interface(dev, intf.bInterfaceNumber)
         except Exception as e:
-            return None, None, f"claim_interface fout: {e}"
+            return None, None, None, f"claim_interface({intf.bInterfaceNumber}) fout: {e}"
+        intf_num = intf.bInterfaceNumber
         for ep in intf:
             ep_type = ep.bmAttributes & 0x03
             if ep_type != 0x02:  # BULK
@@ -205,8 +249,8 @@ def _claim_interface(dev):
         if in_ep and out_ep:
             break
     if not (in_ep and out_ep):
-        return None, None, "Geen bulk IN/OUT endpoints gevonden"
-    return in_ep, out_ep, ""
+        return None, None, intf_num, "Geen bulk IN/OUT endpoints gevonden"
+    return in_ep, out_ep, intf_num, ""
 
 
 def _send_cmd_get_response(dev, in_ep, out_ep, cmd_bytes, timeout_ms=2000):
@@ -265,12 +309,11 @@ def read_qw410_status(detailed: bool = True, timeout_ms: int = 2000) -> DNPStatu
 
     status.connected = True
 
-    in_ep, out_ep, err = _claim_interface(dev)
+    in_ep, out_ep, intf_num, err = _claim_interface(dev)
     if in_ep is None:
         status.level = StatusLevel.UNKNOWN
         status.error_method = "claim_failed"
-        status.detail = f"Filter-driver niet geïnstalleerd? ({err})"
-        # Cleanup
+        status.detail = f"Filter-driver niet geïnstalleerd of niet actief? ({err})"
         try:
             usb.util.dispose_resources(dev)
         except Exception:
@@ -278,7 +321,7 @@ def read_qw410_status(detailed: bool = True, timeout_ms: int = 2000) -> DNPStatu
         return status
 
     try:
-        # 1. STATUS query
+        # 1. STATUS query — pure numeriek antwoord (bv "01200")
         resp, err = _send_cmd_get_response(
             dev, in_ep, out_ep,
             _build_cmd(b"STATUS"),
@@ -290,11 +333,7 @@ def read_qw410_status(detailed: bool = True, timeout_ms: int = 2000) -> DNPStatu
             status.detail = err
             return status
 
-        try:
-            code = int(resp.decode("ascii").strip())
-        except Exception:
-            code = -1
-
+        code = _parse_int(resp)
         status.code = code
         if code in STATUS_CODES:
             label, level_str = STATUS_CODES[code]
@@ -303,65 +342,125 @@ def read_qw410_status(detailed: bool = True, timeout_ms: int = 2000) -> DNPStatu
         else:
             status.label = f"Onbekende code {code}"
             status.level = StatusLevel.WARNING
-        status.error_method = "libusb"
+        status.error_method = f"libusb ({_USB_BACKEND_NAME})"
 
         if detailed:
-            # 2. INFO MEDIA
+            # 2. INFO MEDIA — antwoord "MT00000" → mediatype 0
             resp, _err = _send_cmd_get_response(
                 dev, in_ep, out_ep,
                 _build_cmd(b"INFO", b"MEDIA"),
                 timeout_ms=timeout_ms,
             )
             if resp:
-                media_raw = resp.decode("ascii", errors="replace").strip()
+                media_raw = _strip_prefix(resp, b"MT")
                 status.media_code = media_raw
-                status.media = MEDIA_CODES.get(media_raw, media_raw)
+                status.media = _decode_media(media_raw)
 
-            # 3. MNT_RD COUNTER_LIFE
+            # 3. MNT_RD COUNTER_LIFE — antwoord "CL0000038"
             resp, _err = _send_cmd_get_response(
                 dev, in_ep, out_ep,
                 _build_cmd(b"MNT_RD", b"COUNTER_LIFE"),
                 timeout_ms=timeout_ms,
             )
             if resp:
+                cnt_str = _strip_prefix(resp, b"CL")
                 try:
-                    status.life_counter = int(resp.decode("ascii").strip())
+                    status.life_counter = int(cnt_str.strip())
                 except Exception:
                     pass
 
-            # 4. INFO SERIAL_NUMBER
+            # 4. INFO SERIAL_NUMBER — antwoord "QW4C45020823" gevolgd door \r + padding
             resp, _err = _send_cmd_get_response(
                 dev, in_ep, out_ep,
                 _build_cmd(b"INFO", b"SERIAL_NUMBER"),
                 timeout_ms=timeout_ms,
             )
             if resp:
-                status.serial = resp.decode("ascii", errors="replace").strip()
+                status.serial = _clean_response(resp)
 
-            # 5. INFO FW_VER
-            resp, _err = _send_cmd_get_response(
-                dev, in_ep, out_ep,
-                _build_cmd(b"INFO", b"FW_VER"),
-                timeout_ms=timeout_ms,
-            )
-            if resp:
-                status.firmware = resp.decode("ascii", errors="replace").strip()
+            # 5. INFO FW_VER — niet door alle modellen ondersteund (QW410 lijkt te timeouten)
+            try:
+                resp, _err = _send_cmd_get_response(
+                    dev, in_ep, out_ep,
+                    _build_cmd(b"INFO", b"FW_VER"),
+                    timeout_ms=max(timeout_ms // 2, 500),
+                )
+                if resp:
+                    status.firmware = _clean_response(resp)
+            except Exception:
+                pass  # FW_VER unsupported = OK
 
         return status
     finally:
-        # Altijd opruimen, anders kan de DNP-driver er niet meer bij voor de print
+        # Altijd interface release + dispose, anders kan de DNP-driver er
+        # niet meer bij voor de volgende print
         try:
-            for intf in dev.get_active_configuration():
-                try:
-                    usb.util.release_interface(dev, intf.bInterfaceNumber)
-                except Exception:
-                    pass
+            if intf_num is not None:
+                usb.util.release_interface(dev, intf_num)
         except Exception:
             pass
         try:
             usb.util.dispose_resources(dev)
         except Exception:
             pass
+
+
+# ── Response-parsers (DNP-specifieke prefixes) ──────────────────────
+
+def _clean_response(b: bytes) -> str:
+    """Strip \\r, null-bytes, en trailing whitespace."""
+    try:
+        s = b.decode("ascii", errors="replace")
+    except Exception:
+        return ""
+    # Knip op \r en \x00, dan strippen
+    for sep in ("\r", "\x00"):
+        idx = s.find(sep)
+        if idx >= 0:
+            s = s[:idx]
+    return s.strip()
+
+
+def _strip_prefix(b: bytes, prefix: bytes) -> str:
+    """Strip de DNP-respons prefix (bv "MT" of "CL") en clean."""
+    if b.startswith(prefix):
+        b = b[len(prefix):]
+    return _clean_response(b)
+
+
+def _parse_int(b: bytes) -> int:
+    """Parse een numerieke DNP-respons. Return -1 bij faal."""
+    try:
+        return int(_clean_response(b))
+    except Exception:
+        return -1
+
+
+def _decode_media(code: str) -> str:
+    """Decode DNP media-code naar leesbare omschrijving."""
+    # Strip leading zeros (response is meestal zero-padded "00000")
+    try:
+        code = str(int(code)) if code.strip() else "0"
+    except ValueError:
+        pass
+    # Tabel uit Gutenprint dnpds40_print.c voor DS40/DS620/QW410-familie
+    table = {
+        "0": "Geen media geladen",
+        "1": "5×3.5\" (DS40)",
+        "2": "6×4\"",
+        "3": "5×7\"",
+        "4": "6×8\"",
+        "5": "6×9\"",
+        "100": "4×4\" (QW410)",
+        "101": "4×4.5\" (QW410)",
+        "102": "4×6\" (QW410)",
+        "103": "4×8\" (QW410)",
+        "104": "4.5×4\" (QW410)",
+        "105": "4.5×4.5\" (QW410)",
+        "106": "4.5×6\" (QW410)",
+        "107": "4.5×8\" (QW410)",
+    }
+    return table.get(code, f"Media-code {code}")
 
 
 # ── Thread-safe poller voor UI-integratie ────────────────────────────
