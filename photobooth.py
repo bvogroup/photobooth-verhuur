@@ -1574,6 +1574,24 @@ class PhotoboothWindow(QMainWindow):
         retry.clicked.connect(self._on_dnp_retry_clicked)
         lay.addWidget(retry, alignment=Qt.AlignCenter)
 
+        # 'Annuleer print' knop — alleen zichtbaar bij actieve pending print
+        cancel_print = QPushButton("✕  Annuleer print")
+        cancel_print.setCursor(Qt.PointingHandCursor)
+        cancel_print.setFont(QFont("DM Sans", 15, QFont.Bold))
+        cancel_print.setFixedHeight(56)
+        cancel_print.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); color: white; "
+            "border: 1px solid rgba(255,255,255,0.35); border-radius: 12px; "
+            "padding: 8px 36px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.28); }"
+        )
+        cancel_print.clicked.connect(self._on_dnp_overlay_cancel_print)
+        cancel_print.setVisible(
+            getattr(self, '_pending_print_copies', None) is not None
+        )
+        lay.addWidget(cancel_print, alignment=Qt.AlignCenter)
+        self._dnp_overlay_cancel_print_btn = cancel_print
+
         lay.addStretch()
 
         # ── Onderste rij: [info-knop  ◇  slotje] — altijd bereikbaar ─
@@ -1635,9 +1653,17 @@ class PhotoboothWindow(QMainWindow):
             self._dnp_overlay_msg.setText(f"{status.label}{code_str}")
             base_detail = self._dnp_advice_for(status)
         # Hint over pending print toevoegen als er nu een wacht
-        if getattr(self, '_pending_print_copies', None) is not None:
+        is_pending = getattr(self, '_pending_print_copies', None) is not None
+        if is_pending:
             base_detail += "\n\n✓  De print wordt automatisch verstuurd zodra dit opgelost is."
         self._dnp_overlay_detail.setText(base_detail)
+        # Annuleer-print knop alleen zichtbaar bij pending
+        if hasattr(self, '_dnp_overlay_cancel_print_btn') \
+                and self._dnp_overlay_cancel_print_btn is not None:
+            try:
+                self._dnp_overlay_cancel_print_btn.setVisible(is_pending)
+            except Exception:
+                pass
 
     def _dnp_advice_for(self, status):
         """Specifiek advies per QW410-foutcode."""
@@ -1678,6 +1704,124 @@ class PhotoboothWindow(QMainWindow):
             self._dnp_overlay_msg = None
             self._dnp_overlay_detail = None
 
+    def _refresh_cloud_uploads_ui(self):
+        """Herschrijf de per-booking lijst onder de Cloud-uploads card."""
+        if not hasattr(self, '_cloud_uploads_list') or self._cloud_uploads_list is None:
+            return
+        # Skip refresh als het settings-scherm niet open is (geen verspilling)
+        if getattr(self, 'state', None) != State.SETTINGS:
+            return
+        try:
+            from cloud_uploader import discover_pending_uploads
+            snapshots = discover_pending_uploads(config.EVENTS_DIR)
+        except Exception as e:
+            print(f"[CLOUD-UI] discover faalde: {e}")
+            return
+
+        # Clear oude widgets
+        lay = self._cloud_uploads_list.layout()
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        if not snapshots:
+            empty = QLabel("Geen upload-queues gevonden — alle foto's zijn al weg of er zijn nog geen events geweest.")
+            empty.setWordWrap(True)
+            empty.setFont(QFont("DM Sans", 11))
+            empty.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; padding: 10px;")
+            lay.addWidget(empty)
+            return
+
+        for booking_id, info in snapshots.items():
+            row = QFrame()
+            row.setStyleSheet(
+                f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
+                f"border: 1px solid {config.COLOR_BORDER}; border-radius: 8px; padding: 10px; }}"
+            )
+            row_lay = QVBoxLayout(row)
+            row_lay.setSpacing(4)
+
+            has_token = bool(info.get("token"))
+            token_marker = "✓ token" if has_token else "⚠ GEEN token (koppel event opnieuw)"
+            token_color = config.COLOR_SUCCESS if has_token else config.COLOR_DANGER
+
+            header = QLabel(f"<b>{booking_id[:8]}</b>  ·  {token_marker}")
+            header.setFont(QFont("DM Sans", 12, QFont.Bold))
+            header.setStyleSheet(f"color: {token_color}; background: transparent;")
+            row_lay.addWidget(header)
+
+            total = info.get("total", 0)
+            uploaded = info.get("uploaded", 0)
+            pending = info.get("pending", 0)
+            failed = info.get("failed", 0)
+            uploading = info.get("uploading", 0)
+            pct = int(100 * uploaded / max(1, total))
+            stat_line = (
+                f"Geüpload: {uploaded}/{total} ({pct}%)  ·  "
+                f"Wachtend: {pending}  ·  Bezig: {uploading}  ·  "
+                f"Mislukt: {failed}"
+            )
+            stat_lbl = QLabel(stat_line)
+            stat_lbl.setFont(QFont("DM Sans", 11))
+            stat_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+            row_lay.addWidget(stat_lbl)
+
+            # Per-booking actie-knop voor force-retry
+            btn = QPushButton("🔁 Opnieuw")
+            btn.setFont(QFont("DM Sans", 10, QFont.Bold))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(32)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {config.COLOR_ACCENT}; "
+                f"color: {config.COLOR_TEXT}; border: 1px solid {config.COLOR_BORDER}; "
+                f"border-radius: 6px; padding: 4px 14px; }}"
+                f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; "
+                f"color: {config.COLOR_TEXT_ON_PRIMARY}; }}"
+            )
+            btn.clicked.connect(lambda _c, bid=booking_id: self._on_cloud_retry_booking(bid))
+            row_lay.addWidget(btn, alignment=Qt.AlignRight)
+
+            lay.addWidget(row)
+
+    def _on_cloud_retry_booking(self, booking_id: str):
+        """Force-retry alle pending+failed van 1 booking."""
+        try:
+            from cloud_uploader import force_retry_all
+            res = force_retry_all(booking_id)
+            print(f"[CLOUD-UI] Force-retry {booking_id}: {res}")
+        except Exception as e:
+            print(f"[CLOUD-UI] retry fout: {e}")
+        self._refresh_cloud_uploads_ui()
+
+    def _on_cloud_retry_all_clicked(self):
+        """Force-retry voor ALLE gevonden bookings."""
+        try:
+            from cloud_uploader import discover_pending_uploads, force_retry_all
+            snapshots = discover_pending_uploads(config.EVENTS_DIR)
+            for bid in snapshots.keys():
+                res = force_retry_all(bid)
+                print(f"[CLOUD-UI] Retry-all {bid}: {res}")
+        except Exception as e:
+            print(f"[CLOUD-UI] retry-all fout: {e}")
+        self._refresh_cloud_uploads_ui()
+
+    def _on_cloud_clear_done_clicked(self):
+        """Voltooide uploads (state=uploaded) uit alle queues verwijderen."""
+        try:
+            from cloud_uploader import discover_pending_uploads, clear_uploaded
+            snapshots = discover_pending_uploads(config.EVENTS_DIR)
+            total = 0
+            for bid in snapshots.keys():
+                n = clear_uploaded(bid)
+                total += n
+                print(f"[CLOUD-UI] Cleared {bid}: {n}")
+            print(f"[CLOUD-UI] Totaal verwijderd: {total}")
+        except Exception as e:
+            print(f"[CLOUD-UI] clear-done fout: {e}")
+        self._refresh_cloud_uploads_ui()
+
     def _pause_dnp_poll(self, paused: bool):
         """Pauzeer/hervat de DNP-poller. Veilig om vaker te roepen.
 
@@ -1693,6 +1837,23 @@ class PhotoboothWindow(QMainWindow):
             self._dnp_poller.pause(paused)
         except Exception:
             pass
+
+    def _on_dnp_overlay_cancel_print(self):
+        """User klikt 'Annuleer print' op de fout-overlay → vergeet de
+        pending print. Overlay blijft staan tot de fout opgelost is
+        (operator wil 'm fixen, maar er hoeft geen print meer te volgen)."""
+        self._pending_print_copies = None
+        if hasattr(self, '_dnp_overlay_cancel_print_btn') \
+                and self._dnp_overlay_cancel_print_btn is not None:
+            try:
+                self._dnp_overlay_cancel_print_btn.setVisible(False)
+            except Exception:
+                pass
+        # Update detail-tekst (pending-hint moet weg)
+        st = getattr(self, '_dnp_last_status', None)
+        if st:
+            self._update_dnp_overlay_content(st)
+        print("[PRINT-PRECHECK] Pending print geannuleerd door operator")
 
     def _on_dnp_retry_clicked(self):
         """User klikt 'Opnieuw checken' — forceer een poller-tick."""
@@ -8372,9 +8533,12 @@ class PhotoboothWindow(QMainWindow):
         # Pakket-afhankelijke print-delay: standard wacht langer dan premium.
         # Tijdens deze delay toont het spinner-overlay dat de gast kan
         # annuleren of opnieuw fotograferen.
+        # SAFE DEFAULT: als pakket onbekend, kies "standard" (20 sec) zodat
+        # we per ongeluk geen premium service geven aan iemand die er niet
+        # voor betaald heeft.
         package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
-        delay_sec = {"premium": 5, "standard": 20}.get(package, 5)
-        print(f"[PRINTER] Pakket={package or '?'}, print-delay={delay_sec}s, copies={copies}")
+        delay_sec = {"premium": 5, "standard": 20}.get(package, 20)
+        print(f"[PRINTER] Pakket={package or 'onbekend'}, print-delay={delay_sec}s, copies={copies}")
         self._show_print_delay_overlay(copies=copies, delay_sec=delay_sec)
 
     def _actually_send_print(self, copies):
@@ -11128,6 +11292,67 @@ class PhotoboothWindow(QMainWindow):
         card_dnp_btn_lay.addWidget(dnp_open_btn)
         tab5_lay.addWidget(card_dnp_btn)
 
+        # ── Card: Cloud-uploads (queue status + force retry) ──
+        card_cloud, card_cloud_lay = self._settings_card("Cloud-uploads")
+        cloud_intro = QLabel(
+            "Foto's worden in de achtergrond naar de cloud geüpload. Bij "
+            "wifi-uitval blijft de queue intact en probeert hij elke minuut. "
+            "Hieronder per event de stand van zaken."
+        )
+        cloud_intro.setFont(QFont("DM Sans", 11))
+        cloud_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        cloud_intro.setWordWrap(True)
+        card_cloud_lay.addWidget(cloud_intro)
+
+        # Container waar de per-booking lijst in komt — wordt elke 3s
+        # ververst zolang het tabblad open staat.
+        self._cloud_uploads_list = QWidget()
+        self._cloud_uploads_list.setStyleSheet("background: transparent;")
+        cloud_list_lay = QVBoxLayout(self._cloud_uploads_list)
+        cloud_list_lay.setContentsMargins(0, 8, 0, 8)
+        cloud_list_lay.setSpacing(8)
+        card_cloud_lay.addWidget(self._cloud_uploads_list)
+
+        # Actie-knoppen
+        cloud_btn_row = QHBoxLayout()
+        cloud_btn_row.setSpacing(10)
+        retry_all_btn = QPushButton("🔁  Probeer alles opnieuw")
+        retry_all_btn.setMinimumHeight(40)
+        retry_all_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        retry_all_btn.setCursor(Qt.PointingHandCursor)
+        retry_all_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 8px; padding: 8px 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+        )
+        retry_all_btn.clicked.connect(self._on_cloud_retry_all_clicked)
+        cloud_btn_row.addWidget(retry_all_btn)
+
+        clear_done_btn = QPushButton("🗑  Voltooide opruimen")
+        clear_done_btn.setMinimumHeight(40)
+        clear_done_btn.setFont(QFont("DM Sans", 12))
+        clear_done_btn.setCursor(Qt.PointingHandCursor)
+        clear_done_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: white; border: none; border-radius: 8px; padding: 8px 16px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        clear_done_btn.clicked.connect(self._on_cloud_clear_done_clicked)
+        cloud_btn_row.addWidget(clear_done_btn)
+        cloud_btn_row.addStretch()
+        card_cloud_lay.addLayout(cloud_btn_row)
+
+        tab5_lay.addWidget(card_cloud)
+
+        # Auto-refresh timer voor de cloud-status (alleen wanneer tabblad zichtbaar)
+        self._cloud_refresh_timer = QTimer(self)
+        self._cloud_refresh_timer.setInterval(3000)
+        self._cloud_refresh_timer.timeout.connect(self._refresh_cloud_uploads_ui)
+        self._cloud_refresh_timer.start()
+        # Eerste refresh direct
+        QTimer.singleShot(100, self._refresh_cloud_uploads_ui)
+
         # Printer-modus (4x3 / 4x6 / 3strips) staat in de Layout-tab boven
         # de template-grid (niet meer hier).
 
@@ -11749,6 +11974,13 @@ class PhotoboothWindow(QMainWindow):
         # Pauzeer DNP-poll tijdens settings — anders kan UI Automation
         # focus stelen tijdens typen.
         self._pause_dnp_poll(True)
+        # Verberg printer-fout overlay als die openstaat — operator gaat
+        # nu naar instellingen, niet meer naar idle-flow. Overlay komt
+        # vanzelf terug bij terugkeer naar idle als de fout er nog is.
+        try:
+            self._hide_dnp_error_overlay()
+        except Exception:
+            pass
         self.state = State.SETTINGS
         self.setWindowFlags(
             Qt.Window
