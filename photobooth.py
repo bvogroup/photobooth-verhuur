@@ -901,6 +901,8 @@ class PhotoboothWindow(QMainWindow):
     _welcome_connectivity_signal = pyqtSignal(bool)
     # Periodic booking-refresh result (bg-thread → main thread)
     _periodic_refresh_signal = pyqtSignal(object, str)
+    # DNP QW410 status update (bg-thread → main thread). Carries dnp_status.DNPStatus.
+    _dnp_status_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -1001,6 +1003,11 @@ class PhotoboothWindow(QMainWindow):
         self._welcome_connectivity_signal.connect(self._welcome_apply_connectivity)
         # Periodic refresh result (bg-thread → main thread)
         self._periodic_refresh_signal.connect(self._periodic_refresh_apply)
+        # DNP QW410 status (libusb-route) — wordt later .start()'d in _do_startup_auth
+        self._dnp_poller = None
+        self._dnp_last_status = None
+        self._dnp_error_overlay = None
+        self._dnp_status_signal.connect(self._on_dnp_status_change_main)
         self.photos = []           # List of captured photo paths
         self.current_photo_num = 0
         self.strip_path = None
@@ -1271,6 +1278,22 @@ class PhotoboothWindow(QMainWindow):
         self._periodic_refresh_timer.timeout.connect(self._periodic_refresh_tick)
         self._periodic_refresh_timer.start()
 
+        # DNP QW410 status-poller (libusb-route — vereist Zadig filter).
+        # Werkt graceful zonder filter (level=unknown, app blijft draaien).
+        # Zie DNP_STATUS_SETUP.md voor installatie-instructies.
+        try:
+            from dnp_status import StatusPoller
+            self._dnp_poller = StatusPoller(interval_sec=5.0)
+            # Cross-thread: poller draait op bg-thread, UI-update gaat via pyqtSignal
+            self._dnp_poller.on_change(
+                lambda st: self._dnp_status_signal.emit(st)
+            )
+            self._dnp_poller.start()
+            print("[DNP-STATUS] Poller gestart (5s interval)")
+        except Exception as e:
+            print(f"[DNP-STATUS] Poller niet gestart: {e}")
+            self._dnp_poller = None
+
         # Wifi-monitor uitgeschakeld — gebruiker wil deze flow niet meer zien.
         # Methodes blijven bestaan voor backwards compat maar starten niet.
 
@@ -1420,6 +1443,169 @@ class PhotoboothWindow(QMainWindow):
             print("[PERIODIC-REFRESH] Booking + templates ververst")
         except Exception as e:
             print(f"[PERIODIC-REFRESH] Apply-fout: {e}")
+
+    def _on_dnp_status_change_main(self, status):
+        """Op main thread aangeroepen bij status-verandering van de QW410.
+
+        Logica:
+          - level=ERROR + connected=True  → toon fullscreen overlay met code+label
+          - level=ERROR + connected=False → toon overlay 'printer niet bereikbaar'
+          - level=WARNING                 → niets blokkeren, alleen loggen
+          - level=OK/INFO                 → verberg overlay als die open staat
+          - level=UNKNOWN                 → niks (filter niet geinstalleerd)
+        """
+        self._dnp_last_status = status
+        print(f"[DNP-STATUS] level={status.level.value} code={status.code} "
+              f"label={status.label!r} connected={status.connected} "
+              f"method={status.error_method}")
+
+        # Skip overlay tijdens actieve sessie — onderbreekt de gast
+        in_session = hasattr(self, 'state') and self.state != State.IDLE
+
+        from dnp_status import StatusLevel
+        should_show = status.is_blocking() and status.level == StatusLevel.ERROR
+        if should_show and not in_session:
+            self._show_dnp_error_overlay(status)
+        elif not should_show and self._dnp_error_overlay is not None:
+            self._hide_dnp_error_overlay()
+
+    def _show_dnp_error_overlay(self, status):
+        """Toon fullscreen rode overlay met printer-fout. Idempotent."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+
+        if self._dnp_error_overlay is not None:
+            # Update tekst maar laat overlay staan
+            self._update_dnp_overlay_content(status)
+            return
+
+        overlay = QWidget(self)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+        overlay.setStyleSheet(
+            "background: rgba(180,30,30,0.96);"
+        )
+        lay = QVBoxLayout(overlay)
+        lay.setContentsMargins(80, 80, 80, 80)
+        lay.setSpacing(24)
+        lay.addStretch()
+
+        icon = QLabel("⚠")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setFont(QFont("DM Sans", 96, QFont.Bold))
+        icon.setStyleSheet("color: white; background: transparent;")
+        lay.addWidget(icon)
+
+        title = QLabel("Printer-fout")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("DM Sans", 44, QFont.Bold))
+        title.setStyleSheet("color: white; background: transparent;")
+        lay.addWidget(title)
+
+        msg = QLabel()
+        msg.setAlignment(Qt.AlignCenter)
+        msg.setFont(QFont("DM Sans", 22))
+        msg.setWordWrap(True)
+        msg.setStyleSheet("color: white; background: transparent; padding: 0 40px;")
+        lay.addWidget(msg)
+
+        detail = QLabel()
+        detail.setAlignment(Qt.AlignCenter)
+        detail.setFont(QFont("DM Sans", 16))
+        detail.setWordWrap(True)
+        detail.setStyleSheet(
+            "color: rgba(255,255,255,0.75); background: transparent;"
+        )
+        lay.addWidget(detail)
+
+        lay.addStretch()
+
+        # 'Opnieuw checken' knop
+        retry = QPushButton("Opnieuw checken")
+        retry.setCursor(Qt.PointingHandCursor)
+        retry.setFont(QFont("DM Sans", 18, QFont.Bold))
+        retry.setFixedHeight(64)
+        retry.setStyleSheet(
+            "QPushButton { background: white; color: #b01e1e; "
+            "border-radius: 14px; padding: 8px 48px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.85); }"
+        )
+        retry.clicked.connect(self._on_dnp_retry_clicked)
+        lay.addWidget(retry, alignment=Qt.AlignCenter)
+
+        overlay.show()
+        overlay.raise_()
+        self._dnp_error_overlay = overlay
+        # Stash widget-refs voor latere updates
+        self._dnp_overlay_msg = msg
+        self._dnp_overlay_detail = detail
+        self._update_dnp_overlay_content(status)
+
+    def _update_dnp_overlay_content(self, status):
+        if not hasattr(self, '_dnp_overlay_msg') or self._dnp_overlay_msg is None:
+            return
+        if not status.connected:
+            self._dnp_overlay_msg.setText("Printer niet bereikbaar")
+            self._dnp_overlay_detail.setText(
+                "Controleer USB-kabel en stroomvoorziening.\n"
+                "De foto's worden niet verloren — de printer probeert het opnieuw "
+                "zodra de verbinding terug is."
+            )
+        else:
+            code_str = f"  (code {status.code})" if status.code else ""
+            self._dnp_overlay_msg.setText(f"{status.label}{code_str}")
+            advice = self._dnp_advice_for(status)
+            self._dnp_overlay_detail.setText(advice)
+
+    def _dnp_advice_for(self, status):
+        """Specifiek advies per QW410-foutcode."""
+        c = status.code or 0
+        if c == 1000:
+            return "Sluit de klep van de printer en wacht 5 seconden."
+        if c == 1010:
+            return "Plaats de opvangbak terug onderin de printer."
+        if c == 1100:
+            return "De papierrol is op — plaats een nieuwe rol."
+        if c == 1200:
+            return "Het kleurlint (ribbon) is op — plaats een nieuwe set."
+        if c == 1300:
+            return ("Papier is vastgelopen. Open de klep, verwijder eventueel "
+                    "vastzittend papier, en sluit de klep weer.")
+        if c == 1400:
+            return ("Lint-fout. Controleer of het lint correct is gespannen "
+                    "en niet gescheurd is.")
+        if c == 1500:
+            return "Verkeerd papierformaat geladen voor het huidige ontwerp."
+        if c in (2000, 2100, 2200, 2300, 2400, 2700, 3000, 3010):
+            return ("Hardware-fout. Zet de printer uit, wacht 10 seconden, "
+                    "en zet 'm weer aan. Bij herhaling: bel support.")
+        if c in (2500, 2600):
+            return "De printer is even te heet — wacht 1 minuut, dan probeert hij vanzelf opnieuw."
+        if c == 9999:
+            return "Communicatie-fout. Controleer USB-kabel en herstart eventueel de printer."
+        return status.detail or "Volg de instructies op de printer."
+
+    def _hide_dnp_error_overlay(self):
+        if self._dnp_error_overlay is not None:
+            try:
+                self._dnp_error_overlay.hide()
+                self._dnp_error_overlay.deleteLater()
+            except Exception:
+                pass
+            self._dnp_error_overlay = None
+            self._dnp_overlay_msg = None
+            self._dnp_overlay_detail = None
+
+    def _on_dnp_retry_clicked(self):
+        """User klikt 'Opnieuw checken' — forceer een poller-tick."""
+        if self._dnp_poller is None:
+            return
+        # Pause+resume om bg-thread sneller een nieuwe poll te laten doen
+        # is overkill — gewoon direct sync ophalen op deze thread.
+        from dnp_status import read_qw410_status
+        import threading
+        def _bg():
+            new_status = read_qw410_status()
+            QTimer.singleShot(0, lambda: self._dnp_status_signal.emit(new_status))
+        threading.Thread(target=_bg, daemon=True).start()
 
     def _background_auth_verify(self):
         """Background thread: verify session online, update plan if needed.
@@ -8027,6 +8213,14 @@ class PhotoboothWindow(QMainWindow):
                 return
 
         profile_key = self._resolve_dnp_profile_key(self.selected_template)
+        # Pauzeer DNP status-poller tijdens print om USB-conflict te vermijden.
+        # Resume gebeurt in _on_print_complete_with_quota + _on_print_failed.
+        if getattr(self, '_dnp_poller', None) is not None:
+            try:
+                self._dnp_poller.pause(True)
+                print("[DNP-STATUS] Poller gepauzeerd voor print")
+            except Exception as e:
+                print(f"[DNP-STATUS] Pause-fout (niet kritiek): {e}")
         self.print_thread = SubprocessPrintThread(self.strip_path, config.PRINTER_NAME, copies,
                                                   profile_key=profile_key)
         self.print_thread.print_complete.connect(
@@ -8041,6 +8235,12 @@ class PhotoboothWindow(QMainWindow):
 
     def _on_print_complete_with_quota(self, copies):
         """Wrapper rond _on_print_complete die ook het event-quotum bijwerkt."""
+        # Resume DNP status-poller — print is klaar, USB weer vrij
+        if getattr(self, '_dnp_poller', None) is not None:
+            try:
+                self._dnp_poller.pause(False)
+            except Exception:
+                pass
         ev = self.active_event
         if ev:
             quota = int(getattr(ev, 'event_print_quota', 0) or 0)
@@ -8511,6 +8711,12 @@ class PhotoboothWindow(QMainWindow):
         If that passed, the print almost certainly succeeded even if the
         subprocess reports an error (e.g. HiTi queue check race condition).
         """
+        # Resume DNP status-poller — print is afgerond (succes of falen)
+        if getattr(self, '_dnp_poller', None) is not None:
+            try:
+                self._dnp_poller.pause(False)
+            except Exception:
+                pass
         print(f"[PRINTER] Fout genegeerd (false positive): {error_msg}")
         # Always show success — real failures are caught by pre-print check
         if hasattr(self, '_sharing_print_status'):
