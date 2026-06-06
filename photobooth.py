@@ -1476,6 +1476,14 @@ class PhotoboothWindow(QMainWindow):
             self._show_dnp_error_overlay(status)
         elif not should_show and self._dnp_error_overlay is not None:
             self._hide_dnp_error_overlay()
+            # Pending print? Automatisch alsnog versturen zodra fout op is.
+            pending = getattr(self, '_pending_print_copies', None)
+            if pending is not None:
+                self._pending_print_copies = None
+                print(f"[PRINT-PRECHECK] Fout opgelost — pending print "
+                      f"({pending} kopie(ën)) wordt nu verstuurd")
+                # Korte delay om de driver tijd te geven na recovery
+                QTimer.singleShot(800, lambda c=pending: self._do_print_job(copies=c))
 
         # Welcome-page printer-banner update
         if hasattr(self, '_welcome_printer_banner'):
@@ -1606,7 +1614,7 @@ class PhotoboothWindow(QMainWindow):
             return
         if not status.connected:
             self._dnp_overlay_msg.setText("Printer niet bereikbaar")
-            self._dnp_overlay_detail.setText(
+            base_detail = (
                 "Controleer USB-kabel en stroomvoorziening.\n"
                 "De foto's worden niet verloren — de printer probeert het opnieuw "
                 "zodra de verbinding terug is."
@@ -1614,8 +1622,11 @@ class PhotoboothWindow(QMainWindow):
         else:
             code_str = f"  (code {status.code})" if status.code else ""
             self._dnp_overlay_msg.setText(f"{status.label}{code_str}")
-            advice = self._dnp_advice_for(status)
-            self._dnp_overlay_detail.setText(advice)
+            base_detail = self._dnp_advice_for(status)
+        # Hint over pending print toevoegen als er nu een wacht
+        if getattr(self, '_pending_print_copies', None) is not None:
+            base_detail += "\n\n✓  De print wordt automatisch verstuurd zodra dit opgelost is."
+        self._dnp_overlay_detail.setText(base_detail)
 
     def _dnp_advice_for(self, status):
         """Specifiek advies per QW410-foutcode."""
@@ -5331,6 +5342,8 @@ class PhotoboothWindow(QMainWindow):
         # Resume DNP-poll bij terugkeer naar idle (UI-Automation focus-steal
         # is alleen risico wanneer er pc-input wordt gegeven).
         self._pause_dnp_poll(False)
+        # Reset pending-print state — vorige sessie is afgelopen
+        self._pending_print_copies = None
         # Custom flow opruimen (idempotent — geen effect als niet actief)
         self._custom_flow_active = False
         self._custom_flow_paid_path = False
@@ -8308,13 +8321,19 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[PRINT-PRECHECK] force_refresh fout (niet kritiek): {e}")
         st = getattr(self, '_dnp_last_status', None)
         if st is not None and st.is_blocking():
-            print(f"[PRINT-PRECHECK] Blokkerende fout — print niet verstuurd "
-                  f"(level={st.level.value}, code={st.code}, label={st.label!r})")
+            print(f"[PRINT-PRECHECK] Blokkerende fout — print uitgesteld "
+                  f"(level={st.level.value}, code={st.code}, label={st.label!r}). "
+                  f"Auto-retry zodra fout opgelost.")
+            # Onthoud dat er een pending print is — _on_dnp_status_change_main
+            # zal 'm automatisch sturen zodra de printer weer OK is.
+            self._pending_print_copies = copies
             # Toon overlay (verschijnt of update bestaande)
             self._show_dnp_error_overlay(st)
             # Print-knop status text
             if hasattr(self, '_sharing_print_status'):
-                self._sharing_print_status.setText("Printer-fout — eerst verhelpen")
+                self._sharing_print_status.setText(
+                    "Printer-fout — print start automatisch na verhelpen"
+                )
                 self._sharing_print_status.show()
             return
 
