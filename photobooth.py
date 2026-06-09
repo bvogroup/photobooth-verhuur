@@ -1680,7 +1680,7 @@ class PhotoboothWindow(QMainWindow):
         import qrcode
         from io import BytesIO
 
-        url = "https://www.fotoboothje.nl/videoretos"
+        url = "https://www.fotoboothje.nl/videos"
 
         qr_box = QWidget(overlay)
         qr_box.setStyleSheet(
@@ -1715,7 +1715,7 @@ class PhotoboothWindow(QMainWindow):
         ql.addWidget(qr_label, alignment=Qt.AlignCenter)
 
         # Sub-label met URL
-        sub = QLabel("fotoboothje.nl/videoretos")
+        sub = QLabel("fotoboothje.nl/videos")
         sub.setAlignment(Qt.AlignCenter)
         sub.setFont(QFont("DM Sans", 10))
         sub.setStyleSheet("color: #555; background: transparent;")
@@ -1747,7 +1747,18 @@ class PhotoboothWindow(QMainWindow):
             )
         else:
             code_str = f"  (code {status.code})" if status.code else ""
-            self._dnp_overlay_msg.setText(f"{status.label}{code_str}")
+            # Label-override: bij "Papier op"/"Lint op" maar nog veel
+            # prints over → noem 't een 'fout' zodat klanten niet denken
+            # dat de rol echt leeg is (anti-verspilling).
+            label = status.label
+            prints_left = getattr(status, 'prints_remaining', None)
+            thr = self._DNP_REPLACE_THRESHOLD
+            if prints_left is not None and prints_left > thr:
+                if status.code == 1100:
+                    label = "Papier-fout"
+                elif status.code == 1200:
+                    label = "Lint-fout"
+            self._dnp_overlay_msg.setText(f"{label}{code_str}")
             base_detail = self._dnp_advice_for(status)
         # Hint over pending print toevoegen als er nu een wacht
         is_pending = getattr(self, '_pending_print_copies', None) is not None
@@ -1773,6 +1784,7 @@ class PhotoboothWindow(QMainWindow):
         Voor 'op'-meldingen (papier/lint) wordt prints_remaining meegewogen:
         meer dan 10 prints over = waarschijnlijk een jam of verkeerde plaatsing
         (NIET vervangen). 10 of minder = echt leeg (wel vervangen, beide samen).
+        Teksten zijn bewust kort gehouden voor leesbaarheid op het scherm.
         """
         c = status.code or 0
         prints_left = getattr(status, 'prints_remaining', None)
@@ -1780,83 +1792,73 @@ class PhotoboothWindow(QMainWindow):
 
         def _fix_not_replace(media_label: str, jam_hint: str) -> str:
             return (
-                f"⚠️  LET OP — er zijn nog {prints_left} prints over op deze rol!\n"
-                f"De printer denkt dat {media_label} op is, maar dat is niet zo.\n"
+                f"⚠️  Nog {prints_left} prints over — NIET vervangen!\n"
                 f"{jam_hint}\n\n"
-                "👉  Wat moet je doen?\n"
-                "1. Open de klep van de printer\n"
-                "2. Controleer of de media goed gespannen en recht zit\n"
-                "3. Plaats terug en sluit de klep\n\n"
-                "❌  NIET vervangen — als je media weggooit terwijl het niet "
-                "leeg is, zijn de kosten voor jou.\n"
-                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven.\n"
-                "📞  Lukt het niet? Neem contact met ons op."
+                "1. Open de klep\n"
+                f"2. Check of {media_label} recht en strak zit\n"
+                "3. Plaats terug + sluit klep\n\n"
+                "❌  Weggooien = kosten voor jou\n"
+                "📺  QR rechtsboven: uitlegvideo\n"
+                "📞  Lukt 't niet? Bel ons."
             )
 
         def _replace_both(media_label: str) -> str:
             return (
-                f"De {media_label} is op en moet vervangen worden.\n\n"
-                "⚠️  BELANGRIJK — vervang BEIDE samen:\n"
-                "• De papierrol\n"
-                "• Het kleurlint (ribbon)\n\n"
-                "👉  Stappen:\n"
-                "1. Vervang allebei de nieuwe set\n"
-                "2. Stop de gebruikte rol + lint terug in de doos\n"
-                "3. Sluit de klep van de printer\n\n"
-                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+                f"De {media_label} is op.\n\n"
+                "⚠️  Vervang BEIDE samen:\n"
+                "• Papierrol  • Kleurlint\n"
+                "(gebruikte set terug in de doos)\n\n"
+                "📺  QR rechtsboven: uitlegvideo"
             )
 
         if c == 1000:
-            return "Sluit de klep van de printer en wacht 5 seconden."
+            return "Sluit de klep en wacht 5 sec."
         if c == 1010:
             return "Plaats de opvangbak terug onderin de printer."
         if c == 1100:  # Paper end
             if prints_left is not None and prints_left > thr:
                 return _fix_not_replace(
                     "het papier",
-                    "Waarschijnlijk zit het papier scheef of is het vastgelopen."
+                    "Het papier zit waarschijnlijk scheef of klem."
                 )
             return _replace_both("papierrol")
         if c == 1200:  # Ribbon end
             if prints_left is not None and prints_left > thr:
                 return _fix_not_replace(
                     "het lint",
-                    "Waarschijnlijk is het lint gescheurd of niet goed gespannen."
+                    "Het lint is waarschijnlijk slap of scheef."
                 )
             return _replace_both("ribbon")
         if c == 1300:  # Paper jam
             return (
-                "Papier is vastgelopen.\n\n"
-                "👉  Stappen:\n"
+                "Papier vastgelopen.\n\n"
                 "1. Open de klep\n"
-                "2. Verwijder voorzichtig het vastzittende papier\n"
-                "3. Sluit de klep weer\n\n"
-                "❌  Vervang het papier ALLEEN als het écht beschadigd is "
-                "én er nog maar weinig prints over zijn.\n"
-                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+                "2. Verwijder voorzichtig het papier\n"
+                "3. Sluit de klep\n\n"
+                "❌  Vervang alleen bij echte schade\n"
+                "📺  QR rechtsboven: uitlegvideo"
             )
         if c == 1400:  # Ribbon error
             if prints_left is not None and prints_left > thr:
                 return _fix_not_replace(
                     "het lint",
-                    "Waarschijnlijk zit het lint niet goed gespannen of is het scheef."
+                    "Het lint zit niet goed gespannen of scheef."
                 )
             return (
-                "Lint-fout. Controleer of het lint correct is gespannen "
-                "en niet gescheurd is.\n\n"
-                "Als het lint echt beschadigd is: vervang BEIDE (lint + papier).\n"
-                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+                "Lint-fout — check spanning + scheuren.\n"
+                "Bij echte schade: vervang BEIDE.\n\n"
+                "📺  QR rechtsboven: uitlegvideo"
             )
         if c == 1500:
-            return "Verkeerd papierformaat geladen voor het huidige ontwerp."
+            return "Verkeerd papierformaat voor dit ontwerp."
         if c in (2000, 2100, 2200, 2300, 2400, 2700, 3000, 3010):
-            return ("Hardware-fout. Zet de printer uit, wacht 10 seconden, "
-                    "en zet 'm weer aan.\n📞  Bij herhaling: bel support.")
+            return ("Hardware-fout. Printer uit, 10 sec wachten, weer aan.\n"
+                    "📞  Bij herhaling: bel support.")
         if c in (2500, 2600):
-            return "De printer is even te heet — wacht 1 minuut, dan probeert hij vanzelf opnieuw."
+            return "Printer te heet — wacht 1 min, probeert vanzelf opnieuw."
         if c == 9999:
-            return ("Communicatie-fout. Controleer de USB-kabel en herstart "
-                    "eventueel de printer.\n📺  Uitlegvideo via QR-code rechtsboven.")
+            return ("Communicatie-fout. Check USB-kabel + herstart printer.\n"
+                    "📺  QR rechtsboven: uitlegvideo")
         return status.detail or "Volg de instructies op de printer."
 
     def _hide_dnp_error_overlay(self):

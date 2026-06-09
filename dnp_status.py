@@ -697,6 +697,43 @@ class StatusPoller:
                         # Dialog kapot of UI Automation niet beschikbaar →
                         # fallback USB-enumeratie
                         new_status = read_via_usb_enum()
+                    else:
+                        # KRITISCHE CROSS-CHECK: UI Automation kan een
+                        # 'succesvolle' read teruggeven ook als de printer
+                        # offline is — de Windows-driver toont gewoon de
+                        # laatste cached waardes. Daarom altijd USB-enum
+                        # erbij om écht plug/unplug te detecteren.
+                        try:
+                            usb_check = read_via_usb_enum()
+                            # USB enum gebruikt 'libusb1_enum' alleen als
+                            # backend WERKT — anders is method leeg/anders.
+                            # Bij werkende backend + device niet gevonden →
+                            # printer is echt offline, override UI-status.
+                            # NB: level==ERROR betekent backend werkt +
+                            # device niet gevonden. Bij ontbrekende backend
+                            # is level=UNKNOWN — dan kunnen we niets zeggen.
+                            if (usb_check.error_method == "libusb1_enum"
+                                    and not usb_check.connected
+                                    and usb_check.level == StatusLevel.ERROR):
+                                print(f"[DNP-STATUS] USB-enum zegt OFFLINE; "
+                                      f"UI Automation gaf {new_status.label!r} "
+                                      f"(stale). Override naar offline.")
+                                # Bewaar UI Automation tellers indien aanwezig
+                                # (handig voor 'prints over' bij re-connect)
+                                preserved_prints_remain = new_status.prints_remaining
+                                preserved_prints_total = new_status.prints_total
+                                new_status = usb_check
+                                new_status.prints_remaining = preserved_prints_remain
+                                new_status.prints_total = preserved_prints_total
+                            # Indien UI Automation 'Communication error' code
+                            # gaf — eveneens markeren als offline (driver
+                            # eigen detectie).
+                            elif new_status.code == 9999:
+                                new_status.connected = False
+                                if new_status.level != StatusLevel.ERROR:
+                                    new_status.level = StatusLevel.ERROR
+                        except Exception as ce:
+                            print(f"[DNP-STATUS] USB cross-check faalde: {ce}")
                 except Exception as e:
                     new_status = DNPStatus(
                         level=StatusLevel.UNKNOWN,
