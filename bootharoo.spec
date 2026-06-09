@@ -36,6 +36,9 @@ a = Analysis(
         (os.path.join(app_dir, 'idle_defaults'), 'idle_defaults'),
         # Sound effects (printer-busy MP3, evt. beeps)
         (os.path.join(app_dir, 'sounds'), 'sounds'),
+        # DNP QW410 visuele hulp-plaatjes (vertaald uit handleiding)
+        (os.path.join(app_dir, 'resources', 'dnp_help'),
+         os.path.join('resources', 'dnp_help')),
         # Print worker subprocess script
         (os.path.join(app_dir, 'print_worker.py'), '.'),
         # Camera logo (no text version, used in login screen and splash)

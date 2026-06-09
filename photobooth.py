@@ -1603,6 +1603,20 @@ class PhotoboothWindow(QMainWindow):
         retry.clicked.connect(self._on_dnp_retry_clicked)
         lay.addWidget(retry, alignment=Qt.AlignCenter)
 
+        # 'Stappenplan met plaatjes' knop — visuele uitleg uit DNP-handleiding
+        help_btn = QPushButton("📖  Stappenplan met plaatjes")
+        help_btn.setCursor(Qt.PointingHandCursor)
+        help_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        help_btn.setFixedHeight(60)
+        help_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.92); color: #b01e1e; "
+            "border: none; border-radius: 14px; padding: 8px 36px; }"
+            "QPushButton:hover { background: white; }"
+        )
+        help_btn.clicked.connect(self._on_dnp_help_clicked)
+        lay.addWidget(help_btn, alignment=Qt.AlignCenter)
+        self._dnp_overlay_help_btn = help_btn
+
         # 'Annuleer print' knop — alleen zichtbaar bij actieve pending print
         cancel_print = QPushButton("✕  Annuleer print")
         cancel_print.setCursor(Qt.PointingHandCursor)
@@ -1772,6 +1786,184 @@ class PhotoboothWindow(QMainWindow):
                 self._dnp_overlay_cancel_print_btn.setVisible(is_pending)
             except Exception:
                 pass
+        # Help-knop alleen tonen als er visuele uitleg is voor deze code
+        if hasattr(self, '_dnp_overlay_help_btn') \
+                and self._dnp_overlay_help_btn is not None:
+            try:
+                import dnp_help
+                code_for_help = status.code
+                # Bij 'connected=False' is er geen specifieke code, gebruik 9999
+                if not status.connected and not code_for_help:
+                    code_for_help = 9999
+                has_help = dnp_help.get_help(code_for_help) is not None
+                self._dnp_overlay_help_btn.setVisible(has_help)
+                self._dnp_overlay_help_code = code_for_help if has_help else None
+            except Exception as e:
+                print(f"[DNP-HELP] visibility-check fout: {e}")
+                self._dnp_overlay_help_btn.setVisible(False)
+
+    def _on_dnp_help_clicked(self):
+        """Open dialog met visuele DNP-handleiding-stappen voor de huidige fout."""
+        code = getattr(self, '_dnp_overlay_help_code', None)
+        if code is None and self._dnp_last_status is not None:
+            code = self._dnp_last_status.code
+        if code is None:
+            return
+        self._show_dnp_help_dialog(code)
+
+    def _show_dnp_help_dialog(self, code: int):
+        """Toon fullscreen dialog met vertaalde handleiding-stappen + plaatjes."""
+        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                     QPushButton, QScrollArea, QWidget, QFrame)
+        import dnp_help
+
+        help_data = dnp_help.get_help(code)
+        if not help_data:
+            return
+        steps = dnp_help.steps_with_existing_images(code)
+
+        dlg = QDialog(self)
+        dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        dlg.setModal(True)
+        dlg.setStyleSheet(f"background: {config.COLOR_BG};")
+        # Fullscreen
+        sw, sh = self.width(), self.height()
+        dlg.setFixedSize(int(sw * 0.92), int(sh * 0.92))
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Header
+        header = QFrame()
+        header.setStyleSheet(
+            f"background: #b01e1e; border-top-left-radius: 14px; "
+            f"border-top-right-radius: 14px;"
+        )
+        header.setFixedHeight(80)
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(28, 12, 18, 12)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        tl = QLabel(f"📖  {help_data['title']}")
+        tl.setFont(QFont("DM Sans", 22, QFont.Bold))
+        tl.setStyleSheet("color: white; background: transparent;")
+        title_box.addWidget(tl)
+        sub = QLabel(f"Foutcode {code} — bron: DNP QW410 handleiding")
+        sub.setFont(QFont("DM Sans", 11))
+        sub.setStyleSheet("color: rgba(255,255,255,0.85); background: transparent;")
+        title_box.addWidget(sub)
+        hl.addLayout(title_box, stretch=1)
+
+        close_btn = QPushButton("✕  Sluiten")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
+        close_btn.setFixedSize(150, 50)
+        close_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.18); color: white; "
+            "border: 1px solid rgba(255,255,255,0.4); border-radius: 10px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.3); }"
+        )
+        close_btn.clicked.connect(dlg.accept)
+        hl.addWidget(close_btn)
+        root.addWidget(header)
+
+        # Scrollable stappen
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            f"QScrollBar:vertical {{ background: {config.COLOR_BG}; width: 16px; }}"
+            f"QScrollBar::handle:vertical {{ background: {config.COLOR_BORDER}; "
+            f"border-radius: 8px; min-height: 60px; }}"
+        )
+        from PyQt5.QtWidgets import QScroller
+        QScroller.grabGesture(scroll.viewport(), QScroller.LeftMouseButtonGesture)
+
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(40, 30, 40, 30)
+        cl.setSpacing(28)
+
+        if not steps:
+            empty = QLabel("Geen stappen beschikbaar voor deze code.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setFont(QFont("DM Sans", 16))
+            cl.addWidget(empty)
+
+        max_img_w = int(sw * 0.55)
+        for idx, (img_path, txt) in enumerate(steps, 1):
+            step_frame = QFrame()
+            step_frame.setStyleSheet(
+                f"background: {config.COLOR_CARD_BG}; "
+                f"border-radius: 14px;"
+            )
+            sl = QVBoxLayout(step_frame)
+            sl.setContentsMargins(24, 20, 24, 20)
+            sl.setSpacing(14)
+
+            # Step number
+            num = QLabel(f"Stap {idx} van {len(steps)}")
+            num.setFont(QFont("DM Sans", 11, QFont.Bold))
+            num.setStyleSheet(f"color: {config.COLOR_PRIMARY_HOVER}; background: transparent;")
+            sl.addWidget(num)
+
+            # Image (indien aanwezig)
+            if img_path:
+                pix = QPixmap(img_path)
+                if not pix.isNull():
+                    pix = pix.scaled(max_img_w, int(sh * 0.55),
+                                     Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    img_lbl = QLabel()
+                    img_lbl.setPixmap(pix)
+                    img_lbl.setAlignment(Qt.AlignCenter)
+                    img_lbl.setStyleSheet("background: white; border-radius: 10px; padding: 8px;")
+                    sl.addWidget(img_lbl, alignment=Qt.AlignCenter)
+
+            # Tekst
+            tlbl = QLabel(txt)
+            tlbl.setFont(QFont("DM Sans", 14))
+            tlbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+            tlbl.setWordWrap(True)
+            sl.addWidget(tlbl)
+
+            cl.addWidget(step_frame)
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
+
+        # Bottom: nog een sluit-knop voor lange dialogen
+        bottom = QFrame()
+        bottom.setStyleSheet(f"background: {config.COLOR_CARD_BG}; "
+                             f"border-bottom-left-radius: 14px; "
+                             f"border-bottom-right-radius: 14px;")
+        bottom.setFixedHeight(80)
+        bl = QHBoxLayout(bottom)
+        bl.setContentsMargins(28, 14, 28, 14)
+
+        done_btn = QPushButton("✓  Klaar — terug naar foutmelding")
+        done_btn.setCursor(Qt.PointingHandCursor)
+        done_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        done_btn.setFixedHeight(52)
+        done_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 12px; padding: 8px 40px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+        )
+        done_btn.clicked.connect(dlg.accept)
+        bl.addStretch()
+        bl.addWidget(done_btn)
+        bl.addStretch()
+        root.addWidget(bottom)
+
+        # Center on screen
+        dlg.move(
+            self.x() + (self.width() - dlg.width()) // 2,
+            self.y() + (self.height() - dlg.height()) // 2,
+        )
+        dlg.exec_()
 
     # Drempel: bij meer dan dit aantal prints over is "Paper end" / "Ribbon end"
     # vrijwel zeker GEEN echte lege rol, maar een jam / scheur / verkeerd
