@@ -246,6 +246,19 @@ class PinDialog(QDialog):
         ok_btn.clicked.connect(self._on_ok)
         lay.addWidget(ok_btn)
 
+        # Hint voor verhuurders — alleen de huurder kent de code
+        hint = QLabel(
+            "De huurder van de photobooth kan deze code vinden\nin zijn/haar boekingsportaal!"
+        )
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("DM Sans", 11))
+        hint.setStyleSheet(
+            f"color: {config.COLOR_TEXT_DIM}; background: transparent; "
+            f"padding-top: 8px;"
+        )
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
     def _on_key(self, key):
         if len(self._entered) < 8:
             self._entered += key
@@ -271,7 +284,7 @@ class PinDialog(QDialog):
     def get_pin(parent, title="Toegangscode"):
         """Show PIN dialog and return (entered_pin, ok). Blocks until closed."""
         dialog = PinDialog(parent, title)
-        dialog.setFixedSize(440, 660)
+        dialog.setFixedSize(440, 740)
         # Center on screen
         from PyQt5.QtWidgets import QApplication
         screen = QApplication.primaryScreen()
@@ -279,7 +292,7 @@ class PinDialog(QDialog):
             sg = screen.geometry()
             dialog.move(
                 sg.x() + (sg.width() - 440) // 2,
-                sg.y() + (sg.height() - 660) // 2,
+                sg.y() + (sg.height() - 740) // 2,
             )
         dialog.raise_()
         dialog.activateWindow()
