@@ -903,6 +903,8 @@ class PhotoboothWindow(QMainWindow):
     _periodic_refresh_signal = pyqtSignal(object, str)
     # DNP QW410 status update (bg-thread → main thread). Carries dnp_status.DNPStatus.
     _dnp_status_signal = pyqtSignal(object)
+    # Idle-page wifi check (bg-thread → main thread) — toont/verbergt wifi-tip
+    _idle_wifi_tip_signal = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -1008,6 +1010,12 @@ class PhotoboothWindow(QMainWindow):
         self._dnp_last_status = None
         self._dnp_error_overlay = None
         self._dnp_status_signal.connect(self._on_dnp_status_change_main)
+        # Idle-page wifi-tip signal (bg-thread → main thread)
+        self._idle_wifi_tip_signal.connect(self._on_idle_wifi_state)
+        # Timer voor 2-sec wifi-check op idle scherm (zelf gestart in _go_idle)
+        self._idle_wifi_check_timer = QTimer(self)
+        self._idle_wifi_check_timer.setInterval(2000)
+        self._idle_wifi_check_timer.timeout.connect(self._idle_wifi_check_tick)
         self.photos = []           # List of captured photo paths
         self.current_photo_num = 0
         self.strip_path = None
@@ -3337,7 +3345,106 @@ class PhotoboothWindow(QMainWindow):
         self._idle_lock_btn.clicked.connect(self._on_lock_clicked)
         self._idle_lock_btn.raise_()
 
+        # Wifi-tip popup onderaan (alleen bij geen wifi)
+        # Stijl past bij de software-popups (warm gold accent, niet rood)
+        self._idle_wifi_tip = QFrame(page)
+        self._idle_wifi_tip.setStyleSheet(
+            f"QFrame {{ background: {config.COLOR_CARD_BG}; "
+            f"border: 1px solid {config.COLOR_BORDER}; "
+            f"border-radius: 14px; }}"
+        )
+        wifi_lay = QHBoxLayout(self._idle_wifi_tip)
+        wifi_lay.setContentsMargins(18, 12, 18, 12)
+        wifi_lay.setSpacing(14)
+        wifi_icon = QLabel("📶")
+        wifi_icon.setFont(QFont("DM Sans", 22))
+        wifi_icon.setStyleSheet(f"color: {config.COLOR_PRIMARY}; background: transparent;")
+        wifi_lay.addWidget(wifi_icon)
+        wifi_text = QLabel(
+            "<b>TIP</b> — Verbind de photobooth met wifi en download "
+            "je foto's direct op je telefoon."
+        )
+        wifi_text.setFont(QFont("DM Sans", 13))
+        wifi_text.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        wifi_text.setWordWrap(True)
+        wifi_lay.addWidget(wifi_text, stretch=1)
+        wifi_btn = QPushButton("Stel wifi in")
+        wifi_btn.setCursor(Qt.PointingHandCursor)
+        wifi_btn.setFont(QFont("DM Sans", 13, QFont.Bold))
+        wifi_btn.setMinimumHeight(42)
+        wifi_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 10px; padding: 8px 22px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
+        )
+        wifi_btn.clicked.connect(self._on_idle_wifi_setup_clicked)
+        wifi_lay.addWidget(wifi_btn)
+        self._idle_wifi_tip.setFixedHeight(70)
+        self._idle_wifi_tip.hide()
+        self._idle_wifi_tip_page = page  # voor positioning
+
         return page
+
+    def _position_idle_wifi_tip(self):
+        """Positioneer de wifi-tip onderaan, gecentreerd horizontaal."""
+        if not hasattr(self, '_idle_wifi_tip') or self._idle_wifi_tip is None:
+            return
+        page = getattr(self, '_idle_wifi_tip_page', None)
+        if not page:
+            return
+        w = min(700, page.width() - 60)
+        h = self._idle_wifi_tip.height()
+        x = (page.width() - w) // 2
+        # Net boven de onderkant — niet helemaal tegen rand vanwege lock-btn
+        y = page.height() - h - 40
+        self._idle_wifi_tip.setGeometry(x, y, w, h)
+        self._idle_wifi_tip.raise_()
+
+    def _on_idle_wifi_setup_clicked(self):
+        """Open Windows wifi-instellingen popup."""
+        try:
+            import os as _os
+            _os.startfile("ms-settings:network-wifi")
+            print("[WIFI] Windows wifi-instellingen geopend")
+        except Exception as e:
+            print(f"[WIFI] Kon settings niet openen: {e}")
+
+    def _idle_wifi_check_tick(self):
+        """Periodieke check (elke 2s) op de idle-page: probeer een snelle
+        TCP-connectie naar 1.1.1.1:53 in een bg-thread; toon/verberg de
+        wifi-tip op basis van resultaat."""
+        if getattr(self, 'state', None) != State.IDLE:
+            # State is veranderd — timer + popup opruimen
+            if hasattr(self, '_idle_wifi_check_timer') and self._idle_wifi_check_timer.isActive():
+                self._idle_wifi_check_timer.stop()
+            if hasattr(self, '_idle_wifi_tip') and self._idle_wifi_tip is not None \
+                    and self._idle_wifi_tip.isVisible():
+                self._idle_wifi_tip.hide()
+            return
+        def _bg():
+            import socket
+            try:
+                with socket.create_connection(("1.1.1.1", 53), timeout=2):
+                    online = True
+            except Exception:
+                online = False
+            self._idle_wifi_tip_signal.emit(online)
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_idle_wifi_state(self, online: bool):
+        """Update wifi-tip visibility op de idle-page."""
+        self._has_internet = online
+        if not hasattr(self, '_idle_wifi_tip') or self._idle_wifi_tip is None:
+            return
+        if online:
+            if self._idle_wifi_tip.isVisible():
+                self._idle_wifi_tip.hide()
+        else:
+            if not self._idle_wifi_tip.isVisible():
+                self._position_idle_wifi_tip()
+                self._idle_wifi_tip.show()
+                self._idle_wifi_tip.raise_()
 
     # --- TEMPLATE SELECT ---
     def _build_template_select_page(self):
@@ -5718,6 +5825,12 @@ class PhotoboothWindow(QMainWindow):
             # Delay positioning until page is laid out (state is already IDLE
             # so resizeEvent will also call _position_idle_lock)
             QTimer.singleShot(150, self._position_idle_lock)
+        # Wifi-tip popup: 2-sec polling, start nu en doe meteen 1e check
+        if hasattr(self, '_idle_wifi_check_timer'):
+            QTimer.singleShot(200, self._position_idle_wifi_tip)
+            self._idle_wifi_check_tick()
+            if not self._idle_wifi_check_timer.isActive():
+                self._idle_wifi_check_timer.start()
         # Show event info + disk warning on idle screen
         status_text = f"Event: {self.active_event.name}" if self.active_event else ""
         try:
@@ -9826,6 +9939,7 @@ class PhotoboothWindow(QMainWindow):
                 self._position_qr_overlay()
         elif self.state == State.IDLE:
             self._position_idle_lock()
+            self._position_idle_wifi_tip()
 
     def _position_countdown_bar(self):
         """Position countdown bar at top of review page, full screen width."""
