@@ -1755,9 +1755,9 @@ class PhotoboothWindow(QMainWindow):
             thr = self._DNP_REPLACE_THRESHOLD
             if prints_left is not None and prints_left > thr:
                 if status.code == 1100:
-                    label = "Papier-fout"
+                    label = "Papier-fout (rol niet leeg!)"
                 elif status.code == 1200:
-                    label = "Lint-fout"
+                    label = "Lint-fout (rol niet leeg!)"
             self._dnp_overlay_msg.setText(f"{label}{code_str}")
             base_detail = self._dnp_advice_for(status)
         # Hint over pending print toevoegen als er nu een wacht
@@ -1819,14 +1819,14 @@ class PhotoboothWindow(QMainWindow):
             if prints_left is not None and prints_left > thr:
                 return _fix_not_replace(
                     "het papier",
-                    "Het papier zit waarschijnlijk scheef of klem."
+                    "Papier is waarschijnlijk gescheurd, scheef of vastgelopen."
                 )
             return _replace_both("papierrol")
         if c == 1200:  # Ribbon end
             if prints_left is not None and prints_left > thr:
                 return _fix_not_replace(
                     "het lint",
-                    "Het lint is waarschijnlijk slap of scheef."
+                    "Lint is waarschijnlijk gescheurd, slap of scheef geladen."
                 )
             return _replace_both("ribbon")
         if c == 1300:  # Paper jam
