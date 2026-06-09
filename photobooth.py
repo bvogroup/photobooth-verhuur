@@ -8752,10 +8752,10 @@ class PhotoboothWindow(QMainWindow):
             self._on_inline_print_delay_done
         )
         self._inline_print_delay_timer.start(int(delay_sec * 1000))
-        # Speel printer-busy sound af, +3s marge zodat de echte printer
-        # naadloos kan overnemen (anders denkt de gast dat er niks gebeurt).
-        self._play_printer_busy_sound(delay_sec + 3)
-        print(f"[PRINTER] Inline delay gestart: {delay_sec}s (audio {delay_sec + 3}s)")
+        # Printer-busy sound is uitgeschakeld (user-keuze 2026-06-06).
+        # De _play_printer_busy_sound / _stop_printer_busy_sound methods
+        # + sounds/printer_busy.mp3 blijven beschikbaar voor evt. later.
+        print(f"[PRINTER] Inline delay gestart: {delay_sec}s (geen audio)")
 
     def _on_inline_print_delay_done(self):
         """Delay afgelopen — verberg cancel/redo knoppen + stuur de print."""
