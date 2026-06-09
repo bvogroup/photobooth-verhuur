@@ -1503,7 +1503,15 @@ class PhotoboothWindow(QMainWindow):
         in_session = hasattr(self, 'state') and self.state != State.IDLE
 
         from dnp_status import StatusLevel
-        should_show = status.is_blocking() and status.level == StatusLevel.ERROR
+        # Toon overlay bij ERROR-status OF wanneer de printer offline is.
+        # 'is_blocking()' dekt beide (ERROR of niet-connected), maar we
+        # filtren UNKNOWN+connected uit (dat is "weet niet" — geen reden
+        # voor een rood scherm).
+        should_show = (
+            status.level == StatusLevel.ERROR
+            or (not status.connected and status.level != StatusLevel.UNKNOWN)
+            or (not status.connected and status.error_method == "libusb1_enum")
+        )
         if should_show and not in_session:
             self._show_dnp_error_overlay(status)
         elif not should_show and self._dnp_error_overlay is not None:
@@ -1657,17 +1665,85 @@ class PhotoboothWindow(QMainWindow):
         self._dnp_overlay_lock_btn = lock_btn
         self._dnp_overlay_info_btn = info_btn
 
+        # QR-code rechtsboven: "Bekijk uitlegvideo's" naar fotoboothje.nl/videoretos
+        try:
+            self._build_dnp_overlay_qr(overlay)
+        except Exception as e:
+            print(f"[DNP-OVERLAY] QR-code generatie fout: {e}")
+
         self._update_dnp_overlay_content(status)
+
+    def _build_dnp_overlay_qr(self, overlay):
+        """Render QR-code + label rechtsboven op de printer-fout overlay.
+        Floating child (geen layout), positioneert mee bij resize."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+        import qrcode
+        from io import BytesIO
+
+        url = "https://www.fotoboothje.nl/videoretos"
+
+        qr_box = QWidget(overlay)
+        qr_box.setStyleSheet(
+            "background: white; border-radius: 14px;"
+        )
+        ql = QVBoxLayout(qr_box)
+        ql.setContentsMargins(12, 12, 12, 10)
+        ql.setSpacing(6)
+
+        # Titel
+        head = QLabel("📺  Bekijk uitlegvideo's")
+        head.setAlignment(Qt.AlignCenter)
+        head.setFont(QFont("DM Sans", 12, QFont.Bold))
+        head.setStyleSheet("color: #b01e1e; background: transparent;")
+        ql.addWidget(head)
+
+        # QR-image
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignCenter)
+        qr = qrcode.QRCode(version=1, box_size=6, border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        qr_img.save(buf, format="PNG")
+        buf.seek(0)
+        pixmap = QPixmap()
+        pixmap.loadFromData(buf.read())
+        scaled = pixmap.scaled(160, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        qr_label.setPixmap(scaled)
+        qr_label.setFixedSize(170, 170)
+        ql.addWidget(qr_label, alignment=Qt.AlignCenter)
+
+        # Sub-label met URL
+        sub = QLabel("fotoboothje.nl/videoretos")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setFont(QFont("DM Sans", 10))
+        sub.setStyleSheet("color: #555; background: transparent;")
+        ql.addWidget(sub)
+
+        qr_box.adjustSize()
+        qr_box.setFixedSize(qr_box.sizeHint())
+        # Positie rechtsboven met marge
+        ow = overlay.width()
+        margin = 40
+        qr_box.move(ow - qr_box.width() - margin, margin)
+        qr_box.show()
+        qr_box.raise_()
+        self._dnp_overlay_qr_box = qr_box
 
     def _update_dnp_overlay_content(self, status):
         if not hasattr(self, '_dnp_overlay_msg') or self._dnp_overlay_msg is None:
             return
         if not status.connected:
-            self._dnp_overlay_msg.setText("Printer niet bereikbaar")
+            self._dnp_overlay_msg.setText("Printer niet aangesloten")
             base_detail = (
-                "Controleer USB-kabel en stroomvoorziening.\n"
-                "De foto's worden niet verloren — de printer probeert het opnieuw "
-                "zodra de verbinding terug is."
+                "👉  Wat moet je doen?\n"
+                "1. Controleer of de USB-kabel goed in de printer én in de tablet zit\n"
+                "2. Controleer of de printer aan staat (groen lampje voor)\n"
+                "3. Zet 'm zonodig uit en weer aan\n\n"
+                "✓  De foto's gaan niet verloren — de printer probeert het opnieuw "
+                "zodra de verbinding terug is.\n"
+                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
             )
         else:
             code_str = f"  (code {status.code})" if status.code else ""
@@ -1686,32 +1762,101 @@ class PhotoboothWindow(QMainWindow):
             except Exception:
                 pass
 
+    # Drempel: bij meer dan dit aantal prints over is "Paper end" / "Ribbon end"
+    # vrijwel zeker GEEN echte lege rol, maar een jam / scheur / verkeerd
+    # geladen media. NIET vervangen — eerst checken.
+    _DNP_REPLACE_THRESHOLD = 10
+
     def _dnp_advice_for(self, status):
-        """Specifiek advies per QW410-foutcode."""
+        """Specifiek advies per QW410-foutcode.
+
+        Voor 'op'-meldingen (papier/lint) wordt prints_remaining meegewogen:
+        meer dan 10 prints over = waarschijnlijk een jam of verkeerde plaatsing
+        (NIET vervangen). 10 of minder = echt leeg (wel vervangen, beide samen).
+        """
         c = status.code or 0
+        prints_left = getattr(status, 'prints_remaining', None)
+        thr = self._DNP_REPLACE_THRESHOLD
+
+        def _fix_not_replace(media_label: str, jam_hint: str) -> str:
+            return (
+                f"⚠️  LET OP — er zijn nog {prints_left} prints over op deze rol!\n"
+                f"De printer denkt dat {media_label} op is, maar dat is niet zo.\n"
+                f"{jam_hint}\n\n"
+                "👉  Wat moet je doen?\n"
+                "1. Open de klep van de printer\n"
+                "2. Controleer of de media goed gespannen en recht zit\n"
+                "3. Plaats terug en sluit de klep\n\n"
+                "❌  NIET vervangen — als je media weggooit terwijl het niet "
+                "leeg is, zijn de kosten voor jou.\n"
+                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven.\n"
+                "📞  Lukt het niet? Neem contact met ons op."
+            )
+
+        def _replace_both(media_label: str) -> str:
+            return (
+                f"De {media_label} is op en moet vervangen worden.\n\n"
+                "⚠️  BELANGRIJK — vervang BEIDE samen:\n"
+                "• De papierrol\n"
+                "• Het kleurlint (ribbon)\n\n"
+                "👉  Stappen:\n"
+                "1. Vervang allebei de nieuwe set\n"
+                "2. Stop de gebruikte rol + lint terug in de doos\n"
+                "3. Sluit de klep van de printer\n\n"
+                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+            )
+
         if c == 1000:
             return "Sluit de klep van de printer en wacht 5 seconden."
         if c == 1010:
             return "Plaats de opvangbak terug onderin de printer."
-        if c == 1100:
-            return "De papierrol is op — plaats een nieuwe rol."
-        if c == 1200:
-            return "Het kleurlint (ribbon) is op — plaats een nieuwe set."
-        if c == 1300:
-            return ("Papier is vastgelopen. Open de klep, verwijder eventueel "
-                    "vastzittend papier, en sluit de klep weer.")
-        if c == 1400:
-            return ("Lint-fout. Controleer of het lint correct is gespannen "
-                    "en niet gescheurd is.")
+        if c == 1100:  # Paper end
+            if prints_left is not None and prints_left > thr:
+                return _fix_not_replace(
+                    "het papier",
+                    "Waarschijnlijk zit het papier scheef of is het vastgelopen."
+                )
+            return _replace_both("papierrol")
+        if c == 1200:  # Ribbon end
+            if prints_left is not None and prints_left > thr:
+                return _fix_not_replace(
+                    "het lint",
+                    "Waarschijnlijk is het lint gescheurd of niet goed gespannen."
+                )
+            return _replace_both("ribbon")
+        if c == 1300:  # Paper jam
+            return (
+                "Papier is vastgelopen.\n\n"
+                "👉  Stappen:\n"
+                "1. Open de klep\n"
+                "2. Verwijder voorzichtig het vastzittende papier\n"
+                "3. Sluit de klep weer\n\n"
+                "❌  Vervang het papier ALLEEN als het écht beschadigd is "
+                "én er nog maar weinig prints over zijn.\n"
+                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+            )
+        if c == 1400:  # Ribbon error
+            if prints_left is not None and prints_left > thr:
+                return _fix_not_replace(
+                    "het lint",
+                    "Waarschijnlijk zit het lint niet goed gespannen of is het scheef."
+                )
+            return (
+                "Lint-fout. Controleer of het lint correct is gespannen "
+                "en niet gescheurd is.\n\n"
+                "Als het lint echt beschadigd is: vervang BEIDE (lint + papier).\n"
+                "📺  Bekijk de uitlegvideo via de QR-code rechtsboven."
+            )
         if c == 1500:
             return "Verkeerd papierformaat geladen voor het huidige ontwerp."
         if c in (2000, 2100, 2200, 2300, 2400, 2700, 3000, 3010):
             return ("Hardware-fout. Zet de printer uit, wacht 10 seconden, "
-                    "en zet 'm weer aan. Bij herhaling: bel support.")
+                    "en zet 'm weer aan.\n📞  Bij herhaling: bel support.")
         if c in (2500, 2600):
             return "De printer is even te heet — wacht 1 minuut, dan probeert hij vanzelf opnieuw."
         if c == 9999:
-            return "Communicatie-fout. Controleer USB-kabel en herstart eventueel de printer."
+            return ("Communicatie-fout. Controleer de USB-kabel en herstart "
+                    "eventueel de printer.\n📺  Uitlegvideo via QR-code rechtsboven.")
         return status.detail or "Volg de instructies op de printer."
 
     def _hide_dnp_error_overlay(self):
@@ -1724,6 +1869,7 @@ class PhotoboothWindow(QMainWindow):
             self._dnp_error_overlay = None
             self._dnp_overlay_msg = None
             self._dnp_overlay_detail = None
+            self._dnp_overlay_qr_box = None
 
     def _refresh_cloud_uploads_ui(self):
         """Herschrijf de per-booking lijst onder de Cloud-uploads card."""
@@ -9953,6 +10099,19 @@ class PhotoboothWindow(QMainWindow):
         elif self.state == State.IDLE:
             self._position_idle_lock()
             self._position_idle_wifi_tip()
+        # Reposition printer-fout overlay + QR-code bij elke resize
+        if getattr(self, '_dnp_error_overlay', None) is not None:
+            try:
+                self._dnp_error_overlay.setGeometry(
+                    0, 0, self.width(), self.height()
+                )
+                qr_box = getattr(self, '_dnp_overlay_qr_box', None)
+                if qr_box is not None:
+                    margin = 40
+                    qr_box.move(self.width() - qr_box.width() - margin, margin)
+                    qr_box.raise_()
+            except Exception:
+                pass
 
     def _position_countdown_bar(self):
         """Position countdown bar at top of review page, full screen width."""
