@@ -2825,6 +2825,18 @@ class PhotoboothWindow(QMainWindow):
             return self.active_event.print_enabled
         return True
 
+    @staticmethod
+    def _new_session_id() -> str:
+        """Uniek sessie-id: timestamp + random suffix.
+
+        Het oude formaat (alleen %Y%m%d_%H%M%S) botste in de gedeelde
+        R2-bucket wanneer twee booths in dezelfde seconde een sessie
+        startten — gasten kregen dan foto's van iemand anders te zien.
+        De 8 hex-tekens (4 miljard combinaties) sluiten dat uit.
+        """
+        import uuid
+        return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
     @property
     def effective_email_enabled(self):
         """Get email enabled from active event or global config."""
@@ -7159,7 +7171,7 @@ class PhotoboothWindow(QMainWindow):
         self.current_photo_num = 0
         self.photos = []
         self._processed_photos = []
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_id = self._new_session_id()
         self._rebuild_thumbnails()
         self.camera.configure_save_folder()
         self._update_counter()
@@ -7222,7 +7234,7 @@ class PhotoboothWindow(QMainWindow):
         self._showing_preview = False
         if not self.photos:
             self.current_photo_num = 0
-            self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.session_id = self._new_session_id()
             self._rebuild_thumbnails()
             self.camera.configure_save_folder()
             # Track session for active event
@@ -9661,7 +9673,7 @@ class PhotoboothWindow(QMainWindow):
             from qr_generator import generate_session_url, generate_qr_pixmap
             from web_server import register_session
 
-            session_id = self.session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+            session_id = self.session_id or self._new_session_id()
             template_name = self.selected_template.name if self.selected_template else ""
 
             register_session(
