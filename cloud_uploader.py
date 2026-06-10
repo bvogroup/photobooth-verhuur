@@ -152,6 +152,107 @@ def read_queue_token(booking_id: str) -> dict:
         return {"token": "", "booking_label": ""}
 
 
+# ── Mark-upload (registratie in klantenportaal-DB) ────────────────────
+
+def post_mark_upload(token: str, object_key: str, size: int,
+                     taken_at: Optional[str],
+                     session_id: str = "", kind: str = "") -> bool:
+    """Meld één geüploade foto aan bij mark-photobooth-upload.
+
+    Idempotent server-side (upsert op booking_id+storage_path), dus
+    veilig om te herhalen. Returns True bij HTTP 200.
+    """
+    url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
+    payload = {
+        "token": token,
+        "object_key": object_key,
+        "size_bytes": size,
+        "taken_at": taken_at,
+    }
+    # Album-metadata: alleen meesturen indien bekend (backwards-compat).
+    if session_id:
+        payload["session_id"] = session_id
+    if kind:
+        payload["kind"] = kind
+    try:
+        r = requests.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "apikey": config.CLIXIBO_ANON_KEY,
+                "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
+            },
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code != 200:
+            print(f"[UPLOAD] mark-upload {r.status_code}: {r.text[:120]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[UPLOAD] mark-upload exception: {e}")
+        return False
+
+
+def backfill_marks(booking_id: str, token: str) -> int:
+    """Meld alle reeds-geüploade entries van deze queue alsnog aan.
+
+    Achtergrond: de hippe_booking_photos tabel bestond aanvankelijk niet
+    op de server, waardoor elke mark-upload stilletjes faalde — de foto's
+    staan wél in R2 maar verschenen nooit in het digitale album. Deze
+    backfill loopt alle 'uploaded' entries opnieuw langs (server-upsert =
+    idempotent) en zet daarna een flag zodat 't maar één keer gebeurt.
+
+    Returns aantal succesvol aangemelde foto's. Bij netwerkfouten wordt
+    de flag NIET gezet zodat de volgende watchdog-tick het opnieuw probeert.
+    """
+    if not booking_id or not token or not _REQUESTS_AVAILABLE:
+        return 0
+    lock = _get_queue_lock(booking_id)
+    with lock:
+        q = _read_queue(booking_id)
+    if q.get("marks_backfilled_at"):
+        return 0
+    todo = [
+        (fname, meta) for fname, meta in q.get("files", {}).items()
+        if meta.get("state") == "uploaded" and meta.get("object_key")
+    ]
+    if not todo:
+        # Niks te backfillen — flag zetten zodat we niet blijven scannen
+        with lock:
+            q = _read_queue(booking_id)
+            q["marks_backfilled_at"] = datetime.now(timezone.utc).isoformat()
+            _write_queue(booking_id, q)
+        return 0
+
+    print(f"[BACKFILL] {booking_id}: {len(todo)} geüploade foto's aanmelden bij portaal")
+    ok_count = 0
+    failed = 0
+    for fname, meta in todo:
+        ok = post_mark_upload(
+            token, meta["object_key"], meta.get("size_bytes", 0),
+            meta.get("taken_at"),
+            session_id=meta.get("session_id", ""),
+            kind=meta.get("kind", ""),
+        )
+        if ok:
+            ok_count += 1
+        else:
+            failed += 1
+        time.sleep(0.15)  # niet de edge function platdrukken
+
+    if failed == 0:
+        with lock:
+            q = _read_queue(booking_id)
+            q["marks_backfilled_at"] = datetime.now(timezone.utc).isoformat()
+            _write_queue(booking_id, q)
+        print(f"[BACKFILL] {booking_id}: klaar — {ok_count} foto's aangemeld")
+    else:
+        print(f"[BACKFILL] {booking_id}: {ok_count} ok, {failed} mislukt — "
+              f"retry bij volgende watchdog-tick")
+    return ok_count
+
+
 def _backoff(attempts: int, kind: str = "server") -> float:
     """Bepaal retry-wachttijd in seconden.
 
@@ -537,34 +638,10 @@ class UploadWorker(QObject):
 
     def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str],
                      session_id: str = "", kind: str = "") -> None:
-        url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
-        payload = {
-            "token": self.token,
-            "object_key": object_key,
-            "size_bytes": size,
-            "taken_at": taken_at,
-        }
-        # Album-metadata: alleen meesturen indien bekend (backwards-compat —
-        # de edge function accepteert beide vormen).
-        if session_id:
-            payload["session_id"] = session_id
-        if kind:
-            payload["kind"] = kind
-        try:
-            r = requests.post(
-                url,
-                headers={
-                    "Content-Type": "application/json",
-                    "apikey": config.CLIXIBO_ANON_KEY,
-                    "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
-                },
-                json=payload,
-                timeout=10,
-            )
-            if r.status_code != 200:
-                print(f"[UPLOAD] mark-upload {r.status_code}: {r.text[:120]}")
-        except Exception as e:
-            print(f"[UPLOAD] mark-upload exception: {e}")
+        ok = post_mark_upload(self.token, object_key, size, taken_at,
+                              session_id=session_id, kind=kind)
+        if not ok:
+            print(f"[UPLOAD] mark-upload faalde voor {object_key}")
 
     def _cleanup_old_uploaded(self) -> None:
         """Verwijder uploaded/ files ouder dan 30 dagen — disk-hygiene."""
@@ -839,6 +916,13 @@ class CloudWatchdog:
                           f"{info['pending']}p/{info.get('failed', 0)}f maar GEEN token "
                           f"in events/. Koppel event opnieuw om te uploaden.")
                 continue
+            # Backfill: meld reeds-geüploade foto's alsnog aan bij het
+            # album (eenmalig per queue — flag in queue.json). Ook voor
+            # volledig-geüploade queues waar geen worker meer voor start.
+            try:
+                backfill_marks(booking_id, token)
+            except Exception as e:
+                print(f"[WATCHDOG] Backfill-fout {booking_id}: {e}")
             # Levende worker draait al? Skip.
             if booking_id in alive_keys:
                 continue
