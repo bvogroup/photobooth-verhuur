@@ -117,7 +117,10 @@ class _PersistentDialog:
     """
     def __init__(self, printer_name: str):
         self.printer_name = printer_name
-        self._lock = threading.Lock()
+        # RLock: read() roept bij fouten close() aan terwijl de lock al
+        # vastgehouden wordt — met een gewone Lock is dat een deadlock
+        # die de poller-thread (mét lock) voor eeuwig laat hangen.
+        self._lock = threading.RLock()
         self._proc: Optional[subprocess.Popen] = None
         self._dlg = None
         self._update_btn = None
@@ -146,6 +149,16 @@ class _PersistentDialog:
             return False
 
         try:
+            # Ruim eerst een eventueel oud (zombie) rundll32-proces op —
+            # anders lekt elke mislukte poging een proces + dialog die
+            # de window-match kan vervuilen.
+            if self._proc is not None:
+                try:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+                self._proc = None
             # Subprocess startupinfo: hide eventueel zichtbaar window
             try:
                 si = subprocess.STARTUPINFO()
@@ -158,18 +171,29 @@ class _PersistentDialog:
                 startupinfo=si,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
-            # Wacht op dialog (max 6 sec)
+            # Wacht op dialog (max 6 sec). Match in twee passes: eerst
+            # exact (titel eindigt op de printernaam), dan pas substring —
+            # zo pakt "DP-QW410" niet per ongeluk de dialog van
+            # "DP-QW410 (Kopie 2)" als beide queues bestaan.
+            def _is_candidate(w):
+                try:
+                    name = w.Name or ""
+                    return (self.printer_name in name
+                            and w.ControlTypeName == "WindowControl"
+                            and "Settings" not in name
+                            and "Instellingen" not in name)
+                except Exception:
+                    return False
+
             deadline = time.monotonic() + 6
             while time.monotonic() < deadline:
-                for w in auto.GetRootControl().GetChildren():
-                    try:
-                        name = w.Name or ""
-                        if self.printer_name in name and w.ControlTypeName == "WindowControl":
-                            if "Settings" not in name and "Instellingen" not in name:
-                                self._dlg = w
-                                break
-                    except Exception:
-                        pass
+                candidates = [w for w in auto.GetRootControl().GetChildren()
+                              if _is_candidate(w)]
+                exact = [w for w in candidates
+                         if (w.Name or "").rstrip().endswith(self.printer_name)]
+                pick = exact[0] if exact else (candidates[0] if candidates else None)
+                if pick is not None:
+                    self._dlg = pick
                 if self._dlg and self._dlg.Exists(0):
                     break
                 time.sleep(0.1)
@@ -453,9 +477,13 @@ def _parse_controls(controls: list, status: DNPStatus):
                     status.label = lbl
                     status.level = StatusLevel(lvl)
             else:
-                # Bekende fout-substring zoeken
+                # Bekende fout-substring zoeken. Hoogste code eerst:
+                # error-strings (1000+) winnen van benigne ("waiting",
+                # "ready") zodat een samengestelde tekst als
+                # "Waiting - paper end" niet onterecht als OK matcht.
                 matched = False
-                for ui_text, code in UI_STATUS_TO_CODE.items():
+                for ui_text, code in sorted(UI_STATUS_TO_CODE.items(),
+                                            key=lambda kv: -kv[1]):
                     if ui_text in tl:
                         status.code = code
                         if code in STATUS_CODES:
@@ -514,9 +542,12 @@ def _parse_controls(controls: list, status: DNPStatus):
     # range hebben, daarna komen weer ints, dat is life_counter.
     unique = []
     seen = set()
+    dup_values = set()
     for v in integers:
         if v not in seen:
             unique.append(v); seen.add(v)
+        else:
+            dup_values.add(v)
     # Eerste 2 grote ints (50-9999): remaining + total
     # Andere: life_counter (typisch klein bij nieuwe printer)
     pr_total_candidates = [v for v in unique if 50 <= v <= 9999]
@@ -528,6 +559,23 @@ def _parse_controls(controls: list, status: DNPStatus):
         # Resterende ints in deze categorie = life_counter mogelijk
         if len(pr_total_candidates) >= 3:
             other.append(pr_total_candidates[2])
+    elif len(pr_total_candidates) == 1 and pr_total_candidates[0] in dup_values:
+        # Verse rol: remaining == total (bv. 400/400). De dedup vouwt die
+        # twee waardes samen tot 1 — maar als dezelfde waarde dubbel in de
+        # ruwe lijst stond is het vrijwel zeker remaining==total.
+        status.prints_remaining = pr_total_candidates[0]
+        status.prints_total = pr_total_candidates[0]
+    elif len(pr_total_candidates) == 1:
+        # Bijna-lege rol: remaining < 50 valt buiten de candidate-band en
+        # belandt in 'other'. Als er precies één duidelijke total is én een
+        # kleine waarde (0-49) in other, dan is dat de remaining. Belangrijk:
+        # juist bij bijna-leeg moet de teller blijven werken (de >10 prints
+        # anti-verspillingscheck hangt ervan af).
+        small = [v for v in other if 0 <= v < 50]
+        if small:
+            status.prints_remaining = small[0]
+            status.prints_total = pr_total_candidates[0]
+            other = [v for v in other if v != small[0]]
     if other and status.life_counter is None:
         # Pak de kleinste als life counter (begin-printer telt nog laag op)
         # of grootste — beide kunnen. Voor QW410 met 41 prints is dat 41.
@@ -632,6 +680,7 @@ class StatusPoller:
         self._callbacks: list = []
         self._paused = False
         self._dialog = _PersistentDialog(printer_name)
+        self._offline_override_active = False  # log-throttle voor cross-check
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -661,9 +710,19 @@ class StatusPoller:
         self._callbacks.append(callback)
 
     def force_refresh(self):
-        """Forceer onmiddellijke poll (bv. na 'Opnieuw checken' klik)."""
+        """Forceer onmiddellijke poll (bv. na 'Opnieuw checken' klik).
+
+        Gebruikt exact dezelfde cross-check als _loop — anders kan een
+        stale UI-Automation read (driver toont cached data bij offline
+        printer) de error-overlay onterecht sluiten en een print naar
+        een dode printer sturen.
+        """
         try:
-            new_status = self._dialog.read() or read_via_usb_enum()
+            new_status = self._dialog.read()
+            if new_status is None:
+                new_status = read_via_usb_enum()
+            else:
+                new_status = self._apply_usb_cross_check(new_status)
         except Exception as e:
             new_status = DNPStatus(
                 level=StatusLevel.UNKNOWN,
@@ -672,12 +731,55 @@ class StatusPoller:
             )
         self._update(new_status)
 
+    def _apply_usb_cross_check(self, ui_status: DNPStatus) -> DNPStatus:
+        """KRITISCHE CROSS-CHECK: UI Automation kan een 'succesvolle' read
+        teruggeven ook als de printer offline is — de Windows-driver toont
+        gewoon de laatste cached waardes. USB-enum detecteert écht
+        plug/unplug.
+
+        NB: read_via_usb_enum zet error_method altijd op 'libusb1_enum';
+        alleen level==ERROR garandeert 'backend werkt + device niet
+        gevonden'. Bij ontbrekende backend is level=UNKNOWN — dan kunnen
+        we niets zeggen en blijft de UI-status staan.
+        """
+        try:
+            usb_check = read_via_usb_enum()
+            if (usb_check.error_method == "libusb1_enum"
+                    and not usb_check.connected
+                    and usb_check.level == StatusLevel.ERROR):
+                # Log alleen bij transitie — niet elke 2 sec opnieuw
+                if not self._offline_override_active:
+                    print(f"[DNP-STATUS] USB-enum zegt OFFLINE; "
+                          f"UI Automation gaf {ui_status.label!r} "
+                          f"(stale). Override naar offline.")
+                    self._offline_override_active = True
+                # Bewaar UI Automation tellers indien aanwezig
+                # (handig voor 'prints over' bij re-connect)
+                usb_check.prints_remaining = ui_status.prints_remaining
+                usb_check.prints_total = ui_status.prints_total
+                return usb_check
+            self._offline_override_active = False
+            # Indien UI Automation 'Communication error' code gaf —
+            # eveneens markeren als offline (driver eigen detectie).
+            if ui_status.code == 9999:
+                ui_status.connected = False
+                if ui_status.level != StatusLevel.ERROR:
+                    ui_status.level = StatusLevel.ERROR
+        except Exception as ce:
+            print(f"[DNP-STATUS] USB cross-check faalde: {ce}")
+        return ui_status
+
     def _update(self, new_status: DNPStatus):
         with self._lock:
+            old = self._status
             changed = (
-                self._status is None
-                or self._status.level != new_status.level
-                or self._status.code != new_status.code
+                old is None
+                or old.level != new_status.level
+                or old.code != new_status.code
+                # connected-flip moet de UI ook bereiken (offline overlay)
+                or old.connected != new_status.connected
+                # prints-teller live houden in event-info popup
+                or old.prints_remaining != new_status.prints_remaining
             )
             self._status = new_status
         if changed:
@@ -698,42 +800,7 @@ class StatusPoller:
                         # fallback USB-enumeratie
                         new_status = read_via_usb_enum()
                     else:
-                        # KRITISCHE CROSS-CHECK: UI Automation kan een
-                        # 'succesvolle' read teruggeven ook als de printer
-                        # offline is — de Windows-driver toont gewoon de
-                        # laatste cached waardes. Daarom altijd USB-enum
-                        # erbij om écht plug/unplug te detecteren.
-                        try:
-                            usb_check = read_via_usb_enum()
-                            # USB enum gebruikt 'libusb1_enum' alleen als
-                            # backend WERKT — anders is method leeg/anders.
-                            # Bij werkende backend + device niet gevonden →
-                            # printer is echt offline, override UI-status.
-                            # NB: level==ERROR betekent backend werkt +
-                            # device niet gevonden. Bij ontbrekende backend
-                            # is level=UNKNOWN — dan kunnen we niets zeggen.
-                            if (usb_check.error_method == "libusb1_enum"
-                                    and not usb_check.connected
-                                    and usb_check.level == StatusLevel.ERROR):
-                                print(f"[DNP-STATUS] USB-enum zegt OFFLINE; "
-                                      f"UI Automation gaf {new_status.label!r} "
-                                      f"(stale). Override naar offline.")
-                                # Bewaar UI Automation tellers indien aanwezig
-                                # (handig voor 'prints over' bij re-connect)
-                                preserved_prints_remain = new_status.prints_remaining
-                                preserved_prints_total = new_status.prints_total
-                                new_status = usb_check
-                                new_status.prints_remaining = preserved_prints_remain
-                                new_status.prints_total = preserved_prints_total
-                            # Indien UI Automation 'Communication error' code
-                            # gaf — eveneens markeren als offline (driver
-                            # eigen detectie).
-                            elif new_status.code == 9999:
-                                new_status.connected = False
-                                if new_status.level != StatusLevel.ERROR:
-                                    new_status.level = StatusLevel.ERROR
-                        except Exception as ce:
-                            print(f"[DNP-STATUS] USB cross-check faalde: {ce}")
+                        new_status = self._apply_usb_cross_check(new_status)
                 except Exception as e:
                     new_status = DNPStatus(
                         level=StatusLevel.UNKNOWN,
@@ -742,6 +809,16 @@ class StatusPoller:
                     )
                 self._update(new_status)
             self._stop_event.wait(self._interval)
+
+    def kill_dialog(self):
+        """Snelle cleanup bij app-exit: termineer het rundll32-proces
+        zonder locks of joins (exit-pad mag nooit blokkeren)."""
+        try:
+            proc = self._dialog._proc
+            if proc is not None:
+                proc.terminate()
+        except Exception:
+            pass
 
 
 # ── CLI test ────────────────────────────────────────────────────────

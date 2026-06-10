@@ -893,16 +893,25 @@ class SubprocessPrintThread(QThread):
             if result.stderr.strip():
                 print(f"[PRINTER] STDERR: {result.stderr.strip()}")
             if result.returncode != 0:
-                print(f"[PRINTER] Subprocess exitcode {result.returncode} — print mogelijk mislukt")
-            else:
-                print("[PRINTER] Subprocess OK (exitcode 0)")
+                print(f"[PRINTER] Subprocess exitcode {result.returncode} — print MISLUKT")
+                err = (result.stderr or result.stdout or "").strip()[-300:]
+                self.print_failed.emit(
+                    err or f"Print-worker exitcode {result.returncode}"
+                )
+                return
+            print("[PRINTER] Subprocess OK (exitcode 0)")
 
         except subprocess.TimeoutExpired:
             print("[PRINTER] Subprocess timeout (120s)")
+            self.print_failed.emit("Print-timeout (120s) — spooler hangt mogelijk")
+            return
         except Exception as e:
             print(f"[PRINTER] Subprocess fout: {e}")
+            self.print_failed.emit(str(e))
+            return
 
-        # Always emit complete — show "Geprint!" regardless of outcome
+        # Alleen bij ECHT succes — anders telt het print-quotum mee voor
+        # prints die nooit uit de printer kwamen (paper jam, geen printer).
         self.print_complete.emit()
 
 
@@ -1507,10 +1516,12 @@ class PhotoboothWindow(QMainWindow):
         # 'is_blocking()' dekt beide (ERROR of niet-connected), maar we
         # filtren UNKNOWN+connected uit (dat is "weet niet" — geen reden
         # voor een rood scherm).
+        # Overlay bij ERROR-level of écht offline (level != UNKNOWN sluit
+        # de 'libusb-backend mist' situatie uit — daar weten we niks en
+        # zou een permanent vals "niet aangesloten" scherm verschijnen).
         should_show = (
             status.level == StatusLevel.ERROR
             or (not status.connected and status.level != StatusLevel.UNKNOWN)
-            or (not status.connected and status.error_method == "libusb1_enum")
         )
         if should_show and not in_session:
             self._show_dnp_error_overlay(status)
@@ -2217,17 +2228,20 @@ class PhotoboothWindow(QMainWindow):
         print("[PRINT-PRECHECK] Pending print geannuleerd door operator")
 
     def _on_dnp_retry_clicked(self):
-        """User klikt 'Opnieuw checken' — forceer een poller-tick."""
+        """User klikt 'Opnieuw checken' — forceer een poller-refresh.
+
+        Gebruikt de poller (juiste printernaam uit config + USB cross-check)
+        in een bg-thread zodat de UI niet blokkeert. De poller vuurt zelf
+        de status-callback → _dnp_status_signal → overlay update.
+        Voorheen: losse read_qw410_status() met hardcoded default
+        "DP-QW410 (Kopie 2)" — pollde op andere machines de verkeerde
+        printer en sloot de overlay onterecht.
+        """
         if self._dnp_poller is None:
             return
-        # Pause+resume om bg-thread sneller een nieuwe poll te laten doen
-        # is overkill — gewoon direct sync ophalen op deze thread.
-        from dnp_status import read_qw410_status
-        import threading
-        def _bg():
-            new_status = read_qw410_status()
-            QTimer.singleShot(0, lambda: self._dnp_status_signal.emit(new_status))
-        threading.Thread(target=_bg, daemon=True).start()
+        threading.Thread(
+            target=self._dnp_poller.force_refresh, daemon=True
+        ).start()
 
     def _background_auth_verify(self):
         """Background thread: verify session online, update plan if needed.
@@ -6070,6 +6084,38 @@ class PhotoboothWindow(QMainWindow):
         # Resume DNP-poll bij terugkeer naar idle (UI-Automation focus-steal
         # is alleen risico wanneer er pc-input wordt gegeven).
         self._pause_dnp_poll(False)
+        # FLUSH: als de pakket-delay nog loopt op het moment dat de sessie
+        # eindigt (countdown afgelopen, data-collect geannuleerd, custom
+        # flow klaar) dan moet de print alsnog DIRECT verstuurd worden —
+        # de gast heeft erom gevraagd (en er mogelijk voor betaald).
+        # Vroeger werd de timer hier stilletjes gestopt = print kwijt.
+        # NB: ná _pause_dnp_poll(False) — _actually_send_print pauzeert de
+        # poller zelf opnieuw voor de duur van de print.
+        try:
+            timer = getattr(self, '_inline_print_delay_timer', None)
+            if timer is not None and timer.isActive():
+                copies = getattr(self, '_inline_print_copies', 1)
+                timer.stop()
+                print(f"[PRINTER] Sessie eindigt tijdens pakket-delay — "
+                      f"print ({copies}x) wordt nu direct verstuurd")
+                self._actually_send_print(copies)
+        except Exception as e:
+            print(f"[PRINTER] Delay-flush fout: {e}")
+        # Fout ontstaan TIJDENS de sessie? De status-callback vuurt alleen
+        # bij veranderingen, dus als de fout blijft bestaan komt er geen
+        # nieuwe trigger meer — toon de overlay nu alsnog.
+        try:
+            st = getattr(self, '_dnp_last_status', None)
+            if (st is not None and st.is_blocking()
+                    and self._dnp_error_overlay is None):
+                from dnp_status import StatusLevel
+                if (st.level == StatusLevel.ERROR
+                        or (not st.connected and st.level != StatusLevel.UNKNOWN)):
+                    print("[DNP-STATUS] Blokkerende fout uit sessie — "
+                          "overlay alsnog tonen op idle")
+                    self._show_dnp_error_overlay(st)
+        except Exception as e:
+            print(f"[DNP-STATUS] Overlay-check bij idle fout: {e}")
         # Reset pending-print state — vorige sessie is afgelopen
         self._pending_print_copies = None
         # Cleanup inline print-delay widgets + timer + audio
@@ -9009,7 +9055,16 @@ class PhotoboothWindow(QMainWindow):
             self._sharing_print_status.setText(t("printing"))
             self._sharing_print_status.show()
             self._do_print_job(copies=copies)
-            self._start_sharing_countdown()
+            # Countdown NIET herstarten als de inline pakket-delay loopt of
+            # er een print wacht op een printer-fix — anders eindigt de
+            # sessie vóór de print verstuurd is en gaat die verloren.
+            delay_active = (
+                getattr(self, '_inline_print_delay_timer', None) is not None
+                and self._inline_print_delay_timer.isActive()
+            )
+            pending = getattr(self, '_pending_print_copies', None) is not None
+            if not delay_active and not pending:
+                self._start_sharing_countdown()
 
         cancel_btn.clicked.connect(_close_popup)
         print_btn.clicked.connect(_do_print)
@@ -9071,13 +9126,20 @@ class PhotoboothWindow(QMainWindow):
             self._sharing_print_status.setText(t("no_strip"))
             return
 
-        # Pre-print DNP status-check — fresh poll, niet gecached
+        # Pre-print DNP status-check. We gebruiken de laatst gepolde status
+        # (max ~2 sec oud — de poller draait elke 2s mét USB cross-check)
+        # in plaats van een synchrone force_refresh: die blokkeerde de
+        # GUI-thread 0,5-8 sec op precies het moment dat de gast op Print
+        # drukt, en deelt COM-objecten met de poller-thread (apartment-
+        # unsafe).
+        st = None
         if getattr(self, '_dnp_poller', None) is not None:
             try:
-                self._dnp_poller.force_refresh()
+                st = self._dnp_poller.get()
             except Exception as e:
-                print(f"[PRINT-PRECHECK] force_refresh fout (niet kritiek): {e}")
-        st = getattr(self, '_dnp_last_status', None)
+                print(f"[PRINT-PRECHECK] poller.get fout (niet kritiek): {e}")
+        if st is None:
+            st = getattr(self, '_dnp_last_status', None)
         if st is not None and st.is_blocking():
             print(f"[PRINT-PRECHECK] Blokkerende fout — print uitgesteld "
                   f"(level={st.level.value}, code={st.code}, label={st.label!r}). "
@@ -9298,6 +9360,17 @@ class PhotoboothWindow(QMainWindow):
         )
         self.print_thread.print_failed.connect(self._on_print_failed)
         self.print_thread.print_status.connect(self._on_print_status)
+        # Keep-alive: het subprocess kan tot 120s blokkeren. Als een
+        # volgende sessie self.print_thread overschrijft terwijl de oude
+        # nog draait, wordt de QThread ge-garbage-collect → harde crash
+        # ("QThread: Destroyed while thread is still running").
+        if not hasattr(self, '_print_threads_alive'):
+            self._print_threads_alive = []
+        self._print_threads_alive.append(self.print_thread)
+        self.print_thread.finished.connect(
+            lambda th=self.print_thread: self._print_threads_alive.remove(th)
+            if th in self._print_threads_alive else None
+        )
         self.print_thread.start()
         if hasattr(self, '_sharing_print_status'):
             self._sharing_print_status.setText(t("checking_printer"))
@@ -9466,7 +9539,7 @@ class PhotoboothWindow(QMainWindow):
                     except Exception:
                         pass
         # Roep originele handler aan
-        self._on_print_complete()
+        self._on_print_complete(copies)
 
     def _start_printing(self):
         """Legacy method — redirects to sharing screen print."""
@@ -9477,9 +9550,14 @@ class PhotoboothWindow(QMainWindow):
         self.review_timer.stop()
         self._go_done()
 
-    def _on_print_complete(self):
-        """Print finished — update sharing screen status."""
-        self._session_prints_used += 1
+    def _on_print_complete(self, copies=1):
+        """Print finished — update sharing screen status.
+
+        copies telt per kopie mee in de sessie-limiet: een job van 3
+        kopieën verbruikt 3 prints, niet 1 (anders kan een gast met
+        max_prints=3 in totaal 6 fysieke prints krijgen).
+        """
+        self._session_prints_used += max(1, int(copies))
         ev = self.active_event
         auto_print = ev.auto_print if ev else True
 
@@ -9966,11 +10044,12 @@ class PhotoboothWindow(QMainWindow):
             self._sharing_print_status.show()
 
     def _on_print_failed(self, error_msg):
-        """Handle print failure — always show success to user (too many false positives).
+        """Handle print failure — echte fout tonen.
 
-        The pre-print check (check_printer_status) catches real issues.
-        If that passed, the print almost certainly succeeded even if the
-        subprocess reports an error (e.g. HiTi queue check race condition).
+        Sinds v1.99.95 emit SubprocessPrintThread dit signaal alleen bij
+        ÉCHTE fouten (exitcode != 0, timeout, exception). Geen quotum
+        afboeken, geen vals 'Geprint!' meer — de gast en operator moeten
+        weten dat er niks uit de printer komt.
         """
         # Resume DNP status-poller — print is afgerond (succes of falen)
         if getattr(self, '_dnp_poller', None) is not None:
@@ -9978,14 +10057,24 @@ class PhotoboothWindow(QMainWindow):
                 self._dnp_poller.pause(False)
             except Exception:
                 pass
-        print(f"[PRINTER] Fout genegeerd (false positive): {error_msg}")
-        # Always show success — real failures are caught by pre-print check
+        print(f"[PRINTER] PRINT MISLUKT: {error_msg}")
         if hasattr(self, '_sharing_print_status'):
-            self._sharing_print_status.setText(t("printed"))
-            self._sharing_print_status.setStyleSheet(f"color: {config.COLOR_SUCCESS}; font-size: 14px;")
+            self._sharing_print_status.setText(
+                "⚠ Print mislukt — vraag de beheerder om hulp"
+            )
+            self._sharing_print_status.setStyleSheet(
+                f"color: {config.COLOR_DANGER}; font-size: 14px;"
+            )
             self._sharing_print_status.show()
-            QTimer.singleShot(4000, lambda: self._sharing_print_status.hide()
-                              if self.state == State.REVIEW else None)
+        # Force een verse status-poll zodat de error-overlay verschijnt
+        # als de printer een echt probleem heeft (paper out, offline, ...)
+        if getattr(self, '_dnp_poller', None) is not None:
+            try:
+                threading.Thread(
+                    target=self._dnp_poller.force_refresh, daemon=True
+                ).start()
+            except Exception:
+                pass
 
     def _show_error(self, message):
         self.state = State.ERROR
@@ -14264,10 +14353,28 @@ class PhotoboothWindow(QMainWindow):
             print(f"[SETTINGS] Test print image fout: {e}")
             return
 
-        # Test print: gebruik het profiel passend bij huidige printer-modus
-        test_profile = self._resolve_dnp_profile_key(None)
+        # Test print: gebruik het profiel passend bij huidige printer-modus.
+        # _resolve_dnp_profile_key(None) gaf altijd None (legacy pad) —
+        # de test kon de vastgelegde 4x6_cut/4x3 profielen dus nooit
+        # valideren. Map nu direct vanaf de booth printer_mode.
+        from printer import PROFILE_4X6_CUT, PROFILE_4X6_NOCUT, PROFILE_4X3
+        mode = getattr(self.active_event, 'printer_mode', '3strips') \
+            if self.active_event else '3strips'
+        test_profile = {
+            '3strips': PROFILE_4X6_CUT,
+            '4x6': PROFILE_4X6_NOCUT,
+            '4x3': PROFILE_4X3,
+        }.get(mode)
         self._test_print_thread = SubprocessPrintThread(
             test_path, config.PRINTER_NAME, 1, profile_key=test_profile)
+        self._test_print_thread.print_failed.connect(
+            lambda msg: self._devmode_status_label.setText(f"⚠ Test mislukt: {msg[:80]}")
+            if hasattr(self, '_devmode_status_label') else None
+        )
+        self._test_print_thread.print_complete.connect(
+            lambda: self._devmode_status_label.setText("✓ Test print verstuurd")
+            if hasattr(self, '_devmode_status_label') else None
+        )
         self._test_print_thread.start()
         print(f"[SETTINGS] Test print naar: {config.PRINTER_NAME} (profiel: {test_profile or 'legacy'})")
 
@@ -16092,6 +16199,14 @@ class PhotoboothWindow(QMainWindow):
             pkg = cloud_pm
         if pkg in ("premium", "standard"):
             self.active_event.linked_package = pkg
+        else:
+            # Onbekende pakketnaam (bv. "deluxe"): wis het oude pakket
+            # zodat een eerdere "premium"-waarde niet blijft hangen en
+            # de delay-logica terugvalt op de veilige default (standard).
+            self.active_event.linked_package = ""
+            if pkg:
+                print(f"[BOOKING] Onbekend pakket {pkg!r} — delay-default "
+                      f"(standard/20s) wordt gebruikt")
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
@@ -18276,9 +18391,20 @@ class PhotoboothWindow(QMainWindow):
             self._rebuild_idle_page()
             print(f"[IDLE] Pagina herbouwd als fallback (licentie: {'ja' if logged_in else 'nee'})")
 
+    def _kill_dnp_dialog(self):
+        """Termineer het off-screen rundll32-dialoogproces van de poller.
+        Lock-vrij en non-blocking — veilig op het exit-pad."""
+        try:
+            poller = getattr(self, '_dnp_poller', None)
+            if poller is not None:
+                poller.kill_dialog()
+        except Exception:
+            pass
+
     def _on_quit(self):
         """Handle quit button click — force quit immediately."""
         print("[UI] Afsluiten knop geklikt", flush=True)
+        self._kill_dnp_dialog()
         # Schedule a hard kill after 1 second as absolute safety net
         threading.Timer(1.0, lambda: os._exit(0)).start()
         # Signal worker thread to stop (non-blocking flag set)
@@ -18299,6 +18425,7 @@ class PhotoboothWindow(QMainWindow):
         print("[CLEANUP] closeEvent gestart", flush=True)
         # Accept immediately so Qt doesn't wait for us
         event.accept()
+        self._kill_dnp_dialog()
         # Schedule a hard kill after 1 second as absolute safety net
         threading.Timer(1.0, lambda: os._exit(0)).start()
         # Signal worker thread to stop (non-blocking flag set)

@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.94"
+VERSION = "v1.99.95"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -25,7 +25,10 @@ LIVE_VIEW_INTERVAL_MS = 33  # ~30 fps fallback (main loop runs as fast as HTTP a
 CAPTURE_TIMEOUT_SEC = 20    # Max wait time for capture to complete
 
 # === Printer Settings ===
-PRINTER_NAME = "HiTi P525"  # Must partially match the Windows printer name
+# Verhuur-fork draait altijd op DNP QW410. Default was "HiTi P525" —
+# op een verse installatie werd dan geen printer gevonden en faalde
+# elke print stilletjes. settings.json override blijft mogelijk.
+PRINTER_NAME = "DP-QW410"  # Must partially match the Windows printer name
 PRINT_WIDTH_INCH = 4
 PRINT_HEIGHT_INCH = 6
 PRINT_DPI = 300

@@ -19,10 +19,10 @@ queue.json:
     {
         "files": {
             "<filename>": {
-                "state": "pending|uploading|uploaded|failed",
+                "state": "pending|uploading|uploaded|failed|missing",
                 "attempts": 0,
                 "last_error": "",
-                "next_retry_at": 0.0,        # monotonic seconds
+                "next_retry_at": 0.0,        # wall-clock (time.time) — overleeft reboot
                 "uploaded_at": "ISO8601",    # bij uploaded
                 "object_key": "<booking_id>/<filename>",
                 "taken_at": "ISO8601",
@@ -171,9 +171,17 @@ def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> 
 
 
 def get_status(booking_id: str) -> dict:
-    """Tel aantallen voor UI-progress: total, uploaded, pending, failed, uploading."""
-    q = _read_queue(booking_id)
-    counts = {"total": 0, "pending": 0, "uploading": 0, "uploaded": 0, "failed": 0}
+    """Tel aantallen voor UI-progress: total, uploaded, pending, failed, uploading.
+
+    Onder de queue-lock: een ongelockte open() terwijl een writer
+    os.replace() doet geeft op Windows een PermissionError bij de writer
+    (geen FILE_SHARE_DELETE) — dat kon enqueue() laten falen of zelfs de
+    worker-recovery doden.
+    """
+    with _get_queue_lock(booking_id):
+        q = _read_queue(booking_id)
+    counts = {"total": 0, "pending": 0, "uploading": 0, "uploaded": 0,
+              "failed": 0, "missing": 0}
     next_retry = None
     for meta in q.get("files", {}).values():
         counts["total"] += 1
@@ -206,7 +214,7 @@ class UploadWorker(QObject):
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         # cache van pre-signed URLs per filename (om niet elke retry opnieuw te vragen)
-        self._url_cache: dict = {}  # filename → {url, object_key, expires_at_mono}
+        self._url_cache: dict = {}  # filename → {url, object_key, expires_at_wall}
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -228,46 +236,52 @@ class UploadWorker(QObject):
     # ── intern ────────────────────────────────────────────────────────
 
     def _run(self):
-        # Recovery bij startup: race-fix + orphan-pickup
-        lock = _get_queue_lock(self.booking_id)
-        with lock:
-            q = _read_queue(self.booking_id)
-            files = q.setdefault("files", {})
+        # Recovery bij startup: race-fix + orphan-pickup.
+        # In try/except: een fout hier (bv. PermissionError op queue.json)
+        # mag de thread NIET doden — een dode worker blijft geregistreerd
+        # in _active_workers en blokkeerde voorheen de watchdog permanent.
+        try:
+            lock = _get_queue_lock(self.booking_id)
+            with lock:
+                q = _read_queue(self.booking_id)
+                files = q.setdefault("files", {})
 
-            # 1) "uploading" rows die nooit klaar kwamen → terug naar pending
-            for fname, meta in files.items():
-                if meta.get("state") == "uploading":
-                    meta["state"] = "pending"
-                    meta["last_error"] = "restart recovery"
+                # 1) "uploading" rows die nooit klaar kwamen → terug naar pending
+                for fname, meta in files.items():
+                    if meta.get("state") == "uploading":
+                        meta["state"] = "pending"
+                        meta["last_error"] = "restart recovery"
 
-            # 2) Orphan files in pending/ folder die NIET in queue.json staan
-            #    (bv. door race-condition tijdens een eerdere sessie weggevallen)
-            pending_dir = os.path.join(queue_dir(self.booking_id), "pending")
-            try:
-                disk_files = set(os.listdir(pending_dir))
-            except FileNotFoundError:
-                disk_files = set()
-            for disk_fname in disk_files:
-                if disk_fname not in files:
-                    full = os.path.join(pending_dir, disk_fname)
-                    if not os.path.isfile(full):
-                        continue
-                    try:
-                        size = os.path.getsize(full)
-                    except OSError:
-                        size = 0
-                    files[disk_fname] = {
-                        "state": "pending",
-                        "attempts": 0,
-                        "last_error": "orphan recovered",
-                        "next_retry_at": 0.0,
-                        "taken_at": datetime.now(timezone.utc).isoformat(),
-                        "size_bytes": size,
-                        "object_key": "",
-                    }
-                    print(f"[QUEUE] Orphan teruggevonden: {disk_fname}")
+                # 2) Orphan files in pending/ folder die NIET in queue.json staan
+                #    (bv. door race-condition tijdens een eerdere sessie weggevallen)
+                pending_dir = os.path.join(queue_dir(self.booking_id), "pending")
+                try:
+                    disk_files = set(os.listdir(pending_dir))
+                except FileNotFoundError:
+                    disk_files = set()
+                for disk_fname in disk_files:
+                    if disk_fname not in files:
+                        full = os.path.join(pending_dir, disk_fname)
+                        if not os.path.isfile(full):
+                            continue
+                        try:
+                            size = os.path.getsize(full)
+                        except OSError:
+                            size = 0
+                        files[disk_fname] = {
+                            "state": "pending",
+                            "attempts": 0,
+                            "last_error": "orphan recovered",
+                            "next_retry_at": 0.0,
+                            "taken_at": datetime.now(timezone.utc).isoformat(),
+                            "size_bytes": size,
+                            "object_key": "",
+                        }
+                        print(f"[QUEUE] Orphan teruggevonden: {disk_fname}")
 
-            _write_queue(self.booking_id, q)
+                _write_queue(self.booking_id, q)
+        except Exception as e:
+            print(f"[UPLOAD] Recovery-fout (continue naar hoofdloop): {e}")
 
         # Hoofd-loop
         while not self._stop.is_set():
@@ -307,7 +321,9 @@ class UploadWorker(QObject):
             # 'failed' wordt na de fix NIET meer gezet (we blijven retryen)
             # maar we respecteren oude failed-entries en zetten ze
             # automatisch terug naar pending zodat ze alsnog kans krijgen.
-            if state == "uploaded":
+            # 'missing' = bronbestand weg uit pending/ — terminaal, skippen
+            # (voorheen flipte dit elke 5s failed→pending→failed = livelock).
+            if state in ("uploaded", "missing"):
                 continue
             if state == "failed":
                 meta["state"] = "pending"
@@ -341,7 +357,10 @@ class UploadWorker(QObject):
         pending_dir = os.path.join(queue_dir(self.booking_id), "pending")
         src = os.path.join(pending_dir, filename)
         if not os.path.isfile(src):
-            meta["state"] = "failed"
+            # Terminaal: bestand is weg (handmatig opgeruimd?). NIET als
+            # 'failed' markeren — dat werd elke tick gereset naar pending
+            # en gaf een eeuwige retry-livelock op een onbestaand bestand.
+            meta["state"] = "missing"
             meta["last_error"] = "file missing in pending/"
             return False, meta["last_error"]
 
@@ -511,11 +530,32 @@ _workers_lock = threading.Lock()
 
 
 def start_worker(booking_id: str, token: str) -> UploadWorker:
-    """Start (of return bestaande) worker voor dit event."""
+    """Start (of return bestaande) worker voor dit event.
+
+    Twee belangrijke randgevallen:
+    - Nieuw token (her-koppelen): de bestaande worker krijgt het nieuwe
+      token + lege URL-cache. Voorheen bleef het oude (dode) token in
+      gebruik tot een app-herstart → uploads faalden eeuwig.
+    - Dode thread: een worker waarvan de thread gecrasht is blijft
+      geregistreerd staan; die vervangen we door een verse.
+    """
+    if not _REQUESTS_AVAILABLE:
+        print("[UPLOAD] requests-package mist — uploads niet mogelijk")
+        return None
     with _workers_lock:
         existing = _active_workers.get(booking_id)
         if existing:
-            return existing
+            thread_alive = (existing._thread is not None
+                            and existing._thread.is_alive())
+            if existing.token != token:
+                print(f"[UPLOAD] Nieuw token voor {booking_id} — worker bijgewerkt")
+                existing.token = token
+                existing._url_cache.clear()
+            if thread_alive:
+                return existing
+            # Thread dood (crash in een eerdere run) → verse worker
+            print(f"[UPLOAD] Worker-thread voor {booking_id} was dood — herstart")
+            _active_workers.pop(booking_id, None)
         w = UploadWorker(booking_id, token)
         w.start()
         _active_workers[booking_id] = w
@@ -634,7 +674,22 @@ def discover_pending_uploads(events_dir: str) -> dict:
             continue
         counts = get_status(entry)
         if counts["total"] == 0:
-            continue
+            # queue.json leeg/corrupt — maar staan er nog foto's in
+            # pending/? Dan moet er tóch een worker komen: die bouwt via
+            # z'n orphan-recovery het manifest opnieuw op. Zonder deze
+            # check bleven zulke foto's voor eeuwig onge-upload.
+            pending_dir = os.path.join(bdir, "pending")
+            try:
+                orphans = [f for f in os.listdir(pending_dir)
+                           if os.path.isfile(os.path.join(pending_dir, f))]
+            except FileNotFoundError:
+                orphans = []
+            if not orphans:
+                continue
+            print(f"[WATCHDOG] {entry}: queue.json leeg maar "
+                  f"{len(orphans)} foto('s) in pending/ — orphan recovery")
+            counts["total"] = len(orphans)
+            counts["pending"] = len(orphans)
         result[entry] = {
             "token": token_map.get(entry, ""),
             **counts,
@@ -692,25 +747,36 @@ class CloudWatchdog:
     def _tick(self):
         """Eén ronde: vind nieuwe queues, start workers, log stale."""
         snapshots = discover_pending_uploads(self._events_dir)
-        active_keys = set()
+        # Alleen LEVENDE workers tellen als actief — een gecrashte
+        # worker-thread blijft geregistreerd staan en blokkeerde
+        # voorheen de booking permanent (start_worker vervangt 'm nu).
+        alive_keys = set()
         with _workers_lock:
-            active_keys = set(_active_workers.keys())
+            for bid, w in _active_workers.items():
+                if w._thread is not None and w._thread.is_alive():
+                    alive_keys.add(bid)
 
         for booking_id, info in snapshots.items():
             token = info.get("token", "")
+            needs_work = (info["pending"] > 0
+                          or info.get("failed", 0) > 0
+                          # legacy queues met persisted 'uploading' states
+                          # moeten ook een worker krijgen (recovery reset
+                          # ze naar pending)
+                          or info.get("uploading", 0) > 0)
             if not token:
-                if info["pending"] > 0 or info.get("failed", 0) > 0:
+                if needs_work:
                     print(f"[WATCHDOG] {booking_id}: "
                           f"{info['pending']}p/{info.get('failed', 0)}f maar GEEN token "
                           f"in events/. Koppel event opnieuw om te uploaden.")
                 continue
-            # Worker draait al? Skip.
-            if booking_id in active_keys:
+            # Levende worker draait al? Skip.
+            if booking_id in alive_keys:
                 continue
-            # Pending of failed? Start worker.
-            if info["pending"] > 0 or info.get("failed", 0) > 0:
+            if needs_work:
                 print(f"[WATCHDOG] Start worker voor {booking_id} "
-                      f"({info['pending']}p/{info.get('failed', 0)}f)")
+                      f"({info['pending']}p/{info.get('failed', 0)}f"
+                      f"/{info.get('uploading', 0)}u)")
                 start_worker(booking_id, token)
 
 

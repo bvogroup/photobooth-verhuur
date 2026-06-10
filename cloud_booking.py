@@ -97,6 +97,14 @@ def fetch_booking(token: str, use_cache_on_offline: bool = True) -> Tuple[Option
     if resp.status_code == 403:
         return None, "Booking is nog niet betaald"
     if resp.status_code != 200:
+        # Server-fout (5xx/429/401): probeer de lokale cache zodat een
+        # tijdelijke backend-storing een al-gekoppeld event niet breekt.
+        # 404/403 hierboven zijn écht permanent — daar geen cache.
+        if use_cache_on_offline:
+            cached = _read_booking_cache(token)
+            if cached:
+                return cached, (f"server-fout {resp.status_code} "
+                                f"(cache gebruikt)")
         return None, f"Server fout {resp.status_code}: {resp.text[:200]}"
 
     try:
@@ -344,5 +352,18 @@ def fetch_template_bg(token: str, template_id: str,
         os.replace(tmp, local)
     except Exception as e:
         return None, f"Lokaal opslaan mislukt: {e}"
+
+    # Cache-bestanden met een ANDERE extensie opruimen — anders blijft
+    # bij een png→jpg wissel de oude png voor eeuwig voorgaan in het
+    # offline-fallback pad (dat checkt png eerst).
+    for other_ext in ("png", "jpg", "jpeg"):
+        if other_ext == ext:
+            continue
+        stale = _template_bg_cache_path(template_id, other_ext)
+        try:
+            if os.path.isfile(stale):
+                os.remove(stale)
+        except Exception:
+            pass
 
     return local, ""

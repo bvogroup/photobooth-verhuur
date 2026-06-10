@@ -441,12 +441,20 @@ def print_photo(image_path, printer_name, copies=1, profile_key=None):
 
     try:
         # Load saved DEVMODE (captured via driver dialog) if available.
-        # Multi-profile (DNP): probeer profile-specifiek; bij ontbreken val
-        # terug op legacy single-file zodat upgrade-paden niet breken.
+        # Multi-profile (DNP): een expliciet gevraagd profiel MOET bestaan —
+        # stil terugvallen op de legacy blob betekent verkeerd papierformaat
+        # of geen cut (bv. triple-strip die als één vel uit de printer komt)
+        # zonder dat iemand een fout ziet.
         saved_devmode = None
         if profile_key:
             saved_devmode = load_saved_devmode(printer_name, profile_key)
-        if saved_devmode is None:
+            if saved_devmode is None:
+                raise PrinterError(
+                    f"Printer-profiel '{profile_key}' is niet vastgelegd op "
+                    f"deze machine. Leg het profiel vast via Instellingen → "
+                    f"Geavanceerd → printer-profielen, en probeer opnieuw."
+                )
+        else:
             saved_devmode = load_saved_devmode(printer_name)
 
         _gdi32 = ctypes.windll.gdi32
