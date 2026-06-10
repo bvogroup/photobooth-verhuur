@@ -7901,8 +7901,15 @@ class PhotoboothWindow(QMainWindow):
         else:
             self._show_error(t("error_cannot_make_strip"))
 
-    def _maybe_enqueue_linked(self, file_path: str, prefix: str = "") -> None:
-        """Voeg foto toe aan upload-queue als Linked-modus actief en gekoppeld."""
+    def _maybe_enqueue_linked(self, file_path: str, prefix: str = "",
+                              kind: str = "") -> None:
+        """Voeg foto toe aan upload-queue als Linked-modus actief en gekoppeld.
+
+        kind ('photo'/'strip'/'gif') + self.session_id reizen mee naar de
+        cloud zodat het digitale album in het klantenportaal per sessie kan
+        groeperen met de strip als held. Zonder expliciete kind wordt 'ie
+        afgeleid van het prefix/de extensie.
+        """
         ev = self.active_event
         if not ev:
             return
@@ -7911,13 +7918,18 @@ class PhotoboothWindow(QMainWindow):
         booking_id = getattr(ev, 'linked_booking_id', '')
         if not booking_id or not file_path or not os.path.isfile(file_path):
             return
+        if not kind:
+            if file_path.lower().endswith('.gif'):
+                kind = 'gif'
+            elif prefix.startswith('strip'):
+                kind = 'strip'
+            else:
+                kind = 'photo'
         try:
             from cloud_uploader import enqueue
-            # Optioneel prefix om strip vs raw te onderscheiden in R2
-            if prefix:
-                # Stub: queue-naam gebruikt origineel filename — prefix is voor logging
-                pass
-            enqueue(booking_id, file_path)
+            enqueue(booking_id, file_path,
+                    session_id=getattr(self, 'session_id', '') or '',
+                    kind=kind)
         except Exception as e:
             print(f"[LINKED] Enqueue fout: {e}")
 
@@ -7954,6 +7966,8 @@ class PhotoboothWindow(QMainWindow):
         self._boomerang_path = gif_path
         # Upload boomerang to cloud separately (cloud upload started before boomerang was ready)
         self._upload_boomerang_to_cloud(gif_path)
+        # Linked-modus: gif ook naar het digitale album in het klantenportaal
+        self._maybe_enqueue_linked(gif_path, kind='gif')
 
     def _upload_boomerang_to_cloud(self, gif_path):
         """Upload boomerang GIF to R2 after it's created (separate from main upload)."""

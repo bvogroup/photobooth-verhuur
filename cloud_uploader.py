@@ -167,12 +167,17 @@ def _backoff(attempts: int, kind: str = "server") -> float:
 
 # ── Public API ────────────────────────────────────────────────────────
 
-def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> Optional[str]:
+def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None,
+            session_id: str = "", kind: str = "") -> Optional[str]:
     """Voeg een foto toe aan de upload-queue van een event.
 
     Verplaats de file naar pending/ en registreer in queue.json. Atomic onder
     booking-lock zodat een tegelijkertijd-draaiende worker geen entries verliest.
     Returns het pad in pending/ of None bij fout.
+
+    session_id + kind ('photo'/'strip'/'gif') worden per file bewaard en
+    bij mark-upload meegestuurd zodat het digitale album in het klanten-
+    portaal foto's per sessie kan groeperen met de strip als 'held'.
     """
     if not booking_id or not os.path.isfile(file_path):
         return None
@@ -204,6 +209,8 @@ def enqueue(booking_id: str, file_path: str, taken_at: Optional[str] = None) -> 
             "taken_at": taken_at or datetime.now(timezone.utc).isoformat(),
             "size_bytes": os.path.getsize(dest),
             "object_key": "",
+            "session_id": session_id or "",
+            "kind": kind or "",
         }
         _write_queue(booking_id, q)
     print(f"[QUEUE] Foto in queue: {booking_id}/{filename} ({q['files'][filename]['size_bytes']} bytes)")
@@ -459,7 +466,12 @@ class UploadWorker(QObject):
         # 4. Succes: log naar mark-photobooth-upload + verplaats naar uploaded/
         meta["object_key"] = ticket["object_key"]
         try:
-            self._mark_upload(meta["object_key"], meta.get("size_bytes", 0), meta.get("taken_at"))
+            self._mark_upload(
+                meta["object_key"], meta.get("size_bytes", 0),
+                meta.get("taken_at"),
+                session_id=meta.get("session_id", ""),
+                kind=meta.get("kind", ""),
+            )
         except Exception as e:
             # Niet kritiek — upload zelf is gelukt, alleen log mist
             print(f"[UPLOAD] mark-upload faalde voor {filename}: {e}")
@@ -523,8 +535,21 @@ class UploadWorker(QObject):
         self._url_cache[filename] = data
         return data, ""
 
-    def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str]) -> None:
+    def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str],
+                     session_id: str = "", kind: str = "") -> None:
         url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/mark-photobooth-upload"
+        payload = {
+            "token": self.token,
+            "object_key": object_key,
+            "size_bytes": size,
+            "taken_at": taken_at,
+        }
+        # Album-metadata: alleen meesturen indien bekend (backwards-compat —
+        # de edge function accepteert beide vormen).
+        if session_id:
+            payload["session_id"] = session_id
+        if kind:
+            payload["kind"] = kind
         try:
             r = requests.post(
                 url,
@@ -533,12 +558,7 @@ class UploadWorker(QObject):
                     "apikey": config.CLIXIBO_ANON_KEY,
                     "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
                 },
-                json={
-                    "token": self.token,
-                    "object_key": object_key,
-                    "size_bytes": size,
-                    "taken_at": taken_at,
-                },
+                json=payload,
                 timeout=10,
             )
             if r.status_code != 200:
