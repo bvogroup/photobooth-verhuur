@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.96"
+VERSION = "v1.99.97"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -25,10 +25,13 @@ LIVE_VIEW_INTERVAL_MS = 33  # ~30 fps fallback (main loop runs as fast as HTTP a
 CAPTURE_TIMEOUT_SEC = 20    # Max wait time for capture to complete
 
 # === Printer Settings ===
-# Verhuur-fork draait altijd op DNP QW410. Default was "HiTi P525" —
-# op een verse installatie werd dan geen printer gevonden en faalde
-# elke print stilletjes. settings.json override blijft mogelijk.
-PRINTER_NAME = "DP-QW410"  # Must partially match the Windows printer name
+# BEWUST een naam die op DNP-machines niets matcht: de operator MOET
+# éénmalig zelf de juiste printer-queue aanklikken (opgeslagen in
+# settings.json). Een matchende default ("DP-QW410") pakte via de
+# partial match telkens een willekeurige queue (Kopie 1/Kopie 2) en
+# sprong zo steeds terug naar een andere printer. Een niet-matchende
+# default faalt sinds v1.99.95 luid (print_failed) ipv stil.
+PRINTER_NAME = "HiTi P525"  # Must partially match the Windows printer name
 PRINT_WIDTH_INCH = 4
 PRINT_HEIGHT_INCH = 6
 PRINT_DPI = 300
