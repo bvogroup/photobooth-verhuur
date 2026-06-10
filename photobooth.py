@@ -3782,13 +3782,26 @@ class PhotoboothWindow(QMainWindow):
         self._idle_wifi_tip.raise_()
 
     def _on_idle_wifi_setup_clicked(self):
-        """Open Windows wifi-instellingen popup."""
+        """Open de Windows wifi-flyout (zelfde aanpak als de welcome-page).
+
+        BELANGRIJK: gebruik ms-availablenetworks: (het netwerk-popup
+        paneeltje van de shell) en NIET ms-settings:network-wifi — de
+        Settings-app opent als gewoon venster en belandt ONZICHTBAAR
+        achter het fullscreen always-on-top boothscherm, waardoor de
+        knop "niks lijkt te doen". De shell-flyout verschijnt wél
+        bovenop een topmost venster.
+        """
         try:
-            import os as _os
-            _os.startfile("ms-settings:network-wifi")
-            print("[WIFI] Windows wifi-instellingen geopend")
-        except Exception as e:
-            print(f"[WIFI] Kon settings niet openen: {e}")
+            os.startfile("ms-availablenetworks:")
+            print("[WIFI] WiFi flyout geopend")
+        except OSError as e:
+            print(f"[WIFI] Kon WiFi flyout niet openen: {e}")
+            # Fallback: Settings → Network → WiFi (kan achter het
+            # boothscherm belanden, maar beter dan niets)
+            try:
+                os.startfile("ms-settings:network-wifi")
+            except OSError as e2:
+                print(f"[WIFI] Settings page ook niet bereikbaar: {e2}")
 
     def _idle_wifi_check_tick(self):
         """Periodieke check (elke 2s) op de idle-page: probeer een snelle
