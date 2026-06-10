@@ -1508,6 +1508,15 @@ class PhotoboothWindow(QMainWindow):
               f"label={status.label!r} connected={status.connected} "
               f"method={status.error_method}")
 
+        # In settings NOOIT een fout-overlay — de operator moet bij de
+        # instellingen kunnen (printer kiezen, profiel vastleggen) juist
+        # wanneer er een printerprobleem is. Sluit ook een eventueel nog
+        # openstaande overlay (vangnet voor elke settings-route).
+        if hasattr(self, 'state') and self.state == State.SETTINGS:
+            if self._dnp_error_overlay is not None:
+                self._hide_dnp_error_overlay()
+            return
+
         # Skip overlay tijdens actieve sessie — onderbreekt de gast
         in_session = hasattr(self, 'state') and self.state != State.IDLE
 
@@ -12929,6 +12938,14 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[PIN] Error: {e}", flush=True)
                 import traceback; traceback.print_exc()
                 return
+        # Zelfde voorbereiding als _go_settings_after_pin: poller pauzeren
+        # (focus-steal tijdens typen) + printer-fout overlay verbergen —
+        # anders blokkeert het rode scherm de instellingen.
+        self._pause_dnp_poll(True)
+        try:
+            self._hide_dnp_error_overlay()
+        except Exception:
+            pass
         # Exit fullscreen for settings — show as normal maximized window with title bar
         self.state = State.SETTINGS
         # Remove frameless/topmost flags so Windows title bar appears
