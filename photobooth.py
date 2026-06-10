@@ -2116,10 +2116,14 @@ class PhotoboothWindow(QMainWindow):
             row_lay.setSpacing(4)
 
             has_token = bool(info.get("token"))
-            token_marker = "✓ token" if has_token else "⚠ GEEN token (koppel event opnieuw)"
+            token_marker = ("✓ token" if has_token
+                            else "⚠ GEEN token (scan QR van deze booking 1x opnieuw)")
             token_color = config.COLOR_SUCCESS if has_token else config.COLOR_DANGER
 
-            header = QLabel(f"<b>{booking_id[:8]}</b>  ·  {token_marker}")
+            label_part = info.get("booking_label") or ""
+            name_part = (f"<b>{label_part}</b>  ·  {booking_id[:8]}"
+                         if label_part else f"<b>{booking_id[:8]}</b>")
+            header = QLabel(f"{name_part}  ·  {token_marker}")
             header.setFont(QFont("DM Sans", 12, QFont.Bold))
             header.setStyleSheet(f"color: {token_color}; background: transparent;")
             row_lay.addWidget(header)
@@ -16170,6 +16174,13 @@ class PhotoboothWindow(QMainWindow):
         new_token = q.get("token", "") or ""
         if new_token:
             self.active_event.linked_token = new_token
+            # Token ook bij de upload-queue zelf bewaren zodat deze booking
+            # blijft uploaden nadat de booth aan een ander event gekoppeld is.
+            try:
+                from cloud_uploader import save_queue_token
+                save_queue_token(str(bid), new_token, label)
+            except Exception as e:
+                print(f"[LINKED] save_queue_token fout (niet kritiek): {e}")
         self.active_event.linked_booking_label = label
         # Design path NIET wissen als de response 'm niet teruggeeft —
         # behoud bestaande lokale referentie voor offline-flow.
@@ -16291,6 +16302,16 @@ class PhotoboothWindow(QMainWindow):
         if self.active_event:
             self.active_event.linked_token = token
             self.active_event.save(config.EVENTS_DIR)
+            # Token bij de upload-queue bewaren — QR-coupling pad heeft het
+            # token direct (komt uit de gescande code, niet uit de response).
+            try:
+                from cloud_uploader import save_queue_token
+                save_queue_token(
+                    self.active_event.linked_booking_id, token,
+                    getattr(self.active_event, 'linked_booking_label', ''),
+                )
+            except Exception as e:
+                print(f"[LINKED] save_queue_token fout (niet kritiek): {e}")
 
         # Design verwerken indien aanwezig
         if design_local_path:

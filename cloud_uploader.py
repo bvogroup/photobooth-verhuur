@@ -112,6 +112,46 @@ def _write_queue(booking_id: str, q: dict) -> None:
     _atomic_write_json(os.path.join(queue_dir(booking_id), "queue.json"), q)
 
 
+# ── Token-persistentie per queue ──────────────────────────────────────
+# Het booking-token leefde voorheen alleen in het event-JSON (linked_token).
+# Bij her-koppelen aan een nieuwe booking werd dat veld overschreven →
+# wachtrijen van oudere events strandden voor eeuwig ("GEEN token").
+# Door het token bij de wachtrij zelf op te slaan blijft elke queue
+# zelfstandig uploadbaar, ongeacht welk event nu gekoppeld is.
+
+def save_queue_token(booking_id: str, token: str, label: str = "") -> None:
+    """Bewaar het booking-token in token.json naast de queue (idempotent)."""
+    if not booking_id or not token:
+        return
+    try:
+        _atomic_write_json(
+            os.path.join(queue_dir(booking_id), "token.json"),
+            {
+                "token": token,
+                "booking_label": label,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as e:
+        print(f"[QUEUE] token.json schrijven mislukt voor {booking_id}: {e}")
+
+
+def read_queue_token(booking_id: str) -> dict:
+    """Lees token.json. Returns {"token": "", "booking_label": ""} bij afwezig."""
+    path = os.path.join(_data_root(), "upload_queue", booking_id, "token.json")
+    if not os.path.isfile(path):
+        return {"token": "", "booking_label": ""}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            "token": data.get("token", "") or "",
+            "booking_label": data.get("booking_label", "") or "",
+        }
+    except Exception:
+        return {"token": "", "booking_label": ""}
+
+
 def _backoff(attempts: int, kind: str = "server") -> float:
     """Bepaal retry-wachttijd in seconden.
 
@@ -542,6 +582,9 @@ def start_worker(booking_id: str, token: str) -> UploadWorker:
     if not _REQUESTS_AVAILABLE:
         print("[UPLOAD] requests-package mist — uploads niet mogelijk")
         return None
+    # Vangnet: token altijd bij de queue persisteren zodat deze wachtrij
+    # ook na her-koppelen aan een ander event uploadbaar blijft.
+    save_queue_token(booking_id, token)
     with _workers_lock:
         existing = _active_workers.get(booking_id)
         if existing:
@@ -690,8 +733,14 @@ def discover_pending_uploads(events_dir: str) -> dict:
                   f"{len(orphans)} foto('s) in pending/ — orphan recovery")
             counts["total"] = len(orphans)
             counts["pending"] = len(orphans)
+        # Token: eerst uit events/*.json (actueel gekoppeld), anders uit
+        # token.json bij de queue zelf (bewaard bij eerdere koppeling) —
+        # zo blijven wachtrijen van oude events gewoon uploaden zonder
+        # her-koppelen.
+        tok_info = read_queue_token(entry)
         result[entry] = {
-            "token": token_map.get(entry, ""),
+            "token": token_map.get(entry, "") or tok_info["token"],
+            "booking_label": tok_info["booking_label"],
             **counts,
         }
     return result
