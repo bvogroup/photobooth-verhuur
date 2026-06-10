@@ -1517,13 +1517,14 @@ class PhotoboothWindow(QMainWindow):
                 self._hide_dnp_error_overlay()
             return
 
-        # Geen event gekoppeld (welcome/QR-scan scherm): GEEN printer-
-        # meldingen. De huurder is nog bezig met de setup — foutmeldingen
-        # over de printer zijn dan alleen maar verwarrend. Ze verschijnen
-        # vanzelf zodra het event gekoppeld is en de fout nog bestaat.
+        # Geen event gekoppeld (welcome/QR-scan scherm) OF printen staat
+        # uit: GEEN printer-meldingen. Zonder koppeling is de huurder nog
+        # bezig met de setup; met printen uit is de printer simpelweg
+        # niet relevant. Meldingen verschijnen vanzelf zodra gekoppeld én
+        # printen aan staat én de fout nog bestaat.
         ev = self.active_event
         coupled = bool(ev and getattr(ev, 'linked_booking_id', ''))
-        if not coupled:
+        if not coupled or not self.effective_print_enabled:
             if self._dnp_error_overlay is not None:
                 self._hide_dnp_error_overlay()
             if hasattr(self, '_welcome_printer_banner'):
@@ -2231,9 +2232,14 @@ class PhotoboothWindow(QMainWindow):
         gebruikt een andere driver-pad (WM_POINTER) dus blijft werken,
         maar pc-toetsenbord/muis kan onderbroken raken. We pauzeren
         dus alles wat niet IDLE is.
+
+        Printen uitgeschakeld → poller blijft ALTIJD gepauzeerd: er valt
+        niks te bewaken en de poll-cyclus kost onnodig resources.
         """
         if getattr(self, '_dnp_poller', None) is None:
             return
+        if not paused and not self.effective_print_enabled:
+            paused = True
         try:
             self._dnp_poller.pause(paused)
         except Exception:
@@ -6151,7 +6157,8 @@ class PhotoboothWindow(QMainWindow):
             st = getattr(self, '_dnp_last_status', None)
             ev_chk = self.active_event
             coupled = bool(ev_chk and getattr(ev_chk, 'linked_booking_id', ''))
-            if (coupled and st is not None and st.is_blocking()
+            if (coupled and self.effective_print_enabled
+                    and st is not None and st.is_blocking()
                     and self._dnp_error_overlay is None):
                 from dnp_status import StatusLevel
                 if (st.level == StatusLevel.ERROR
@@ -9183,6 +9190,13 @@ class PhotoboothWindow(QMainWindow):
         """
         if not self.strip_path:
             self._sharing_print_status.setText(t("no_strip"))
+            return
+
+        # Printen uitgeschakeld → nooit een job starten (vangnet — de
+        # print-knoppen horen al verborgen te zijn, maar auto-print of
+        # een gemiste code-route mag hier niet doorheen glippen).
+        if not self.effective_print_enabled:
+            print("[PRINTER] Print-job genegeerd — printen staat uit")
             return
 
         # Pre-print DNP status-check. We gebruiken de laatst gepolde status
@@ -14477,6 +14491,15 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Printen: {'aan' if checked else 'uit'}")
         self._update_printer_visibility()
+        # Printen uit → poller direct pauzeren + eventuele fout-overlay
+        # weg (er valt niks meer te bewaken). Weer aan → poller hervat
+        # zodra we settings verlaten (_go_idle → _pause_dnp_poll(False)).
+        if not checked:
+            self._pause_dnp_poll(True)
+            try:
+                self._hide_dnp_error_overlay()
+            except Exception:
+                pass
 
     def _on_auto_print_toggled(self, checked):
         """Toggle auto-print and auto-save."""
