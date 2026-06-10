@@ -118,9 +118,13 @@ class ToggleSwitch(QAbstractButton):
     def setChecked(self, on: bool):
         was_checked = self.isChecked()
         super().setChecked(on)
-        # Als de state niet veranderde (bv. al checked en nog eens setChecked(True)),
-        # toch de thumb forceren naar de juiste positie (bv. eerste keer laden).
-        if was_checked == bool(on):
+        # Thumb syncen wanneer toggled NIET gaat vuren: state ongewijzigd
+        # (eerste load) of signals geblokkeerd (settings-load via _set).
+        # Zonder de signalsBlocked-check bleef het bolletje op de oude
+        # positie staan terwijl de state wel veranderd was.
+        if was_checked == bool(on) or self.signalsBlocked():
+            if self._anim.state() == QPropertyAnimation.Running:
+                self._anim.stop()
             self._thumb_pos = self._thumb_end_pos(bool(on))
             self.update()
 

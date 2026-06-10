@@ -8826,7 +8826,16 @@ class PhotoboothWindow(QMainWindow):
     # ── Tussen-scherm handlers ──────────────────────────────────────────
 
     def _on_review_photos_ok(self):
-        """User klikt 'Ja' op 'foto's goed gelukt?' → naar print-vraag panel."""
+        """User klikt 'Ja' op 'foto's goed gelukt?' → naar print-vraag panel.
+
+        Printen uitgeschakeld → de print-vraag heeft geen zin; sla 'm
+        over en ga direct naar het deel-paneel met de QR-code (zelfde
+        pad als 'Nee, geen print').
+        """
+        if not self.effective_print_enabled:
+            print("[REVIEW] Print-vraag overgeslagen — printen staat uit")
+            self._on_review_print_no()
+            return
         if hasattr(self, '_review_panel_stack'):
             self._review_panel_stack.setCurrentIndex(1)
 
@@ -13239,6 +13248,14 @@ class PhotoboothWindow(QMainWindow):
                 widget.blockSignals(True)
                 widget.setText(value)
                 widget.blockSignals(False)
+            elif hasattr(widget, 'setChecked'):
+                # ToggleSwitch (QAbstractButton) — viel voorheen door alle
+                # branches heen waardoor toggles NOOIT gesynct werden met
+                # de opgeslagen waarde: na een herstart toonden ze altijd
+                # hun bouwtijd-default (aan), ongeacht de echte instelling.
+                widget.blockSignals(True)
+                widget.setChecked(bool(value))
+                widget.blockSignals(False)
 
         if ev:
             _set(self._cut_checkbox, ev.cut_enabled)
@@ -16304,6 +16321,25 @@ class PhotoboothWindow(QMainWindow):
             if pkg:
                 print(f"[BOOKING] Onbekend pakket {pkg!r} — delay-default "
                       f"(standard/20s) wordt gebruikt")
+        # Pakket bepaalt printen: 'foto' (Light — alleen digitaal, geen
+        # printer in het pakket) → printen automatisch UIT; alle andere
+        # pakketten → AAN. Alleen bij een ANDERE booking dan voorheen,
+        # zodat een handmatige toggle niet elke periodieke refresh (60s)
+        # van dezelfde booking wordt teruggedraaid.
+        if old_id != str(bid):
+            new_print_enabled = (pkg != "foto")
+            if self.active_event.print_enabled != new_print_enabled:
+                print(f"[BOOKING] Pakket {pkg or 'onbekend'} → printen "
+                      f"{'AAN' if new_print_enabled else 'UIT'}")
+            self.active_event.print_enabled = new_print_enabled
+            # Settings-toggle meteen syncen indien al gebouwd
+            if hasattr(self, '_print_enabled_toggle'):
+                try:
+                    self._print_enabled_toggle.blockSignals(True)
+                    self._print_enabled_toggle.setChecked(new_print_enabled)
+                    self._print_enabled_toggle.blockSignals(False)
+                except Exception:
+                    pass
         self.active_event.save(config.EVENTS_DIR)
 
     def _show_couple_event_dialog(self):
