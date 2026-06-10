@@ -9705,6 +9705,15 @@ class PhotoboothWindow(QMainWindow):
                 print("[QR] Cloud upload nog bezig, spinner getoond")
                 # Register local session anyway (for fallback)
                 generate_session_url(session_id, config.WEB_SERVER_PORT)
+                # Vangnet-poll: werk de inline QR bij zodra de cloud-URL
+                # binnenkomt. Voorheen startte deze poll alleen via de
+                # (verwijderde) QR-knop — daardoor kon de spinner eeuwig
+                # blijven draaien als de upload trager was dan de gast.
+                if not hasattr(self, '_qr_poll_timer') or self._qr_poll_timer is None \
+                        or not self._qr_poll_timer.isActive():
+                    self._qr_poll_timer = QTimer()
+                    self._qr_poll_timer.timeout.connect(self._poll_qr_cloud_url)
+                    self._qr_poll_timer.start(500)
         except Exception as e:
             print(f"[QR] Fout bij voorbereiden: {e}")
             self._qr_ready = False
@@ -10036,6 +10045,12 @@ class PhotoboothWindow(QMainWindow):
                     self.qr_url_label.show()
                     self._stop_qr_spinner()
                     self._qr_ready = True
+                    # INLINE QR ook updaten — zonder deze call bleef de
+                    # spinner op het deelscherm eeuwig draaien wanneer de
+                    # upload pas klaar was NA _prepare_qr_code (race die
+                    # vrijwel altijd verloren wordt sinds de print-vraag
+                    # wordt overgeslagen bij printen-uit).
+                    self._update_inline_qr(qr_pixmap, url, ready=True)
                     print("[CLOUD] QR code bijgewerkt naar cloud URL")
                 except Exception as e:
                     print(f"[CLOUD] Kon QR niet bijwerken: {e}")
@@ -10063,6 +10078,8 @@ class PhotoboothWindow(QMainWindow):
                         self.qr_url_label.show()
                         self._stop_qr_spinner()
                         self._qr_ready = True
+                        # Inline QR ook naar de lokale fallback-URL
+                        self._update_inline_qr(qr_pixmap, local_url, ready=True)
                         print(f"[CLOUD] Fallback QR (lokaal) getoond: {local_url}")
             except Exception as e:
                 print(f"[CLOUD] Fallback QR mislukt: {e}")
