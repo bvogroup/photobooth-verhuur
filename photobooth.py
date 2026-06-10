@@ -1517,6 +1517,22 @@ class PhotoboothWindow(QMainWindow):
                 self._hide_dnp_error_overlay()
             return
 
+        # Geen event gekoppeld (welcome/QR-scan scherm): GEEN printer-
+        # meldingen. De huurder is nog bezig met de setup — foutmeldingen
+        # over de printer zijn dan alleen maar verwarrend. Ze verschijnen
+        # vanzelf zodra het event gekoppeld is en de fout nog bestaat.
+        ev = self.active_event
+        coupled = bool(ev and getattr(ev, 'linked_booking_id', ''))
+        if not coupled:
+            if self._dnp_error_overlay is not None:
+                self._hide_dnp_error_overlay()
+            if hasattr(self, '_welcome_printer_banner'):
+                try:
+                    self._welcome_printer_banner.hide()
+                except Exception:
+                    pass
+            return
+
         # Skip overlay tijdens actieve sessie — onderbreekt de gast
         in_session = hasattr(self, 'state') and self.state != State.IDLE
 
@@ -6129,10 +6145,13 @@ class PhotoboothWindow(QMainWindow):
             print(f"[PRINTER] Delay-flush fout: {e}")
         # Fout ontstaan TIJDENS de sessie? De status-callback vuurt alleen
         # bij veranderingen, dus als de fout blijft bestaan komt er geen
-        # nieuwe trigger meer — toon de overlay nu alsnog.
+        # nieuwe trigger meer — toon de overlay nu alsnog. Alleen bij een
+        # gekoppeld event: op het welcome/QR-scherm geen printer-meldingen.
         try:
             st = getattr(self, '_dnp_last_status', None)
-            if (st is not None and st.is_blocking()
+            ev_chk = self.active_event
+            coupled = bool(ev_chk and getattr(ev_chk, 'linked_booking_id', ''))
+            if (coupled and st is not None and st.is_blocking()
                     and self._dnp_error_overlay is None):
                 from dnp_status import StatusLevel
                 if (st.level == StatusLevel.ERROR
