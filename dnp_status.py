@@ -540,6 +540,42 @@ def _parse_controls(controls: list, status: DNPStatus):
     # grootste in 100-9999 range = total. NB: life kan groter zijn dan remaining
     # dus we doen het op MOMENT van verzameling: als we al 2 ints in 'remaining'
     # range hebben, daarna komen weer ints, dat is life_counter.
+    # ── VOORKEURSPAD: vaste QW410-rolgroottes als anker ───────────────
+    # De QW410 kent maar twee mediaformaten met VASTE capaciteit:
+    # 4x6" = 150 prints, 4.5x8" = 110 prints. Staat die waarde letterlijk
+    # tussen de integers, dan is dát de total; remaining = de grootste
+    # waarde ≤ total (na het wegnemen van één total-occurrence). Alles
+    # erboven is de levensteller.
+    # Dit voorkomt de 150/3275-bug: de levensteller (bv. 3275) valt óók
+    # in de oude 50-9999 band waardoor remaining=150 (rolgrootte!) en
+    # total=3275 (levensteller) gerapporteerd werd terwijl er echt nog
+    # maar 46 prints over waren.
+    m = (status.media or "").lower().replace(" ", "")
+    if m.startswith("4x6"):
+        media_totals = [150]
+    elif m.startswith("4.5"):
+        media_totals = [110]
+    else:
+        media_totals = [150, 110]  # media onbekend: beide proberen
+    anchor_total = next((t for t in media_totals if t in integers), None)
+    if anchor_total is not None:
+        rest = list(integers)
+        rest.remove(anchor_total)  # één occurrence = de total-weergave zelf
+        rem_cands = [v for v in rest if v <= anchor_total]
+        if rem_cands:
+            # Grootste ≤ total: negeert losse strooi-nullen, pakt bij een
+            # verse rol de tweede total-occurrence (150/150) en bij bijna
+            # leeg gewoon het kleine getal (3/150).
+            status.prints_remaining = max(rem_cands)
+            status.prints_total = anchor_total
+        else:
+            status.prints_total = anchor_total
+        life_cands = [v for v in rest if v > anchor_total]
+        if life_cands and status.life_counter is None:
+            status.life_counter = max(life_cands)
+        return
+
+    # ── FALLBACK: oude band-heuristiek (geen rolgrootte herkend) ─────
     unique = []
     seen = set()
     dup_values = set()
