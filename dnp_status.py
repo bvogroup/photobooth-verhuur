@@ -559,17 +559,24 @@ def _parse_controls(controls: list, status: DNPStatus):
         media_totals = [150, 110]  # media onbekend: beide proberen
     anchor_total = next((t for t in media_totals if t in integers), None)
     if anchor_total is not None:
-        rest = list(integers)
-        rest.remove(anchor_total)  # één occurrence = de total-weergave zelf
+        # LET OP: de dialog toont het total vaak DUBBEL (tekst + progress-
+        # bar). Alle total-occurrences tellen dus NIET mee als rest —
+        # anders rapporteert een rol met 46 over alsnog "150/150".
+        n_total = integers.count(anchor_total)
+        rest = [v for v in integers if v != anchor_total]
         rem_cands = [v for v in rest if v <= anchor_total]
+        status.prints_total = anchor_total
         if rem_cands:
-            # Grootste ≤ total: negeert losse strooi-nullen, pakt bij een
-            # verse rol de tweede total-occurrence (150/150) en bij bijna
-            # leeg gewoon het kleine getal (3/150).
+            # Echte rest-waarde aanwezig (bv. 46 of 3) — pak de grootste
+            # zodat losse strooi-nullen genegeerd worden.
             status.prints_remaining = max(rem_cands)
-            status.prints_total = anchor_total
-        else:
-            status.prints_total = anchor_total
+        elif n_total >= 3:
+            # Drie of meer total-occurrences = verse rol: remaining==total
+            # staat als extra occurrence naast tekst + progressbar.
+            status.prints_remaining = anchor_total
+        # n_total <= 2 zonder aparte rest-waarde: niet te onderscheiden of
+        # de rol vers is of de rest-waarde niet uitgelezen werd — laat
+        # remaining dan liever leeg dan een gok rapporteren.
         life_cands = [v for v in rest if v > anchor_total]
         if life_cands and status.life_counter is None:
             status.life_counter = max(life_cands)
