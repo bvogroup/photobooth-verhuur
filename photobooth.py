@@ -950,11 +950,27 @@ class PhotoboothWindow(QMainWindow):
         self.setWindowTitle("Photobooth")
         self.setStyleSheet(STYLESHEET)
 
+        # Booth-wide backend-brand cache — bron voor self.backend_brand
+        # wanneer er (nog) geen actief event is (welcome-page). Wordt
+        # bijgewerkt in _on_backend_brand_changed.
+        self._booth_brand_cache = 'hippe'
+        _bs_boot = None
+        try:
+            from booth_settings import BoothSettings as _BS
+            if _BS.exists():
+                _bs_boot = _BS.load()
+                self._booth_brand_cache = _bs_boot.backend_brand
+                print(f"[SETTINGS] Booth-brand cache: {self._booth_brand_cache}")
+        except Exception as _bb_ex:
+            print(f"[SETTINGS] Booth-brand cache laden mislukt: {_bb_ex}")
+
         # Connect camera on main thread (EDSDK requires single-thread access)
-        # Determine camera mode from saved active event JSON
-        _cam_mode = "dslr"
-        _wc_idx = 0
-        _wc_res = ""
+        # Determine camera mode from saved active event JSON.
+        # Default: booth-wide instellingen — zo werkt de camera-keuze ook
+        # zonder actief event (welcome-page). Het event-JSON wint hieronder.
+        _cam_mode = _bs_boot.camera_mode if _bs_boot else "dslr"
+        _wc_idx = _bs_boot.webcam_index if _bs_boot else 0
+        _wc_res = _bs_boot.webcam_resolution if _bs_boot else ""
         try:
             import json as _json
             _active_id = self._load_app_setting("active_event_id")
@@ -2836,9 +2852,16 @@ class PhotoboothWindow(QMainWindow):
     @property
     def backend_brand(self) -> str:
         """'hippe' (default, DNP QW410) of 'huren' (Verhuurophalen,
-        HiTi P525L). Booth-wide instelling via Geavanceerd."""
+        HiTi P525L). Booth-wide instelling via Geavanceerd.
+
+        Zonder actief event (welcome-page) geldt de booth-wide waarde
+        uit booth_settings.json (cache geladen bij start) — anders zou
+        de switch terugvallen op 'hippe' tot er een event gekoppeld is."""
         ev = self.active_event
-        brand = getattr(ev, 'backend_brand', 'hippe') if ev else 'hippe'
+        if ev:
+            brand = getattr(ev, 'backend_brand', 'hippe')
+        else:
+            brand = getattr(self, '_booth_brand_cache', 'hippe')
         return brand if brand in ('hippe', 'huren') else 'hippe'
 
     @staticmethod
@@ -13434,18 +13457,14 @@ class PhotoboothWindow(QMainWindow):
                     rb.blockSignals(False)
                 self._apply_live_view_alignment()
             # Backend-brand radio's syncen (blockSignals — geen save-loop)
-            if hasattr(self, '_brand_hippe_radio'):
-                brand = getattr(ev, 'backend_brand', 'hippe') or 'hippe'
-                for rb in (self._brand_hippe_radio, self._brand_huren_radio):
-                    rb.blockSignals(True)
-                self._brand_huren_radio.setChecked(brand == 'huren')
-                self._brand_hippe_radio.setChecked(brand != 'huren')
-                for rb in (self._brand_hippe_radio, self._brand_huren_radio):
-                    rb.blockSignals(False)
-                if hasattr(self, '_brand_hiti_row'):
-                    self._brand_hiti_row.setVisible(brand == 'huren')
+            self._sync_brand_radios()
             self._update_pin_button_text()
         else:
+            # Geen actief event: brand-radio's + camerastatus tonen de
+            # booth-wide waarden (anders bleven ze op de bouwtijd-default
+            # 'hippe' / "geen webcam" staan).
+            self._sync_brand_radios()
+            self._update_webcam_status()
             _set(self._cut_checkbox, True)
             _set(self._print_enabled_toggle, True)
             _set(self._auto_print_toggle, True)
@@ -14626,6 +14645,22 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Snijden: {'aan' if checked else 'uit'}")
 
+    def _sync_brand_radios(self):
+        """Backend-brand radio's + HiTi-rij syncen met de actuele waarde
+        (event of booth-wide via self.backend_brand). blockSignals zodat
+        het syncen zelf geen save-loop triggert."""
+        if not hasattr(self, '_brand_hippe_radio'):
+            return
+        brand = self.backend_brand
+        for rb in (self._brand_hippe_radio, self._brand_huren_radio):
+            rb.blockSignals(True)
+        self._brand_huren_radio.setChecked(brand == 'huren')
+        self._brand_hippe_radio.setChecked(brand != 'huren')
+        for rb in (self._brand_hippe_radio, self._brand_huren_radio):
+            rb.blockSignals(False)
+        if hasattr(self, '_brand_hiti_row'):
+            self._brand_hiti_row.setVisible(brand == 'huren')
+
     def _on_backend_brand_changed(self, brand: str):
         """Backend-switch in Geavanceerd: 'hippe' of 'huren'.
 
@@ -14634,11 +14669,25 @@ class PhotoboothWindow(QMainWindow):
         hippe: poller hervat bij het verlaten van settings. De waarde
         propageert booth-wide via Event.save.
         """
+        # Booth-wide persist — óók wanneer er (nog) geen actief event
+        # gekoppeld is (welcome-page). Zonder dit ging de keuze verloren
+        # bij herstart zolang er geen event was om via te propageren.
+        self._booth_brand_cache = brand
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            bs.backend_brand = brand
+            if brand != 'huren':
+                # Canon (dslr) is huren-only — terug naar hippe betekent
+                # terug naar webcam, zodat hippe-gedrag onaangetast blijft.
+                bs.camera_mode = "webcam"
+            bs.save()
+            print(f"[SETTINGS] Backend-brand booth-wide opgeslagen: {brand}")
+        except Exception as ex:
+            print(f"[SETTINGS] Backend-brand booth-wide opslaan mislukt: {ex}")
         if self.active_event:
             self.active_event.backend_brand = brand
             if brand != 'huren' and self.active_event.camera_mode != "webcam":
-                # Canon (dslr) is huren-only — terug naar hippe betekent
-                # terug naar webcam, zodat hippe-gedrag onaangetast blijft.
                 self.active_event.camera_mode = "webcam"
                 print("[SETTINGS] Camera terug naar webcam (hippe-brand)")
             self.active_event.save(config.EVENTS_DIR)
@@ -16014,15 +16063,26 @@ class PhotoboothWindow(QMainWindow):
                 cam_combo.addItem(name, idx)
             if is_huren:
                 cam_combo.addItem("Canon camera", CANON_IDX)
-            # Select saved
+            # Select saved — event-waarde, anders booth-wide (welcome-page)
+            saved_mode, saved_idx = "webcam", 0
             if self.active_event:
-                if is_huren and self.active_event.camera_mode == "dslr":
-                    cam_combo.setCurrentIndex(cam_combo.count() - 1)
-                else:
-                    for i in range(cam_combo.count()):
-                        if cam_combo.itemData(i) == self.active_event.webcam_index:
-                            cam_combo.setCurrentIndex(i)
-                            break
+                saved_mode = self.active_event.camera_mode
+                saved_idx = self.active_event.webcam_index
+            else:
+                try:
+                    from booth_settings import BoothSettings as _BS
+                    if _BS.exists():
+                        _b = _BS.load()
+                        saved_mode, saved_idx = _b.camera_mode, _b.webcam_index
+                except Exception:
+                    pass
+            if is_huren and saved_mode == "dslr":
+                cam_combo.setCurrentIndex(cam_combo.count() - 1)
+            else:
+                for i in range(cam_combo.count()):
+                    if cam_combo.itemData(i) == saved_idx:
+                        cam_combo.setCurrentIndex(i)
+                        break
 
             def _on_cam_change(ci):
                 # Verhuur: resolutie-keuze verborgen, altijd "Standaard" (=hoogste).
@@ -16051,40 +16111,71 @@ class PhotoboothWindow(QMainWindow):
         QTimer.singleShot(50, _do_scan)
 
         def _save():
-            if self.active_event:
-                ci = cam_combo.currentIndex()
-                cam_idx = cam_combo.itemData(ci)
-                old_mode = self.active_event.camera_mode
-                if is_huren and cam_idx == CANON_IDX:
-                    # Canon camera gekozen — schakel naar DSLR-modus
-                    # (digiCamControl). Zelfde herstart-flow als de
-                    # oorspronkelijke modus-radio's.
-                    self.active_event.camera_mode = "dslr"
-                    self.active_event.save(config.EVENTS_DIR)
-                    self._update_webcam_status()
-                    print("[SETTINGS] Camera: Canon DSLR (huren-modus)")
-                    dialog.accept()
-                    if old_mode != "dslr":
-                        self._ask_camera_restart()
-                    return
-                if cam_idx is None or cam_idx < 0:
-                    cam_idx = 0
-                res = res_combo.currentText()
-                cam_name = cam_combo.currentText()
+            ci = cam_combo.currentIndex()
+            cam_idx = cam_combo.itemData(ci)
+            ev = self.active_event
+
+            def _booth_persist(**kw):
+                # Booth-wide opslaan — werkt óók zonder actief event
+                # (welcome-page); nieuwe events erven dit via create_new.
+                try:
+                    from booth_settings import BoothSettings as _BS
+                    bs = _BS.load() if _BS.exists() else _BS()
+                    for k, v in kw.items():
+                        setattr(bs, k, v)
+                    bs.save()
+                except Exception as ex:
+                    print(f"[SETTINGS] Camera booth-wide opslaan mislukt: {ex}")
+
+            old_mode = "webcam"
+            if ev:
+                old_mode = ev.camera_mode
+            else:
+                try:
+                    from booth_settings import BoothSettings as _BS
+                    if _BS.exists():
+                        old_mode = _BS.load().camera_mode
+                except Exception:
+                    pass
+
+            if is_huren and cam_idx == CANON_IDX:
+                # Canon camera gekozen — schakel naar DSLR-modus
+                # (digiCamControl). Zelfde herstart-flow als de
+                # oorspronkelijke modus-radio's.
+                if ev:
+                    ev.camera_mode = "dslr"
+                    ev.save(config.EVENTS_DIR)
+                _booth_persist(camera_mode="dslr")
+                self._webcam_status_label.setText("Canon camera (digiCamControl)")
+                self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+                print("[SETTINGS] Camera: Canon DSLR (huren-modus)")
+                dialog.accept()
+                if old_mode != "dslr":
+                    self._ask_camera_restart()
+                return
+
+            if cam_idx is None or cam_idx < 0:
+                cam_idx = 0
+            res = res_combo.currentText()
+            cam_name = cam_combo.currentText()
+            res_val = res if res != "Standaard" else ""
+            if ev:
                 if is_huren:
                     # Echte webcam gekozen — eventueel terug uit Canon-modus
-                    self.active_event.camera_mode = "webcam"
-                self.active_event.webcam_index = int(cam_idx)
-                self.active_event.webcam_name = cam_name
-                self.active_event.webcam_resolution = res if res != "Standaard" else ""
-                self.active_event.save(config.EVENTS_DIR)
-                self._webcam_status_label.setText(f"{cam_name} ({res})")
-                self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
-                print(f"[SETTINGS] Webcam opgeslagen: index={cam_idx}, naam={cam_name}, resolutie={res}")
-                if old_mode != self.active_event.camera_mode:
-                    dialog.accept()
-                    self._ask_camera_restart()
-                    return
+                    ev.camera_mode = "webcam"
+                ev.webcam_index = int(cam_idx)
+                ev.webcam_name = cam_name
+                ev.webcam_resolution = res_val
+                ev.save(config.EVENTS_DIR)
+            _booth_persist(camera_mode="webcam", webcam_index=int(cam_idx),
+                           webcam_name=cam_name, webcam_resolution=res_val)
+            self._webcam_status_label.setText(f"{cam_name} ({res})")
+            self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+            print(f"[SETTINGS] Webcam opgeslagen: index={cam_idx}, naam={cam_name}, resolutie={res}")
+            if old_mode != "webcam":
+                dialog.accept()
+                self._ask_camera_restart()
+                return
             dialog.accept()
 
         ok_btn.clicked.connect(_save)
@@ -16191,13 +16282,27 @@ class PhotoboothWindow(QMainWindow):
         """Update webcam status label from saved settings."""
         if not hasattr(self, '_webcam_status_label'):
             return
+        # Waarden uit het event, of booth-wide als er (nog) geen event is
         ev = self.active_event
-        if ev and ev.camera_mode == "dslr" and self.backend_brand == 'huren':
+        cam_mode, wc_name, wc_idx, wc_res = None, "", 0, ""
+        if ev:
+            cam_mode = ev.camera_mode
+            wc_name, wc_idx, wc_res = ev.webcam_name, ev.webcam_index, ev.webcam_resolution
+        else:
+            try:
+                from booth_settings import BoothSettings as _BS
+                if _BS.exists():
+                    bs = _BS.load()
+                    cam_mode = bs.camera_mode
+                    wc_name, wc_idx, wc_res = bs.webcam_name, bs.webcam_index, bs.webcam_resolution
+            except Exception:
+                pass
+        if cam_mode == "dslr" and self.backend_brand == 'huren':
             self._webcam_status_label.setText("Canon camera (digiCamControl)")
             self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
-        elif ev and ev.camera_mode == "webcam":
-            name = ev.webcam_name or f"Camera {ev.webcam_index}"
-            res = ev.webcam_resolution or "Standaard"
+        elif cam_mode == "webcam":
+            name = wc_name or f"Camera {wc_idx}"
+            res = wc_res or "Standaard"
             self._webcam_status_label.setText(f"{name} ({res})")
             self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
         else:
