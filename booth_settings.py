@@ -177,7 +177,14 @@ class BoothSettings:
         instance.countdown_seconds = 5
         instance.photo_delay_ms = 3000
         instance.sharing_timeout = 30
-        instance.camera_mode = "webcam"
+        # Camera: hippe-brand is altijd webcam (origineel verhuur-gedrag,
+        # ongewijzigd). Verhuurophalen mag óók "dslr" — Canon via
+        # digiCamControl, gekozen via "Canon camera" in de webcam-dialoog.
+        if instance.backend_brand == "huren":
+            if instance.camera_mode not in ("webcam", "dslr"):
+                instance.camera_mode = "webcam"
+        else:
+            instance.camera_mode = "webcam"
         instance.camera_rotation = 0
         instance.live_view_position = "center"
         instance.webcam_resolution = ""  # leeg = hoogste beschikbare

@@ -13412,7 +13412,9 @@ class PhotoboothWindow(QMainWindow):
                     self._cam_webcam_radio.setChecked(True)
                 else:
                     self._cam_dslr_radio.setChecked(True)
-                self._webcam_select_row.setVisible(ev.camera_mode == "webcam")
+                # Verhuur: picker-rij ALTIJD zichtbaar — ook in Canon-stand
+                # (huren+dslr) is dit de enige plek om van camera te wisselen.
+                self._webcam_select_row.setVisible(True)
                 self._cam_dslr_radio.blockSignals(False)
                 self._cam_webcam_radio.blockSignals(False)
                 self._update_webcam_status()
@@ -14634,8 +14636,14 @@ class PhotoboothWindow(QMainWindow):
         """
         if self.active_event:
             self.active_event.backend_brand = brand
+            if brand != 'huren' and self.active_event.camera_mode != "webcam":
+                # Canon (dslr) is huren-only — terug naar hippe betekent
+                # terug naar webcam, zodat hippe-gedrag onaangetast blijft.
+                self.active_event.camera_mode = "webcam"
+                print("[SETTINGS] Camera terug naar webcam (hippe-brand)")
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Backend-brand: {brand}")
+            self._update_webcam_status()
         if hasattr(self, '_brand_hiti_row'):
             self._brand_hiti_row.setVisible(brand == 'huren')
         if brand == 'huren':
@@ -15864,7 +15872,8 @@ class PhotoboothWindow(QMainWindow):
     def _on_camera_mode_changed(self, checked=None):
         """Toggle between DSLR and webcam mode — requires restart."""
         is_webcam = self._cam_webcam_radio.isChecked()
-        self._webcam_select_row.setVisible(is_webcam)
+        # Verhuur: picker-rij blijft altijd zichtbaar (zie _load_settings)
+        self._webcam_select_row.setVisible(True)
         if self.active_event:
             old_mode = self.active_event.camera_mode
             new_mode = "webcam" if is_webcam else "dslr"
@@ -15922,6 +15931,19 @@ class PhotoboothWindow(QMainWindow):
             # Default — exact zelfde gedrag als voorheen
             self.live_view_label.setAlignment(Qt.AlignCenter)
 
+    def _ask_camera_restart(self):
+        """Camera-modus gewijzigd (webcam ↔ Canon DSLR) — meld herstart
+        en sluit af. Identieke flow als _on_camera_mode_changed: EDSDK/
+        digiCamControl-initialisatie gebeurt bij opstarten."""
+        from PyQt5.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle(t("dialog_restart_required"))
+        msg.setText(t("camera_mode_changed_restart"))
+        msg.setIcon(QMessageBox.Information)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+        QApplication.quit()
+
     def _open_webcam_dialog(self):
         """Open dialog to select webcam and resolution."""
         dialog = QDialog(self)
@@ -15976,20 +15998,31 @@ class PhotoboothWindow(QMainWindow):
         btn_row.addWidget(ok_btn)
         lay.addLayout(btn_row)
 
+        # Verhuurophalen: extra optie "Canon camera" (DSLR via
+        # digiCamControl). Sentinel-index onderscheidt hem van echte
+        # webcam-indexen (>= 0). Hippe-brand: lijst ongewijzigd.
+        CANON_IDX = -100
+        is_huren = self.backend_brand == 'huren'
+
         def _populate(cameras, resolutions):
-            if not cameras:
+            if not cameras and not is_huren:
                 status.setText(t("no_webcam_found"))
                 return
             status.setText(t("select_webcam_prompt"))
             cam_combo.setVisible(True)
             for idx, name in cameras:
                 cam_combo.addItem(name, idx)
+            if is_huren:
+                cam_combo.addItem("Canon camera", CANON_IDX)
             # Select saved
             if self.active_event:
-                for i in range(cam_combo.count()):
-                    if cam_combo.itemData(i) == self.active_event.webcam_index:
-                        cam_combo.setCurrentIndex(i)
-                        break
+                if is_huren and self.active_event.camera_mode == "dslr":
+                    cam_combo.setCurrentIndex(cam_combo.count() - 1)
+                else:
+                    for i in range(cam_combo.count()):
+                        if cam_combo.itemData(i) == self.active_event.webcam_index:
+                            cam_combo.setCurrentIndex(i)
+                            break
 
             def _on_cam_change(ci):
                 # Verhuur: resolutie-keuze verborgen, altijd "Standaard" (=hoogste).
@@ -16021,10 +16054,26 @@ class PhotoboothWindow(QMainWindow):
             if self.active_event:
                 ci = cam_combo.currentIndex()
                 cam_idx = cam_combo.itemData(ci)
+                old_mode = self.active_event.camera_mode
+                if is_huren and cam_idx == CANON_IDX:
+                    # Canon camera gekozen — schakel naar DSLR-modus
+                    # (digiCamControl). Zelfde herstart-flow als de
+                    # oorspronkelijke modus-radio's.
+                    self.active_event.camera_mode = "dslr"
+                    self.active_event.save(config.EVENTS_DIR)
+                    self._update_webcam_status()
+                    print("[SETTINGS] Camera: Canon DSLR (huren-modus)")
+                    dialog.accept()
+                    if old_mode != "dslr":
+                        self._ask_camera_restart()
+                    return
                 if cam_idx is None or cam_idx < 0:
                     cam_idx = 0
                 res = res_combo.currentText()
                 cam_name = cam_combo.currentText()
+                if is_huren:
+                    # Echte webcam gekozen — eventueel terug uit Canon-modus
+                    self.active_event.camera_mode = "webcam"
                 self.active_event.webcam_index = int(cam_idx)
                 self.active_event.webcam_name = cam_name
                 self.active_event.webcam_resolution = res if res != "Standaard" else ""
@@ -16032,6 +16081,10 @@ class PhotoboothWindow(QMainWindow):
                 self._webcam_status_label.setText(f"{cam_name} ({res})")
                 self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
                 print(f"[SETTINGS] Webcam opgeslagen: index={cam_idx}, naam={cam_name}, resolutie={res}")
+                if old_mode != self.active_event.camera_mode:
+                    dialog.accept()
+                    self._ask_camera_restart()
+                    return
             dialog.accept()
 
         ok_btn.clicked.connect(_save)
@@ -16139,7 +16192,10 @@ class PhotoboothWindow(QMainWindow):
         if not hasattr(self, '_webcam_status_label'):
             return
         ev = self.active_event
-        if ev and ev.camera_mode == "webcam":
+        if ev and ev.camera_mode == "dslr" and self.backend_brand == 'huren':
+            self._webcam_status_label.setText("Canon camera (digiCamControl)")
+            self._webcam_status_label.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+        elif ev and ev.camera_mode == "webcam":
             name = ev.webcam_name or f"Camera {ev.webcam_index}"
             res = ev.webcam_resolution or "Standaard"
             self._webcam_status_label.setText(f"{name} ({res})")
