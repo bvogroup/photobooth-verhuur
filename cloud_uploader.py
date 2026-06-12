@@ -119,7 +119,8 @@ def _write_queue(booking_id: str, q: dict) -> None:
 # Door het token bij de wachtrij zelf op te slaan blijft elke queue
 # zelfstandig uploadbaar, ongeacht welk event nu gekoppeld is.
 
-def save_queue_token(booking_id: str, token: str, label: str = "") -> None:
+def save_queue_token(booking_id: str, token: str, label: str = "",
+                     brand: str = "hippe") -> None:
     """Bewaar het booking-token in token.json naast de queue (idempotent)."""
     if not booking_id or not token:
         return
@@ -129,6 +130,7 @@ def save_queue_token(booking_id: str, token: str, label: str = "") -> None:
             {
                 "token": token,
                 "booking_label": label,
+                "brand": brand or "hippe",
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -140,23 +142,25 @@ def read_queue_token(booking_id: str) -> dict:
     """Lees token.json. Returns {"token": "", "booking_label": ""} bij afwezig."""
     path = os.path.join(_data_root(), "upload_queue", booking_id, "token.json")
     if not os.path.isfile(path):
-        return {"token": "", "booking_label": ""}
+        return {"token": "", "booking_label": "", "brand": "hippe"}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return {
             "token": data.get("token", "") or "",
             "booking_label": data.get("booking_label", "") or "",
+            "brand": data.get("brand", "hippe") or "hippe",
         }
     except Exception:
-        return {"token": "", "booking_label": ""}
+        return {"token": "", "booking_label": "", "brand": "hippe"}
 
 
 # ── Mark-upload (registratie in klantenportaal-DB) ────────────────────
 
 def post_mark_upload(token: str, object_key: str, size: int,
                      taken_at: Optional[str],
-                     session_id: str = "", kind: str = "") -> bool:
+                     session_id: str = "", kind: str = "",
+                     brand: str = "hippe") -> bool:
     """Meld één geüploade foto aan bij mark-photobooth-upload.
 
     Idempotent server-side (upsert op booking_id+storage_path), dus
@@ -174,6 +178,8 @@ def post_mark_upload(token: str, object_key: str, size: int,
         payload["session_id"] = session_id
     if kind:
         payload["kind"] = kind
+    if brand and brand != "hippe":
+        payload["brand"] = brand
     try:
         r = requests.post(
             url,
@@ -194,7 +200,7 @@ def post_mark_upload(token: str, object_key: str, size: int,
         return False
 
 
-def backfill_marks(booking_id: str, token: str) -> int:
+def backfill_marks(booking_id: str, token: str, brand: str = "hippe") -> int:
     """Meld alle reeds-geüploade entries van deze queue alsnog aan.
 
     Achtergrond: de hippe_booking_photos tabel bestond aanvankelijk niet
@@ -234,6 +240,7 @@ def backfill_marks(booking_id: str, token: str) -> int:
             meta.get("taken_at"),
             session_id=meta.get("session_id", ""),
             kind=meta.get("kind", ""),
+            brand=brand,
         )
         if ok:
             ok_count += 1
@@ -355,10 +362,12 @@ class UploadWorker(QObject):
 
     progress_changed = pyqtSignal(dict)  # {total, uploaded, pending, failed, ...}
 
-    def __init__(self, booking_id: str, token: str, parent=None):
+    def __init__(self, booking_id: str, token: str, brand: str = "hippe",
+                 parent=None):
         super().__init__(parent)
         self.booking_id = booking_id
         self.token = token
+        self.brand = brand or "hippe"
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         # cache van pre-signed URLs per filename (om niet elke retry opnieuw te vragen)
@@ -612,7 +621,8 @@ class UploadWorker(QObject):
                     "apikey": config.CLIXIBO_ANON_KEY,
                     "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
                 },
-                json={"token": self.token, "filename": filename, "content_type": "image/jpeg"},
+                json={"token": self.token, "filename": filename,
+                      "content_type": "image/jpeg", "brand": self.brand},
                 timeout=15,
             )
         except (requests.ConnectionError, requests.Timeout) as e:
@@ -639,7 +649,8 @@ class UploadWorker(QObject):
     def _mark_upload(self, object_key: str, size: int, taken_at: Optional[str],
                      session_id: str = "", kind: str = "") -> None:
         ok = post_mark_upload(self.token, object_key, size, taken_at,
-                              session_id=session_id, kind=kind)
+                              session_id=session_id, kind=kind,
+                              brand=self.brand)
         if not ok:
             print(f"[UPLOAD] mark-upload faalde voor {object_key}")
 
@@ -666,7 +677,8 @@ _active_workers: dict = {}  # booking_id → UploadWorker
 _workers_lock = threading.Lock()
 
 
-def start_worker(booking_id: str, token: str) -> UploadWorker:
+def start_worker(booking_id: str, token: str,
+                 brand: str = "hippe") -> UploadWorker:
     """Start (of return bestaande) worker voor dit event.
 
     Twee belangrijke randgevallen:
@@ -681,22 +693,23 @@ def start_worker(booking_id: str, token: str) -> UploadWorker:
         return None
     # Vangnet: token altijd bij de queue persisteren zodat deze wachtrij
     # ook na her-koppelen aan een ander event uploadbaar blijft.
-    save_queue_token(booking_id, token)
+    save_queue_token(booking_id, token, brand=brand)
     with _workers_lock:
         existing = _active_workers.get(booking_id)
         if existing:
             thread_alive = (existing._thread is not None
                             and existing._thread.is_alive())
-            if existing.token != token:
-                print(f"[UPLOAD] Nieuw token voor {booking_id} — worker bijgewerkt")
+            if existing.token != token or existing.brand != (brand or "hippe"):
+                print(f"[UPLOAD] Nieuw token/brand voor {booking_id} — worker bijgewerkt")
                 existing.token = token
+                existing.brand = brand or "hippe"
                 existing._url_cache.clear()
             if thread_alive:
                 return existing
             # Thread dood (crash in een eerdere run) → verse worker
             print(f"[UPLOAD] Worker-thread voor {booking_id} was dood — herstart")
             _active_workers.pop(booking_id, None)
-        w = UploadWorker(booking_id, token)
+        w = UploadWorker(booking_id, token, brand=brand)
         w.start()
         _active_workers[booking_id] = w
         return w
@@ -838,6 +851,7 @@ def discover_pending_uploads(events_dir: str) -> dict:
         result[entry] = {
             "token": token_map.get(entry, "") or tok_info["token"],
             "booking_label": tok_info["booking_label"],
+            "brand": tok_info.get("brand", "hippe"),
             **counts,
         }
     return result
@@ -920,7 +934,8 @@ class CloudWatchdog:
             # album (eenmalig per queue — flag in queue.json). Ook voor
             # volledig-geüploade queues waar geen worker meer voor start.
             try:
-                backfill_marks(booking_id, token)
+                backfill_marks(booking_id, token,
+                               brand=info.get("brand", "hippe"))
             except Exception as e:
                 print(f"[WATCHDOG] Backfill-fout {booking_id}: {e}")
             # Levende worker draait al? Skip.
@@ -930,7 +945,8 @@ class CloudWatchdog:
                 print(f"[WATCHDOG] Start worker voor {booking_id} "
                       f"({info['pending']}p/{info.get('failed', 0)}f"
                       f"/{info.get('uploading', 0)}u)")
-                start_worker(booking_id, token)
+                start_worker(booking_id, token,
+                             brand=info.get("brand", "hippe"))
 
 
 _watchdog_instance: Optional[CloudWatchdog] = None

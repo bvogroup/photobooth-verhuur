@@ -107,6 +107,13 @@ class BoothSettings:
     # respectievelijk '4x6' / '3strips'.
     printer_mode: str = "3strips"
 
+    # ── Backend-brand ──────────────────────────────────────────
+    # "hippe" (default) = Fotoboothje/hippe bookings (DNP QW410)
+    # "huren"           = Verhuurophalen / hippephotoboothhuren.nl
+    #                     (HiTi P525L, 1200x1800 dubbele strip, geen
+    #                     DNP-statuspoller, geen pakket-delay)
+    backend_brand: str = "hippe"
+
     # ── Booth-modus (verhuur Linked-functie) ──────────────────
     # "standalone" = huidige flow (lokaal + 30-min QR share)
     # "linked"     = gekoppeld aan booking in clixibo, foto's via R2 queue

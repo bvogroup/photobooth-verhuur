@@ -1328,6 +1328,11 @@ class PhotoboothWindow(QMainWindow):
             # Printer-naam: gebruik de geconfigureerde printer (per
             # settings.json). De UI-scrape opent de bijbehorende
             # Voorkeursinstellingen dialog off-screen.
+            if self.backend_brand == 'huren':
+                # Verhuurophalen: HiTi P525L — geen DNP-statuspoller,
+                # geen UI-Automation, geen printer-foutmeldingen.
+                print("[DNP-STATUS] Poller overgeslagen — Verhuurophalen-modus")
+                raise RuntimeError("huren-modus: geen DNP poller")
             self._dnp_poller = StatusPoller(
                 interval_sec=2.0,
                 printer_name=config.PRINTER_NAME,
@@ -1419,7 +1424,8 @@ class PhotoboothWindow(QMainWindow):
 
         # Re-verify via cloud (met cache fallback)
         from cloud_booking import fetch_booking
-        b, err = fetch_booking(token, use_cache_on_offline=True)
+        b, err = fetch_booking(token, use_cache_on_offline=True,
+                               brand=self.backend_brand)
         if b:
             self._apply_linked_booking(b)
             if err:
@@ -1461,7 +1467,8 @@ class PhotoboothWindow(QMainWindow):
         def _bg():
             try:
                 from cloud_booking import fetch_booking, fetch_design
-                b, err = fetch_booking(token, use_cache_on_offline=False)
+                b, err = fetch_booking(token, use_cache_on_offline=False,
+                                       brand=self.backend_brand)
                 if not b:
                     print(f"[PERIODIC-REFRESH] Booking fetch fout: {err}")
                     return
@@ -2238,7 +2245,8 @@ class PhotoboothWindow(QMainWindow):
         """
         if getattr(self, '_dnp_poller', None) is None:
             return
-        if not paused and not self.effective_print_enabled:
+        if not paused and (not self.effective_print_enabled
+                           or self.backend_brand == 'huren'):
             paused = True
         try:
             self._dnp_poller.pause(paused)
@@ -2824,6 +2832,14 @@ class PhotoboothWindow(QMainWindow):
         if self.active_event:
             return self.active_event.print_enabled
         return True
+
+    @property
+    def backend_brand(self) -> str:
+        """'hippe' (default, DNP QW410) of 'huren' (Verhuurophalen,
+        HiTi P525L). Booth-wide instelling via Geavanceerd."""
+        ev = self.active_event
+        brand = getattr(ev, 'backend_brand', 'hippe') if ev else 'hippe'
+        return brand if brand in ('hippe', 'huren') else 'hippe'
 
     @staticmethod
     def _new_session_id() -> str:
@@ -9187,6 +9203,11 @@ class PhotoboothWindow(QMainWindow):
         Returns:
             profile_key string, of None bij ontbrekend template.
         """
+        # Verhuurophalen: HiTi P525L gebruikt het legacy enkel-profiel
+        # DEVMODE-blob ("Printer instellen" in Geavanceerd) — geen DNP-
+        # profielen. profile_key None = legacy pad in printer.py.
+        if self.backend_brand == 'huren':
+            return None
         from printer import PROFILE_4X6_CUT, PROFILE_4X6_NOCUT, PROFILE_4X3
         if not template:
             return None
@@ -9273,6 +9294,9 @@ class PhotoboothWindow(QMainWindow):
         # voor betaald heeft.
         package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
         delay_sec = {"premium": 5, "standard": 20}.get(package, 20)
+        if self.backend_brand == 'huren':
+            # Verhuurophalen kent geen pakketten — direct printen
+            delay_sec = 0
         print(f"[PRINTER] Pakket={package or 'onbekend'}, print-delay={delay_sec}s, copies={copies}")
         self._start_inline_print_delay(copies=copies, delay_sec=delay_sec)
 
@@ -12630,6 +12654,65 @@ class PhotoboothWindow(QMainWindow):
         # Verhuur: licentie/account-kaart verbergen (geen login meer).
         card_account.setVisible(False)
 
+        # ── Card: Backend (Hippe / Verhuurophalen) — helemaal onderaan ──
+        card_brand, card_brand_lay = self._settings_card("Backend")
+        brand_intro = QLabel(
+            "Bepaalt met welk boekingssysteem deze booth koppelt. "
+            "Hippe = Fotoboothje (DNP QW410). Verhuurophalen = "
+            "hippephotoboothhuren.nl (HiTi P525L, 1200×1800 dubbele strip, "
+            "geen printer-statusmeldingen)."
+        )
+        brand_intro.setFont(QFont("DM Sans", 11))
+        brand_intro.setWordWrap(True)
+        brand_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_brand_lay.addWidget(brand_intro)
+
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(14)
+        self._brand_hippe_radio = QRadioButton("Hippe (standaard)")
+        self._brand_huren_radio = QRadioButton("Verhuurophalen")
+        for rb in (self._brand_hippe_radio, self._brand_huren_radio):
+            rb.setFont(QFont("DM Sans", 13))
+            rb.setStyleSheet(f"color: {config.COLOR_TEXT};")
+            brand_row.addWidget(rb)
+        brand_row.addStretch()
+        card_brand_lay.addLayout(brand_row)
+        self._brand_hippe_radio.setChecked(True)
+        self._brand_hippe_radio.toggled.connect(
+            lambda on: self._on_backend_brand_changed('hippe') if on else None)
+        self._brand_huren_radio.toggled.connect(
+            lambda on: self._on_backend_brand_changed('huren') if on else None)
+
+        # HiTi-knoppen — alleen relevant (en zichtbaar) in Verhuurophalen-modus
+        self._brand_hiti_row = QWidget()
+        hiti_row_lay = QHBoxLayout(self._brand_hiti_row)
+        hiti_row_lay.setContentsMargins(0, 8, 0, 0)
+        hiti_row_lay.setSpacing(10)
+        hiti_btn_style = (
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 8px; padding: 8px 18px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        hiti_pick_btn = QPushButton("Printer kiezen…")
+        hiti_pick_btn.setCursor(Qt.PointingHandCursor)
+        hiti_pick_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        hiti_pick_btn.setFixedHeight(40)
+        hiti_pick_btn.setStyleSheet(hiti_btn_style)
+        hiti_pick_btn.clicked.connect(self._on_select_printer)
+        hiti_row_lay.addWidget(hiti_pick_btn)
+        hiti_setup_btn = QPushButton("HiTi driver instellen…")
+        hiti_setup_btn.setCursor(Qt.PointingHandCursor)
+        hiti_setup_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        hiti_setup_btn.setFixedHeight(40)
+        hiti_setup_btn.setStyleSheet(hiti_btn_style)
+        hiti_setup_btn.clicked.connect(self._on_configure_printer)
+        hiti_row_lay.addWidget(hiti_setup_btn)
+        hiti_row_lay.addStretch()
+        card_brand_lay.addWidget(self._brand_hiti_row)
+        self._brand_hiti_row.setVisible(False)
+        tab5_lay.addWidget(card_brand)
+
         # App version at bottom of Advanced tab — dynamisch vanuit config.VERSION
         version_label = QLabel(t("version", version=config.VERSION))
         version_label.setFont(QFont("DM Sans", 9))
@@ -13348,6 +13431,17 @@ class PhotoboothWindow(QMainWindow):
                     rb.setChecked(v == pos)
                     rb.blockSignals(False)
                 self._apply_live_view_alignment()
+            # Backend-brand radio's syncen (blockSignals — geen save-loop)
+            if hasattr(self, '_brand_hippe_radio'):
+                brand = getattr(ev, 'backend_brand', 'hippe') or 'hippe'
+                for rb in (self._brand_hippe_radio, self._brand_huren_radio):
+                    rb.blockSignals(True)
+                self._brand_huren_radio.setChecked(brand == 'huren')
+                self._brand_hippe_radio.setChecked(brand != 'huren')
+                for rb in (self._brand_hippe_radio, self._brand_huren_radio):
+                    rb.blockSignals(False)
+                if hasattr(self, '_brand_hiti_row'):
+                    self._brand_hiti_row.setVisible(brand == 'huren')
             self._update_pin_button_text()
         else:
             _set(self._cut_checkbox, True)
@@ -14529,6 +14623,27 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.cut_enabled = checked
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Snijden: {'aan' if checked else 'uit'}")
+
+    def _on_backend_brand_changed(self, brand: str):
+        """Backend-switch in Geavanceerd: 'hippe' of 'huren'.
+
+        Huren-modus: DNP-poller pauzeren + fout-overlay sluiten (HiTi
+        heeft geen statusbewaking) en HiTi-knoppen tonen. Terug naar
+        hippe: poller hervat bij het verlaten van settings. De waarde
+        propageert booth-wide via Event.save.
+        """
+        if self.active_event:
+            self.active_event.backend_brand = brand
+            self.active_event.save(config.EVENTS_DIR)
+            print(f"[SETTINGS] Backend-brand: {brand}")
+        if hasattr(self, '_brand_hiti_row'):
+            self._brand_hiti_row.setVisible(brand == 'huren')
+        if brand == 'huren':
+            self._pause_dnp_poll(True)
+            try:
+                self._hide_dnp_error_overlay()
+            except Exception:
+                pass
 
     def _on_print_enabled_toggled(self, checked):
         """Toggle printing on/off and show/hide printer settings."""
@@ -16310,7 +16425,8 @@ class PhotoboothWindow(QMainWindow):
             # blijft uploaden nadat de booth aan een ander event gekoppeld is.
             try:
                 from cloud_uploader import save_queue_token
-                save_queue_token(str(bid), new_token, label)
+                save_queue_token(str(bid), new_token, label,
+                                 brand=self.backend_brand)
             except Exception as e:
                 print(f"[LINKED] save_queue_token fout (niet kritiek): {e}")
         self.active_event.linked_booking_label = label
@@ -16460,6 +16576,7 @@ class PhotoboothWindow(QMainWindow):
                 save_queue_token(
                     self.active_event.linked_booking_id, token,
                     getattr(self.active_event, 'linked_booking_label', ''),
+                    brand=self.backend_brand,
                 )
             except Exception as e:
                 print(f"[LINKED] save_queue_token fout (niet kritiek): {e}")
@@ -16737,7 +16854,8 @@ class PhotoboothWindow(QMainWindow):
             # Download achtergrond (kan leeg zijn → wit)
             bg_local = ""
             if ct.get("background_url"):
-                bg_path, bg_err = fetch_template_bg(token, tmpl_id, booking_id)
+                bg_path, bg_err = fetch_template_bg(token, tmpl_id, booking_id,
+                                                    brand=self.backend_brand)
                 if bg_path:
                     bg_local = bg_path
                 elif bg_err:
@@ -16837,7 +16955,8 @@ class PhotoboothWindow(QMainWindow):
             return
         try:
             from cloud_uploader import start_worker
-            w = start_worker(ev.linked_booking_id, ev.linked_token)
+            w = start_worker(ev.linked_booking_id, ev.linked_token,
+                             brand=self.backend_brand)
             w.progress_changed.connect(lambda _s: self._update_linked_progress())
         except Exception as e:
             print(f"[LINKED] Uploader start fout: {e}")

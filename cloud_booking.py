@@ -63,7 +63,8 @@ def _template_bg_cache_path(template_id: str, ext: str = "png") -> str:
 
 # ── Booking lookup ───────────────────────────────────────────────────
 
-def fetch_booking(token: str, use_cache_on_offline: bool = True) -> Tuple[Optional[dict], str]:
+def fetch_booking(token: str, use_cache_on_offline: bool = True,
+                  brand: str = "hippe") -> Tuple[Optional[dict], str]:
     """Haal booking-metadata op via QR-token.
 
     Returns (booking_dict, error_message).
@@ -81,7 +82,7 @@ def fetch_booking(token: str, use_cache_on_offline: bool = True) -> Tuple[Option
                 "apikey": config.CLIXIBO_ANON_KEY,
                 "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
             },
-            json={"token": token},
+            json={"token": token, "brand": brand},
             timeout=15,
         )
     except Exception as e:
@@ -264,7 +265,7 @@ def extract_templates(booking_response: dict) -> list:
 
 
 def fetch_template_bg(token: str, template_id: str,
-                       booking_id: str) -> Tuple[Optional[str], str]:
+                       booking_id: str, brand: str = "hippe") -> Tuple[Optional[str], str]:
     """Download de achtergrond-image voor een specifiek cloud-template.
 
     Roept de get-photobooth-template-bg edge function aan, krijgt een signed
@@ -297,7 +298,7 @@ def fetch_template_bg(token: str, template_id: str,
                 "apikey": config.CLIXIBO_ANON_KEY,
                 "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
             },
-            json={"token": token, "template_id": template_id},
+            json={"token": token, "template_id": template_id, "brand": brand},
             timeout=15,
         )
     except Exception as e:

@@ -108,6 +108,9 @@ class Event:
     # Legacy waarden 'canon' / 'dnp' worden bij load gemigreerd naar
     # respectievelijk '4x6' / '3strips' (zie _migrate_legacy_printer_mode).
     printer_mode: str = "3strips"
+    # Backend-brand: "hippe" (default, DNP QW410) of "huren"
+    # (Verhuurophalen — HiTi P525L, 1200x1800 dubbele strip)
+    backend_brand: str = "hippe"
     # Booth-modus + Linked-koppeling (verhuur-versie)
     booth_mode: str = "standalone"
     linked_booking_id: str = ""
