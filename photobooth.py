@@ -17033,6 +17033,11 @@ class PhotoboothWindow(QMainWindow):
                         print(f"[LINKED-CLOUD] Verwijderd (uit portaal weg): {fname}")
                     except OSError as e:
                         print(f"[LINKED-CLOUD] Kon niet verwijderen {fname}: {e}")
+                    try:
+                        if os.path.isfile(fpath + ".sig"):
+                            os.remove(fpath + ".sig")
+                    except OSError:
+                        pass
             except OSError:
                 pass
 
@@ -17060,8 +17065,37 @@ class PhotoboothWindow(QMainWindow):
             local_path = os.path.join(
                 config.TEMPLATES_DIR, f"linked_{booking_id}_tmpl_{safe_id}.json"
             )
+            # Verhuurophalen: het PORTAAL is leidend — de klant past daar de
+            # foto-posities aan en de booth moet volgen. Lokale edits bestaan
+            # in deze modus niet. Signature (frames+bg+canvas) detecteert
+            # portaal-wijzigingen zodat we alleen dán opnieuw genereren (en
+            # niet elke 60s-refresh de achtergrond opnieuw downloaden).
+            cloud_sig = None
+            sig_path = local_path + ".sig"
+            if self.backend_brand == 'huren':
+                import json as _json
+                cloud_sig = _json.dumps({
+                    "frames": ct.get("frames"),
+                    "bg": ct.get("background_url") or "",
+                    "cw": ct.get("canvas_w"), "ch": ct.get("canvas_h"),
+                }, sort_keys=True)
+
+            skip_existing = False
             if os.path.isfile(local_path) and not force_regen:
-                print(f"[LINKED-CLOUD] Behoud lokale versie (force_regen=False): "
+                if cloud_sig is not None:
+                    try:
+                        with open(sig_path, "r", encoding="utf-8") as sf:
+                            skip_existing = (sf.read() == cloud_sig)
+                    except OSError:
+                        skip_existing = False
+                    if not skip_existing:
+                        print(f"[LINKED-CLOUD] Portaal-wijziging gedetecteerd "
+                              f"— template wordt ververst: {safe_id[:8]}")
+                else:
+                    skip_existing = True
+
+            if skip_existing:
+                print(f"[LINKED-CLOUD] Behoud lokale versie: "
                       f"linked_{booking_id}_tmpl_{safe_id}.json")
                 skipped_count += 1
                 # Toch de naam onthouden voor default-selectie
@@ -17103,6 +17137,12 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[LINKED-CLOUD] Template opgeslagen: {os.path.basename(local_path)} "
                       f"({len(tmpl.frames)} frames, is_default={ct.get('is_default')}, "
                       f"sort_order={ct.get('sort_order', 0)})")
+                if cloud_sig is not None:
+                    try:
+                        with open(sig_path, "w", encoding="utf-8") as sf:
+                            sf.write(cloud_sig)
+                    except OSError:
+                        pass  # geen sig = volgende refresh genereert opnieuw
             except Exception as e:
                 print(f"[LINKED-CLOUD] Save fout voor {tmpl_id}: {e}")
                 continue
