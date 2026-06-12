@@ -13368,31 +13368,51 @@ class PhotoboothWindow(QMainWindow):
         ev = self.active_event
 
         def _set(widget, value):
-            if hasattr(widget, '_value') and hasattr(widget, '_val_label'):
-                # Touch spin widget
-                self._touch_spin_set(widget, value)
-            elif isinstance(widget, QCheckBox):
-                widget.blockSignals(True)
-                widget.setChecked(value)
-                widget.blockSignals(False)
-            elif isinstance(widget, QSpinBox):
-                widget.blockSignals(True)
-                widget.setValue(value)
-                widget.blockSignals(False)
-            elif isinstance(widget, QLineEdit):
-                widget.blockSignals(True)
-                widget.setText(value)
-                widget.blockSignals(False)
-            elif hasattr(widget, 'setChecked'):
-                # ToggleSwitch (QAbstractButton) — viel voorheen door alle
-                # branches heen waardoor toggles NOOIT gesynct werden met
-                # de opgeslagen waarde: na een herstart toonden ze altijd
-                # hun bouwtijd-default (aan), ongeacht de echte instelling.
-                widget.blockSignals(True)
-                widget.setChecked(bool(value))
-                widget.blockSignals(False)
+            # KRITIEK: in de verhuur-build zijn de Delen/Betaling-widgets
+            # verwijderd; élke attribuut-toegang op zo'n dood sip-object
+            # gooit RuntimeError. Zonder deze guard stierf deze methode
+            # halverwege (bij _qr_toggle) en werden o.a. de backend-brand
+            # radio's en camera-instellingen NOOIT gesynct — de switch
+            # leek daardoor altijd terug te springen naar Hippe.
+            try:
+                if hasattr(widget, '_value') and hasattr(widget, '_val_label'):
+                    # Touch spin widget
+                    self._touch_spin_set(widget, value)
+                elif isinstance(widget, QCheckBox):
+                    widget.blockSignals(True)
+                    widget.setChecked(value)
+                    widget.blockSignals(False)
+                elif isinstance(widget, QSpinBox):
+                    widget.blockSignals(True)
+                    widget.setValue(value)
+                    widget.blockSignals(False)
+                elif isinstance(widget, QLineEdit):
+                    widget.blockSignals(True)
+                    widget.setText(value)
+                    widget.blockSignals(False)
+                elif hasattr(widget, 'setChecked'):
+                    # ToggleSwitch (QAbstractButton) — viel voorheen door alle
+                    # branches heen waardoor toggles NOOIT gesynct werden met
+                    # de opgeslagen waarde: na een herstart toonden ze altijd
+                    # hun bouwtijd-default (aan), ongeacht de echte instelling.
+                    widget.blockSignals(True)
+                    widget.setChecked(bool(value))
+                    widget.blockSignals(False)
+            except RuntimeError:
+                pass  # widget bestaat niet meer in deze build
+
+        def _safe(fn):
+            """Voer fn uit; sla over als widgets verwijderd zijn."""
+            try:
+                fn()
+            except RuntimeError as ex:
+                print(f"[SETTINGS] Sync-blok overgeslagen (widget weg): {ex}")
 
         if ev:
+            # Brand-radio's + PIN als EERSTE syncen — vóór alle fragiele
+            # widget-aanrakingen, zodat dit nooit meer kan sneuvelen.
+            self._sync_brand_radios()
+            self._update_pin_button_text()
             _set(self._cut_checkbox, ev.cut_enabled)
             _set(self._print_enabled_toggle, ev.print_enabled)
             _set(self._auto_print_toggle, ev.auto_print)
@@ -13402,22 +13422,28 @@ class PhotoboothWindow(QMainWindow):
             _set(self._max_prints_spin, max(ev.max_prints, auto_copies if ev.auto_print else 1))
             _set(self._extra_prints_spin, ev.extra_prints_allowed)
             _set(self._qr_toggle, ev.gallery_enabled)
-            # QR-branding state sync
-            if hasattr(self, '_qr_branding_toggle'):
-                _set(self._qr_branding_toggle, getattr(ev, 'qr_branding_enabled', False))
-            if hasattr(self, '_qr_branding_text'):
-                self._qr_branding_text.blockSignals(True)
-                self._qr_branding_text.setPlainText(getattr(ev, 'qr_branding_text', '') or '')
-                self._qr_branding_text.blockSignals(False)
-                self._qr_branding_text.setVisible(getattr(ev, 'qr_branding_enabled', False))
-            if hasattr(self, '_qr_branding_container'):
-                self._qr_branding_container.setVisible(bool(ev.gallery_enabled))
+            # QR-branding state sync (verwijderde widgets: _safe slaat over)
+            try:
+                if hasattr(self, '_qr_branding_toggle'):
+                    _set(self._qr_branding_toggle, getattr(ev, 'qr_branding_enabled', False))
+                if hasattr(self, '_qr_branding_text'):
+                    self._qr_branding_text.blockSignals(True)
+                    self._qr_branding_text.setPlainText(getattr(ev, 'qr_branding_text', '') or '')
+                    self._qr_branding_text.blockSignals(False)
+                    self._qr_branding_text.setVisible(getattr(ev, 'qr_branding_enabled', False))
+                if hasattr(self, '_qr_branding_container'):
+                    self._qr_branding_container.setVisible(bool(ev.gallery_enabled))
+            except RuntimeError:
+                pass
             _set(self._email_toggle, ev.email_enabled)
             _set(self._email_collect_toggle, getattr(ev, 'email_collect', False))
             _set(self._email_subject_input, ev.email_subject)
-            self._email_body_input.blockSignals(True)
-            self._email_body_input.setPlainText(ev.email_body)
-            self._email_body_input.blockSignals(False)
+            try:
+                self._email_body_input.blockSignals(True)
+                self._email_body_input.setPlainText(ev.email_body)
+                self._email_body_input.blockSignals(False)
+            except RuntimeError:
+                pass
             _set(self._email_send_strip_cb, ev.email_send_strip)
             _set(self._share_single_strip_cb, ev.share_single_strip)
             _set(self._compress_sharing_cb, ev.compress_sharing)
@@ -13428,37 +13454,40 @@ class PhotoboothWindow(QMainWindow):
             _set(self._sharing_timeout_spin, ev.sharing_timeout)
             _set(self._lock_size_spin, ev.lock_icon_size)
             # Camera settings
-            if hasattr(self, '_cam_dslr_radio'):
-                self._cam_dslr_radio.blockSignals(True)
-                self._cam_webcam_radio.blockSignals(True)
-                if ev.camera_mode == "webcam":
-                    self._cam_webcam_radio.setChecked(True)
-                else:
-                    self._cam_dslr_radio.setChecked(True)
-                # Verhuur: picker-rij ALTIJD zichtbaar — ook in Canon-stand
-                # (huren+dslr) is dit de enige plek om van camera te wisselen.
-                self._webcam_select_row.setVisible(True)
-                self._cam_dslr_radio.blockSignals(False)
-                self._cam_webcam_radio.blockSignals(False)
-                self._update_webcam_status()
-                _set(self._cam_mirror_cb, ev.camera_mirror)
-                rot_map = {0: 0, 90: 1, 180: 2, 270: 3}
-                self._cam_rotation_combo.blockSignals(True)
-                self._cam_rotation_combo.setCurrentIndex(rot_map.get(ev.camera_rotation, 0))
-                self._cam_rotation_combo.blockSignals(False)
+            try:
+                if hasattr(self, '_cam_dslr_radio'):
+                    self._cam_dslr_radio.blockSignals(True)
+                    self._cam_webcam_radio.blockSignals(True)
+                    if ev.camera_mode == "webcam":
+                        self._cam_webcam_radio.setChecked(True)
+                    else:
+                        self._cam_dslr_radio.setChecked(True)
+                    # Verhuur: picker-rij ALTIJD zichtbaar — ook in Canon-stand
+                    # (huren+dslr) is dit de enige plek om van camera te wisselen.
+                    self._webcam_select_row.setVisible(True)
+                    self._cam_dslr_radio.blockSignals(False)
+                    self._cam_webcam_radio.blockSignals(False)
+                    self._update_webcam_status()
+                    _set(self._cam_mirror_cb, ev.camera_mirror)
+                    rot_map = {0: 0, 90: 1, 180: 2, 270: 3}
+                    self._cam_rotation_combo.blockSignals(True)
+                    self._cam_rotation_combo.setCurrentIndex(rot_map.get(ev.camera_rotation, 0))
+                    self._cam_rotation_combo.blockSignals(False)
+            except RuntimeError:
+                pass
             # Live view positie radio + alignment toepassen
-            if hasattr(self, '_live_view_pos_radios'):
-                pos = getattr(ev, 'live_view_position', 'center') or 'center'
-                if pos not in self._live_view_pos_radios:
-                    pos = 'center'
-                for v, rb in self._live_view_pos_radios.items():
-                    rb.blockSignals(True)
-                    rb.setChecked(v == pos)
-                    rb.blockSignals(False)
-                self._apply_live_view_alignment()
-            # Backend-brand radio's syncen (blockSignals — geen save-loop)
-            self._sync_brand_radios()
-            self._update_pin_button_text()
+            try:
+                if hasattr(self, '_live_view_pos_radios'):
+                    pos = getattr(ev, 'live_view_position', 'center') or 'center'
+                    if pos not in self._live_view_pos_radios:
+                        pos = 'center'
+                    for v, rb in self._live_view_pos_radios.items():
+                        rb.blockSignals(True)
+                        rb.setChecked(v == pos)
+                        rb.blockSignals(False)
+                    self._apply_live_view_alignment()
+            except RuntimeError:
+                pass
         else:
             # Geen actief event: brand-radio's + camerastatus tonen de
             # booth-wide waarden (anders bleven ze op de bouwtijd-default
@@ -13475,7 +13504,7 @@ class PhotoboothWindow(QMainWindow):
             _set(self._email_toggle, False)
             _set(self._email_collect_toggle, False)
             _set(self._email_subject_input, "Jouw Photobooth Foto's!")
-            self._email_body_input.setPlainText("")
+            _safe(lambda: self._email_body_input.setPlainText(""))
             _set(self._email_send_strip_cb, True)
             _set(self._share_single_strip_cb, False)
             _set(self._compress_sharing_cb, False)
@@ -13497,27 +13526,27 @@ class PhotoboothWindow(QMainWindow):
                     rb.blockSignals(False)
             self._update_pin_button_text()
 
-        # Update printer name label
-        self._printer_name_label.setText(config.PRINTER_NAME or t("printer_not_selected"))
+        # Update printer name label (elk blok _safe: verwijderde widgets
+        # in de verhuur-build mogen de rest van de sync niet blokkeren)
+        _safe(lambda: self._printer_name_label.setText(
+            config.PRINTER_NAME or t("printer_not_selected")))
 
         # Update printer settings visibility
-        self._update_printer_visibility()
+        _safe(self._update_printer_visibility)
 
         # Update Gmail status and email section visibility
-        self._update_gmail_status()
-        self._update_email_visibility()
+        _safe(self._update_gmail_status)
+        _safe(self._update_email_visibility)
 
         # Update idle background preview
-        self._update_bg_preview()
+        _safe(self._update_bg_preview)
 
         # Update layout background preview
-        self._update_layout_bg_preview()
+        _safe(self._update_layout_bg_preview)
 
         # Update photo storage toggle
         if hasattr(self, '_save_photos_toggle') and ev:
-            self._save_photos_toggle.blockSignals(True)
-            self._save_photos_toggle.setChecked(getattr(ev, 'save_photos_locally', True))
-            self._save_photos_toggle.blockSignals(False)
+            _set(self._save_photos_toggle, getattr(ev, 'save_photos_locally', True))
 
         # Update printer-modus 3-knop selector (4x3/4x6/3strips)
         if hasattr(self, '_printer_mode_btn_3strips') and ev:
@@ -13543,55 +13572,67 @@ class PhotoboothWindow(QMainWindow):
         # Geavanceerd — niets te tonen/verbergen op event-load.
 
         # Update booth-modus radio (Standalone/Linked) + linked event card
-        if hasattr(self, '_booth_mode_linked_radio') and ev:
-            bmode = getattr(ev, 'booth_mode', 'standalone')
-            self._booth_mode_standalone_radio.blockSignals(True)
-            self._booth_mode_linked_radio.blockSignals(True)
-            if bmode == 'linked':
-                self._booth_mode_linked_radio.setChecked(True)
-            else:
-                self._booth_mode_standalone_radio.setChecked(True)
-            self._booth_mode_standalone_radio.blockSignals(False)
-            self._booth_mode_linked_radio.blockSignals(False)
-            self._update_linked_card_visibility()
+        try:
+            if hasattr(self, '_booth_mode_linked_radio') and ev:
+                bmode = getattr(ev, 'booth_mode', 'standalone')
+                self._booth_mode_standalone_radio.blockSignals(True)
+                self._booth_mode_linked_radio.blockSignals(True)
+                if bmode == 'linked':
+                    self._booth_mode_linked_radio.setChecked(True)
+                else:
+                    self._booth_mode_standalone_radio.setChecked(True)
+                self._booth_mode_standalone_radio.blockSignals(False)
+                self._booth_mode_linked_radio.blockSignals(False)
+                self._update_linked_card_visibility()
+        except RuntimeError:
+            pass
 
-        # Update payment settings
-        if hasattr(self, '_payment_toggle') and ev:
-            self._payment_toggle.blockSignals(True)
-            self._payment_toggle.setChecked(ev.payment_enabled)
-            self._payment_toggle.blockSignals(False)
-            self._update_payment_info()
+        # Update payment settings (verhuur: betaling-widgets verwijderd)
+        try:
+            if hasattr(self, '_payment_toggle') and ev:
+                self._payment_toggle.blockSignals(True)
+                self._payment_toggle.setChecked(ev.payment_enabled)
+                self._payment_toggle.blockSignals(False)
+                self._update_payment_info()
+        except RuntimeError:
+            pass
 
         # Update SumUp/Clixibo terminal toggle
-        if hasattr(self, '_sumup_toggle') and ev:
-            self._sumup_toggle.blockSignals(True)
-            self._sumup_toggle.setChecked(getattr(ev, 'sumup_enabled', False))
-            self._sumup_toggle.blockSignals(False)
-            self._update_sumup_status()
+        try:
+            if hasattr(self, '_sumup_toggle') and ev:
+                self._sumup_toggle.blockSignals(True)
+                self._sumup_toggle.setChecked(getattr(ev, 'sumup_enabled', False))
+                self._sumup_toggle.blockSignals(False)
+                self._update_sumup_status()
+        except RuntimeError:
+            pass
 
         # Update payment method radio + zichtbaarheid van payment-cards
-        if hasattr(self, '_payment_method_radios') and ev:
-            method = getattr(ev, 'payment_method', 'none')
-            if method not in self._payment_method_radios:
-                method = 'none'
-            for v, rb in self._payment_method_radios.items():
-                rb.blockSignals(True)
-                rb.setChecked(v == method)
-                rb.blockSignals(False)
-            # Toon/verberg cards bij laden. Custom-mode toont Stripe + Voucher
-            # + Custom-card tegelijk.
-            if hasattr(self, '_payment_card'):
-                self._payment_card.setVisible(method in ("stripe", "custom"))
-            if hasattr(self, '_sumup_card'):
-                self._sumup_card.setVisible(method == "sumup")
-            if hasattr(self, '_voucher_card'):
-                self._voucher_card.setVisible(method in ("voucher", "custom"))
-            if hasattr(self, '_custom_card'):
-                self._custom_card.setVisible(method == "custom")
-            if method in ("voucher", "custom"):
-                self._refresh_voucher_ui()
-            if method == "custom":
-                self._refresh_custom_ui()
+        try:
+            if hasattr(self, '_payment_method_radios') and ev:
+                method = getattr(ev, 'payment_method', 'none')
+                if method not in self._payment_method_radios:
+                    method = 'none'
+                for v, rb in self._payment_method_radios.items():
+                    rb.blockSignals(True)
+                    rb.setChecked(v == method)
+                    rb.blockSignals(False)
+                # Toon/verberg cards bij laden. Custom-mode toont Stripe + Voucher
+                # + Custom-card tegelijk.
+                if hasattr(self, '_payment_card'):
+                    self._payment_card.setVisible(method in ("stripe", "custom"))
+                if hasattr(self, '_sumup_card'):
+                    self._sumup_card.setVisible(method == "sumup")
+                if hasattr(self, '_voucher_card'):
+                    self._voucher_card.setVisible(method in ("voucher", "custom"))
+                if hasattr(self, '_custom_card'):
+                    self._custom_card.setVisible(method == "custom")
+                if method in ("voucher", "custom"):
+                    self._refresh_voucher_ui()
+                if method == "custom":
+                    self._refresh_custom_ui()
+        except RuntimeError:
+            pass
 
         # Update event-limiet UI op basis van het actieve event
         if hasattr(self, '_evlimit_status_label'):
@@ -13603,19 +13644,22 @@ class PhotoboothWindow(QMainWindow):
         # Capture screen settings removed — freeze frame is used instead
 
         # Update intro screen preview + text fields
-        if hasattr(self, '_intro_preview_label'):
-            self._update_intro_preview()
-            if self.active_event:
-                _set(self._intro_duration_spin, self.active_event.intro_duration)
-                if hasattr(self, '_intro_text_toggle'):
-                    self._intro_text_toggle.setChecked(self.active_event.intro_text_enabled)
-                    self._intro_text_input.setText(self.active_event.intro_text)
-                    self._intro_text_input.setEnabled(self.active_event.intro_text_enabled)
+        try:
+            if hasattr(self, '_intro_preview_label'):
+                self._update_intro_preview()
+                if self.active_event:
+                    _set(self._intro_duration_spin, self.active_event.intro_duration)
+                    if hasattr(self, '_intro_text_toggle'):
+                        self._intro_text_toggle.setChecked(self.active_event.intro_text_enabled)
+                        self._intro_text_input.setText(self.active_event.intro_text)
+                        self._intro_text_input.setEnabled(self.active_event.intro_text_enabled)
+        except RuntimeError:
+            pass
 
         # Capture text settings removed — freeze frame used instead
 
         # Update account info
-        self._update_account_info()
+        _safe(self._update_account_info)
 
     def _update_account_info(self):
         """Update the Licentie card in settings with current license info."""
@@ -14650,8 +14694,11 @@ class PhotoboothWindow(QMainWindow):
         (event of booth-wide via self.backend_brand). blockSignals zodat
         het syncen zelf geen save-loop triggert."""
         if not hasattr(self, '_brand_hippe_radio'):
+            print("[SETTINGS] Brand-radio sync overgeslagen (widgets nog niet gebouwd)")
             return
         brand = self.backend_brand
+        print(f"[SETTINGS] Brand-radio sync: {brand} "
+              f"(event={'ja' if self.active_event else 'nee'})")
         for rb in (self._brand_hippe_radio, self._brand_huren_radio):
             rb.blockSignals(True)
         self._brand_huren_radio.setChecked(brand == 'huren')
