@@ -3329,7 +3329,7 @@ class PhotoboothWindow(QMainWindow):
         # Start coupling flow
         from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
         loading = CouplingLoadingDialog(self)
-        worker = CouplingWorker(token, self)
+        worker = CouplingWorker(token, self, brand=self.backend_brand)
         self._coupling_worker = worker
 
         def _on_progress(msg):
@@ -16523,7 +16523,7 @@ class PhotoboothWindow(QMainWindow):
 
         from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
         loading = CouplingLoadingDialog(self)
-        worker = CouplingWorker(token, self)
+        worker = CouplingWorker(token, self, brand=self.backend_brand)
         self._coupling_worker = worker
 
         def _on_progress(msg):
@@ -16740,7 +16740,7 @@ class PhotoboothWindow(QMainWindow):
         # Cloud calls op background-thread — UI blijft responsive met loading-dialoog
         from couple_event_dialog import CouplingWorker, CouplingLoadingDialog
         loading = CouplingLoadingDialog(self)
-        worker = CouplingWorker(token, self)
+        worker = CouplingWorker(token, self, brand=self.backend_brand)
         # Bewaren als attr zodat de QThread niet ge-garbage-collect wordt
         self._coupling_worker = worker
 

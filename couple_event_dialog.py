@@ -359,15 +359,20 @@ class CouplingWorker(QThread):
     progress = pyqtSignal(str)
     done = pyqtSignal(object, str, str)  # (booking_data dict|None, design_local_path, error_msg)
 
-    def __init__(self, token: str, parent=None):
+    def __init__(self, token: str, parent=None, brand: str = "hippe"):
         super().__init__(parent)
         self.token = token
+        # 'hippe' of 'huren' — bepaalt in welke tabellen-familie de backend
+        # zoekt. Zonder dit zocht de QR-koppeling ALTIJD bij hippe en kreeg
+        # een Verhuurophalen-token "niet gevonden".
+        self.brand = brand if brand in ("hippe", "huren") else "hippe"
 
     def run(self):
         from cloud_booking import fetch_booking, fetch_design
 
         self.progress.emit("Event ophalen…")
-        b, err = fetch_booking(self.token, use_cache_on_offline=False)
+        b, err = fetch_booking(self.token, use_cache_on_offline=False,
+                               brand=self.brand)
         if not b:
             self.done.emit(None, "", err or "Booking niet gevonden")
             return

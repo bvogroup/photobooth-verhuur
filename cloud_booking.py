@@ -155,37 +155,44 @@ def fetch_design(token: str, design_path: str, booking_id: str) -> Tuple[Optiona
 
     local = _design_cache_path(booking_id, ext)
 
-    # 1. Vraag signed URL via bestaande edge function
-    url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photostrip-design-url"
-    try:
-        resp = requests.post(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "apikey": config.CLIXIBO_ANON_KEY,
-                "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
-            },
-            json={"token": token, "path": design_path},
-            timeout=15,
-        )
-    except Exception as e:
-        # Gebruik cache als beschikbaar
-        if os.path.isfile(local):
-            return local, f"offline (cache gebruikt): {e}"
-        return None, f"Geen internet voor design-fetch: {e}"
+    if design_path.startswith(("http://", "https://")):
+        # Al een volledige (publieke) URL — Verhuurophalen slaat het design
+        # zo op (publieke huren-photostrips bucket). Direct downloaden; de
+        # signed-URL edge function is hippe-only en zou hier "niet gevonden"
+        # geven.
+        signed_url = design_path
+    else:
+        # 1. Vraag signed URL via bestaande edge function (hippe-pad)
+        url = f"{config.CLIXIBO_SUPABASE_URL.rstrip('/')}/functions/v1/get-photostrip-design-url"
+        try:
+            resp = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "apikey": config.CLIXIBO_ANON_KEY,
+                    "Authorization": f"Bearer {config.CLIXIBO_ANON_KEY}",
+                },
+                json={"token": token, "path": design_path},
+                timeout=15,
+            )
+        except Exception as e:
+            # Gebruik cache als beschikbaar
+            if os.path.isfile(local):
+                return local, f"offline (cache gebruikt): {e}"
+            return None, f"Geen internet voor design-fetch: {e}"
 
-    if resp.status_code != 200:
-        if os.path.isfile(local):
-            return local, f"offline (cache gebruikt): server {resp.status_code}"
-        return None, f"Design-fetch fout {resp.status_code}: {resp.text[:200]}"
+        if resp.status_code != 200:
+            if os.path.isfile(local):
+                return local, f"offline (cache gebruikt): server {resp.status_code}"
+            return None, f"Design-fetch fout {resp.status_code}: {resp.text[:200]}"
 
-    try:
-        signed_url = resp.json().get("url")
-    except Exception:
-        return None, "Ongeldige response van design-url endpoint"
+        try:
+            signed_url = resp.json().get("url")
+        except Exception:
+            return None, "Ongeldige response van design-url endpoint"
 
-    if not signed_url:
-        return None, "Geen signed URL terug van endpoint"
+        if not signed_url:
+            return None, "Geen signed URL terug van endpoint"
 
     # 2. Download de design-image
     try:
