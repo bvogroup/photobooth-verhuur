@@ -16921,8 +16921,22 @@ class PhotoboothWindow(QMainWindow):
         # Genereer beide varianten zodat operator kan kiezen.
         # BEHOUD bestaande templates als ze al bestaan (= user edits) tenzij
         # expliciet force_regen aan staat (Ververs-knop of eerste coupling).
+        # Verhuurophalen: ALTIJD 3 foto's — geen 2-foto variant aanbieden;
+        # de keuzepagina valt dan automatisch weg (1 template = auto-select).
+        if self.backend_brand == 'huren':
+            counts = (3,)
+            stale_2foto = os.path.join(config.TEMPLATES_DIR,
+                                       f"linked_{booking_id}_2foto.json")
+            if os.path.isfile(stale_2foto):
+                try:
+                    os.remove(stale_2foto)
+                    print("[LINKED] 2-foto variant verwijderd (huren-modus)")
+                except OSError:
+                    pass
+        else:
+            counts = (2, 3)
         variants_created = []
-        for count in (2, 3):
+        for count in counts:
             tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}_{count}foto.json")
             if os.path.isfile(tmpl_path) and not force_regen:
                 print(f"[LINKED] Template bestaat al — behoud user-edits: linked_{booking_id}_{count}foto.json")
@@ -16941,7 +16955,10 @@ class PhotoboothWindow(QMainWindow):
         # Anders respecteert het de user-keuze tussen 2/3 foto.
         expected_prefix = f"Event {booking_id[:8]} ("
         current = ev.template_name or ""
-        if not current.startswith(expected_prefix) or not current.endswith(" foto's)"):
+        if self.backend_brand == 'huren':
+            # Verhuurophalen: er bestaat alleen een 3-foto variant
+            ev.template_name = f"Event {booking_id[:8]} (3 foto's)"
+        elif not current.startswith(expected_prefix) or not current.endswith(" foto's)"):
             default_count = ev.linked_photo_count or 3
             ev.template_name = f"Event {booking_id[:8]} ({default_count} foto's)"
         # Belangrijk: clear event.background_path zodat template-bg uit cloud wint
