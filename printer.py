@@ -387,7 +387,12 @@ def wait_for_job_completion(printer_name, job_start_time, timeout=30):
     # Timeout — job is probably still printing (slow printer)
     if job_seen:
         return True, f"Print job verzonden ({last_status or 'in wachtrij'})"
-    return False, "Print job niet gevonden in wachtrij"
+    # Job nooit in de wachtrij gezien: de DNP geeft jobs vrijwel direct
+    # door aan z'n interne buffer, dus de queue is vaak alweer leeg vóór
+    # onze eerste check. StartDoc/EndDoc waren al succesvol — dit is dus
+    # vrijwel zeker een geslaagde print, GEEN fout. (Voorheen gaf dit een
+    # valse "Print mislukt"-melding terwijl de print gewoon uitkwam.)
+    return True, "Print job al door de printer verwerkt (queue leeg)"
 
 
 def print_photo(image_path, printer_name, copies=1, profile_key=None):
