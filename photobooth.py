@@ -6333,14 +6333,15 @@ class PhotoboothWindow(QMainWindow):
             self._idle_wifi_check_tick()
             if not self._idle_wifi_check_timer.isActive():
                 self._idle_wifi_check_timer.start()
-        # Show event info + disk warning on idle screen
-        status_text = f"Event: {self.active_event.name}" if self.active_event else ""
+        # Disk warning on idle screen (eventnaam bewust NIET tonen \u2014
+        # gebruiker-verzoek: geen "Event: ..." label linksonderin).
+        status_text = ""
         try:
             import shutil
             disk = shutil.disk_usage(config.PHOTO_DIR)
             free_gb = disk.free / (1024 ** 3)
             if free_gb < 10.0:
-                status_text += f"  |  \u26a0 Schijfruimte: {free_gb:.1f} GB vrij"
+                status_text = f"\u26a0 Schijfruimte: {free_gb:.1f} GB vrij"
         except Exception:
             pass
         self.status_label.setText(status_text)
