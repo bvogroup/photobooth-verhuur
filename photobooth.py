@@ -1035,6 +1035,18 @@ class PhotoboothWindow(QMainWindow):
         else:
             self.led = None
 
+        # LED-veiligheidssweep: forceert de flits-LED uit zodra we niet meer
+        # in een actieve opname-state (COUNTDOWN/CAPTURE) zitten. Vangnet
+        # tegen "LED blijft hangen" wanneer de normale off() niet bereikt
+        # wordt — bv. gast klikt tijdens de flits op het kruisje, of er
+        # treedt een fout/timeout op. Draait altijd, kost vrijwel niets
+        # (ensure_off schrijft alleen als de LED echt nog aan staat).
+        if self.led:
+            self._led_safety_timer = QTimer(self)
+            self._led_safety_timer.setInterval(300)
+            self._led_safety_timer.timeout.connect(self._led_safety_tick)
+            self._led_safety_timer.start()
+
         self.state = State.IDLE
         # Connect cross-thread SumUp signals (daemon thread → main thread)
         self._sumup_payment_signal.connect(self._sumup_auto_start_session)
@@ -7721,6 +7733,17 @@ class PhotoboothWindow(QMainWindow):
             self.capture_screen_label.setText(cap_txt)
         else:
             self.capture_screen_label.setText("")
+
+    def _led_safety_tick(self):
+        """Periodieke vangnet-check (elke 300ms): de flits-LED hoort alleen
+        aan te staan tijdens een actieve opname. In elke andere state
+        forceren we 'm uit, zodat hij nooit blijft hangen na een
+        onderbreking (kruisje/fout/timeout). ensure_off() is idempotent —
+        schrijft alleen als de LED echt nog aan staat."""
+        if not self.led:
+            return
+        if self.state not in (State.COUNTDOWN, State.CAPTURE):
+            self.led.ensure_off()
 
     def _end_flash_effect(self):
         """Hide capture screen and restore live view display.
