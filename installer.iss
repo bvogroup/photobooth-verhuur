@@ -7,7 +7,7 @@
 ;   3. "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Bootharoo"
-#define MyAppVersion "1.99.125"
+#define MyAppVersion "1.99.126"
 #define MyAppPublisher "Bootharoo"
 #define MyAppURL "https://bootharoo.com"
 #define MyAppExeName "Bootharoo.exe"
@@ -62,8 +62,12 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Com
 ; Register new Task Scheduler task (always — autostart is automatic)
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$action = New-ScheduledTaskAction -Execute '{app}\{#MyAppExeName}'; $trigger = New-ScheduledTaskTrigger -AtLogOn; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 0; Register-ScheduledTask -TaskName '{#MyTaskName}' -Action $action -Trigger $trigger -Settings $settings -Force -RunLevel Highest"""; Flags: runhidden
 
-; Optionally launch after install
+; Launch na install bij een handmatige (zichtbare) installatie — checkbox
 Filename: "{app}\{#MyAppExeName}"; Description: "{#MyAppName} starten"; Flags: nowait postinstall skipifsilent
+; Launch na install bij een STILLE installatie (auto-update vanuit de app):
+; de in-app updater draait de installer met /SILENT, dus de booth moet
+; daarna vanzelf weer opstarten.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
 ; Remove Task Scheduler task on uninstall

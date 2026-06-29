@@ -927,6 +927,10 @@ class PhotoboothWindow(QMainWindow):
     _dnp_status_signal = pyqtSignal(object)
     # Idle-page wifi check (bg-thread → main thread) — toont/verbergt wifi-tip
     _idle_wifi_tip_signal = pyqtSignal(bool)
+    # Auto-updater (bg-thread → main thread): check-resultaat + download-voortgang
+    _update_check_signal = pyqtSignal(object)   # dict van updater.check_for_update
+    _update_progress_signal = pyqtSignal(int)   # download-percentage
+    _update_done_signal = pyqtSignal(bool, str) # (gestart?, foutmelding)
 
     def __init__(self):
         super().__init__()
@@ -1062,6 +1066,10 @@ class PhotoboothWindow(QMainWindow):
         self._dnp_status_signal.connect(self._on_dnp_status_change_main)
         # Idle-page wifi-tip signal (bg-thread → main thread)
         self._idle_wifi_tip_signal.connect(self._on_idle_wifi_state)
+        # Auto-updater signals (bg-thread → main thread)
+        self._update_check_signal.connect(self._on_update_check_result)
+        self._update_progress_signal.connect(self._on_update_progress)
+        self._update_done_signal.connect(self._on_update_done)
         # Timer voor 2-sec wifi-check op idle scherm (zelf gestart in _go_idle)
         self._idle_wifi_check_timer = QTimer(self)
         self._idle_wifi_check_timer.setInterval(2000)
@@ -12460,6 +12468,60 @@ class PhotoboothWindow(QMainWindow):
         card_serial_lay.addLayout(serial_row)
         tab5_lay.addWidget(card_serial)
 
+        # ── Card: Software-updates ───────────────────────────────────
+        card_upd, card_upd_lay = self._settings_card("Software-updates")
+        upd_cur = QLabel(f"Huidige versie: {config.VERSION}")
+        upd_cur.setFont(QFont("DM Sans", 12))
+        upd_cur.setStyleSheet(f"color: {config.COLOR_TEXT};")
+        card_upd_lay.addWidget(upd_cur)
+
+        self._update_status_lbl = QLabel("")
+        self._update_status_lbl.setFont(QFont("DM Sans", 12))
+        self._update_status_lbl.setWordWrap(True)
+        self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_upd_lay.addWidget(self._update_status_lbl)
+
+        self._update_progress = QProgressBar()
+        self._update_progress.setRange(0, 100)
+        self._update_progress.setVisible(False)
+        self._update_progress.setFixedHeight(20)
+        card_upd_lay.addWidget(self._update_progress)
+
+        upd_btn_row = QHBoxLayout()
+        upd_btn_row.setSpacing(10)
+        upd_btn_style = (
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 8px; padding: 8px 18px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+            f"QPushButton:disabled {{ background: {config.COLOR_BORDER}; "
+            f"color: {config.COLOR_TEXT_DIM}; }}"
+        )
+        self._update_check_btn = QPushButton("Controleer op updates")
+        self._update_check_btn.setCursor(Qt.PointingHandCursor)
+        self._update_check_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        self._update_check_btn.setFixedHeight(40)
+        self._update_check_btn.setStyleSheet(upd_btn_style)
+        self._update_check_btn.clicked.connect(self._on_check_updates)
+        upd_btn_row.addWidget(self._update_check_btn)
+
+        self._update_install_btn = QPushButton("Nu updaten")
+        self._update_install_btn.setCursor(Qt.PointingHandCursor)
+        self._update_install_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        self._update_install_btn.setFixedHeight(40)
+        self._update_install_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 8px; padding: 8px 18px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+        )
+        self._update_install_btn.clicked.connect(self._on_do_update)
+        self._update_install_btn.setVisible(False)
+        upd_btn_row.addWidget(self._update_install_btn)
+        upd_btn_row.addStretch()
+        card_upd_lay.addLayout(upd_btn_row)
+        self._pending_update = None  # dict van de laatste check
+        tab5_lay.addWidget(card_upd)
+
         # Card: Language
         card_lang, card_lang_lay = self._settings_card(t("language_label").rstrip(":"))
         lang_row = QHBoxLayout()
@@ -14927,6 +14989,106 @@ class PhotoboothWindow(QMainWindow):
             )
         except Exception as e:
             print(f"[LOG-UPLOAD] Context-update mislukt: {e}")
+
+    # ── Auto-updater ─────────────────────────────────────────────────
+    def _on_check_updates(self):
+        """Check GitHub op een nieuwere release (op een bg-thread)."""
+        self._update_check_btn.setEnabled(False)
+        self._update_install_btn.setVisible(False)
+        self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        self._update_status_lbl.setText("Bezig met controleren…")
+
+        def _bg():
+            try:
+                import updater
+                res = updater.check_for_update()
+            except Exception as e:
+                res = {"error": str(e)}
+            self._update_check_signal.emit(res)
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_update_check_result(self, res):
+        """Main thread: toon het check-resultaat."""
+        self._update_check_btn.setEnabled(True)
+        self._pending_update = res
+        if not isinstance(res, dict) or res.get("error"):
+            err = res.get("error", "onbekend") if isinstance(res, dict) else "onbekend"
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
+            self._update_status_lbl.setText(f"Controle mislukt: {err}")
+            return
+        if res.get("newer") and res.get("url"):
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+            self._update_status_lbl.setText(
+                f"Nieuwe versie beschikbaar: {res.get('latest','')}  "
+                f"(je hebt {res.get('current','')})")
+            self._update_install_btn.setText(f"Nu updaten naar {res.get('latest','')}")
+            self._update_install_btn.setVisible(True)
+        elif res.get("newer") and not res.get("url"):
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
+            self._update_status_lbl.setText(
+                f"Versie {res.get('latest','')} gevonden, maar geen installer "
+                f"in die release.")
+        else:
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+            self._update_status_lbl.setText("Je hebt al de nieuwste versie.")
+
+    def _on_do_update(self):
+        """Download de installer + start 'm. De app sluit zichzelf via de
+        installer en herstart na de update."""
+        res = self._pending_update or {}
+        url = res.get("url", "")
+        if not url:
+            return
+        from PyQt5.QtWidgets import QMessageBox
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Updaten")
+        confirm.setText(
+            f"De photobooth wordt nu bijgewerkt naar {res.get('latest','')}.\n\n"
+            "De software sluit even af en start daarna automatisch opnieuw op. "
+            "Doorgaan?")
+        confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        confirm.setDefaultButton(QMessageBox.Yes)
+        if confirm.exec_() != QMessageBox.Yes:
+            return
+
+        self._update_install_btn.setVisible(False)
+        self._update_check_btn.setEnabled(False)
+        self._update_progress.setValue(0)
+        self._update_progress.setVisible(True)
+        self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT};")
+        self._update_status_lbl.setText("Bezig met downloaden…")
+
+        def _bg():
+            try:
+                import updater
+                path = updater.download_installer(
+                    url, progress_cb=lambda p: self._update_progress_signal.emit(p))
+                if not path:
+                    self._update_done_signal.emit(False, "download mislukt")
+                    return
+                ok = updater.run_installer(path)
+                self._update_done_signal.emit(ok, "" if ok else "installer kon niet starten")
+            except Exception as e:
+                self._update_done_signal.emit(False, str(e))
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_update_progress(self, pct):
+        self._update_progress.setValue(int(pct))
+        if pct >= 100:
+            self._update_status_lbl.setText("Download klaar — installer wordt gestart…")
+
+    def _on_update_done(self, ok, err):
+        if ok:
+            # Installer draait nu; hij sluit de app zo af + herstart.
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+            self._update_status_lbl.setText(
+                "Update gestart — de software wordt nu bijgewerkt en herstart.")
+        else:
+            self._update_progress.setVisible(False)
+            self._update_check_btn.setEnabled(True)
+            self._update_install_btn.setVisible(True)
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
+            self._update_status_lbl.setText(f"Update mislukt: {err}")
 
     def _build_status_snapshot(self) -> dict:
         """Bouw een rijke statussnapshot van de booth: wat er op het scherm
