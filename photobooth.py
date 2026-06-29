@@ -1383,7 +1383,10 @@ class PhotoboothWindow(QMainWindow):
                 print("[DNP-STATUS] Poller overgeslagen — Verhuurophalen-modus")
                 raise RuntimeError("huren-modus: geen DNP poller")
             self._dnp_poller = StatusPoller(
-                interval_sec=2.0,
+                # 4s i.p.v. 2s: elke poll is een UI-Automation-scrape (CPU-
+                # intensief, draait continu). 4s halveert die belasting en
+                # houdt de printerstatus nog ruim actueel genoeg.
+                interval_sec=4.0,
                 printer_name=config.PRINTER_NAME,
             )
             # Cross-thread: poller draait op bg-thread, UI-update gaat via pyqtSignal

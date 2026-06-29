@@ -40,27 +40,38 @@ class WebcamWorker(QThread):
         self._last_raw_frame = None  # Full resolution BGR frame for capture
         self._frame_lock = threading.Lock()
 
+    # Live-view = schermpreview, geen eindproduct. Daarom bewust zuinig:
+    #   - encode-breedte beperkt tot 1280 (schermpreview is nooit groter en
+    #     de UI schaalt toch naar de label-grootte) → veel kleinere JPEG,
+    #     dus snellere encode én decode in de UI;
+    #   - JPEG-kwaliteit 80 i.p.v. 95 (op een preview onzichtbaar, ~2× sneller);
+    #   - ~25 fps i.p.v. 33 → ~25% minder werk.
+    # De CAPTURE-foto gebruikt _last_raw_frame (volledige resolutie), die blijft
+    # onaangetast — kwaliteit van de échte foto's verandert niet.
+    _LV_MAX_W = 1280
+    _LV_JPEG_Q = 80
+    _LV_SLEEP_MS = 40  # ~25 fps
+
     def run(self):
         self._running = True
         while self._running and self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                # Store full-res frame for capture
+                # Store full-res frame for capture (ongewijzigd, volle kwaliteit)
                 with self._frame_lock:
                     self._last_raw_frame = frame
 
-                # Convert BGR to RGB for Qt, then encode as BMP (lossless, fast)
+                # Downscale voor de preview-stream (capture gebruikt de raw frame)
                 h, w = frame.shape[:2]
-                # Downscale only if 4K+
-                if w > 1920:
-                    scale = 1920 / w
-                    frame = cv2.resize(frame, (1920, int(h * scale)), interpolation=cv2.INTER_AREA)
-                    h, w = frame.shape[:2]
+                if w > self._LV_MAX_W:
+                    scale = self._LV_MAX_W / w
+                    frame = cv2.resize(frame, (self._LV_MAX_W, int(h * scale)),
+                                       interpolation=cv2.INTER_AREA)
 
-                # Convert to JPEG at quality 95 — minimal loss, still fast
-                _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                _, buf = cv2.imencode('.jpg', frame,
+                                      [cv2.IMWRITE_JPEG_QUALITY, self._LV_JPEG_Q])
                 self.frame_ready.emit(buf.tobytes())
-            self.msleep(30)  # ~33fps
+            self.msleep(self._LV_SLEEP_MS)
 
     def get_capture_frame(self):
         """Get the latest full-resolution frame as high-quality JPEG bytes."""

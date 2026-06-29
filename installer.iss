@@ -7,7 +7,7 @@
 ;   3. "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Bootharoo"
-#define MyAppVersion "1.99.121"
+#define MyAppVersion "1.99.122"
 #define MyAppPublisher "Bootharoo"
 #define MyAppURL "https://bootharoo.com"
 #define MyAppExeName "Bootharoo.exe"
@@ -47,6 +47,8 @@ Name: "desktopicon"; Description: "Snelkoppeling op bureaublad aanmaken"; GroupD
 
 [Files]
 Source: "C:\Photobooth-verhuur\dist\Bootharoo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Systeem-tweak-script (eenmalig per booth handmatig als admin draaien)
+Source: "C:\Photobooth-verhuur\optimize_surface.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
