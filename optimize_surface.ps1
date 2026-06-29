@@ -1,17 +1,20 @@
 <#
-  optimize_surface.ps1 — koeler & stabieler draaien op een Surface Pro
+  optimize_surface.ps1 — koeler & stabieler draaien op een Surface Pro 7
 
-  De Surface wordt heet doordat de CPU "turbo" geeft tot hij oververhit en
-  dan hard terugklokt (throttle-klif). Dit script haalt die piek eraf en
-  temt een paar achtergrond-vreters. Alles is OMKEERBAAR met -Restore.
+  De Surface Pro 7 is FANLESS (passief gekoeld) — er is geen ventilator om
+  warmte af te voeren, dus hij throttle't hard zodra de CPU te heet wordt.
+  Daarom is Turbo Boost uitzetten hier de belangrijkste maatregel. Alles is
+  OMKEERBAAR met -Restore.
 
   Wat het doet:
-    1. CPU-max op 99%  -> schakelt Turbo Boost uit. Dit is DE tweak: de CPU
-       blijft bijna even snel maar wordt fors koeler en throttle't niet meer.
-    2. Koelbeleid "Actief" -> ventilator eerder aan i.p.v. eerst terugklokken.
+    1. CPU-max op 99%  -> schakelt Turbo Boost uit. DE tweak op een fanless
+       toestel: de CPU blijft bijna even snel maar wordt fors koeler en valt
+       niet meer in de throttle-klif.
+    2. Adaptieve helderheid uit + schermhelderheid op 90% (vast).
     3. Windows Search-indexering + SysMain pauzeren -> minder achtergrond-IO.
 
   Bewust NIET aangeraakt: Windows Defender en Windows Update (veiligheid).
+  Koelbeleid (ventilator) wordt NIET gezet — een Surface Pro 7 heeft geen fan.
 
   GEBRUIK (als Administrator, PowerShell):
      Optimaliseren:   powershell -ExecutionPolicy Bypass -File optimize_surface.ps1
@@ -32,17 +35,25 @@ if (-not $admin) {
 
 $SUB_PROC = "SUB_PROCESSOR"
 $MAXFREQ  = "PROCTHROTTLEMAX"   # max processor state (%)
-$COOLPOL  = "SYSCOOLPOL"        # 0 = Passief (terugklokken), 1 = Actief (ventilator)
+$SUB_DISP = "SUB_VIDEO"
+$ADAPTBRT = "ADAPTBRIGHT"       # adaptieve helderheid: 0 = uit, 1 = aan
 
-function Set-PowerValue($guid, $value) {
-  powercfg /setacvalueindex SCHEME_CURRENT $SUB_PROC $guid $value | Out-Null
-  powercfg /setdcvalueindex SCHEME_CURRENT $SUB_PROC $guid $value | Out-Null
+function Set-PowerValue($sub, $guid, $value) {
+  powercfg /setacvalueindex SCHEME_CURRENT $sub $guid $value | Out-Null
+  powercfg /setdcvalueindex SCHEME_CURRENT $sub $guid $value | Out-Null
+}
+
+function Set-Brightness($pct) {
+  try {
+    (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $pct) | Out-Null
+    Write-Host "  Schermhelderheid op $pct% gezet"
+  } catch { Write-Host "  Kon helderheid niet zetten: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
 if ($Restore) {
   Write-Host "== Terugzetten naar standaard ==" -ForegroundColor Cyan
-  Set-PowerValue $MAXFREQ 100          # Turbo weer aan
-  Set-PowerValue $COOLPOL 1            # Actief koelen (standaard op netstroom)
+  Set-PowerValue $SUB_PROC $MAXFREQ 100   # Turbo weer aan
+  Set-PowerValue $SUB_DISP $ADAPTBRT 1    # adaptieve helderheid weer aan
   powercfg /setactive SCHEME_CURRENT | Out-Null
   foreach ($svc in "WSearch","SysMain") {
     try {
@@ -55,17 +66,16 @@ if ($Restore) {
   exit 0
 }
 
-Write-Host "== Surface koeler maken ==" -ForegroundColor Cyan
+Write-Host "== Surface Pro 7 koeler maken (fanless) ==" -ForegroundColor Cyan
 
-# 1. Turbo Boost uit (max 99%) — grootste winst tegen oververhitting
-Set-PowerValue $MAXFREQ 99
+# 1. Turbo Boost uit (max 99%) — grootste winst op een fanless toestel
+Set-PowerValue $SUB_PROC $MAXFREQ 99
 Write-Host "  CPU-max op 99% gezet (Turbo Boost uit -> koeler, geen throttle-klif)"
 
-# 2. Actief koelen
-Set-PowerValue $COOLPOL 1
-Write-Host "  Koelbeleid op 'Actief' (ventilator eerder aan)"
-
+# 2. Adaptieve helderheid uit + vaste 90% (zo blijft onze instelling staan)
+Set-PowerValue $SUB_DISP $ADAPTBRT 0
 powercfg /setactive SCHEME_CURRENT | Out-Null
+Set-Brightness 90
 
 # 3. Achtergrond-vreters temmen
 foreach ($svc in "WSearch","SysMain") {
@@ -77,7 +87,7 @@ foreach ($svc in "WSearch","SysMain") {
 }
 
 Write-Host ""
-Write-Host "Klaar! Tips voor nog koeler draaien:" -ForegroundColor Green
-Write-Host "  - Zet de schermhelderheid op ~70% (groot warmtebron op een tablet)."
-Write-Host "  - Houd de achterkant vrij / zorg voor luchtstroom in de behuizing."
+Write-Host "Klaar! Nog koeler:" -ForegroundColor Green
+Write-Host "  - Houd de achterkant vrij; leg 'm niet op een zachte/warme ondergrond."
+Write-Host "  - De app zet de helderheid zelf ook op 90% bij elke start."
 Write-Host "  - Terugzetten kan altijd:  optimize_surface.ps1 -Restore"

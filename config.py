@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.122"
+VERSION = "v1.99.123"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -110,6 +110,13 @@ ADVANCED_TAB_CODE = "13501350"
 # naar de edge function gepusht, gekoppeld aan serienummer + event + klant.
 CLOUD_LOG_ENABLED = True
 CLOUD_LOG_INTERVAL_SEC = 20
+
+# === Schermhelderheid ===
+# De Surface Pro 7 is fanless (passief gekoeld). Het scherm is een grote
+# warmtebron; een vaste, niet-maximale helderheid scheelt warmte. Wordt bij
+# elke app-start gezet (Windows/adaptive kan 'm anders terugzetten).
+# 0 = niet aanraken.
+DISPLAY_BRIGHTNESS = 90
 
 # === Colors (Clixibo Design System) ===
 # Warm beige/gold palette matching the Clixibo website

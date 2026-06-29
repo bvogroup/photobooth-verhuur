@@ -93,6 +93,36 @@ def _migrate_data():
     print(f"[MIGRATE] Klaar! Data staat nu in: {data_dir}")
 
 
+def _set_display_brightness():
+    """Zet de schermhelderheid van het interne Surface-scherm via WMI.
+
+    De Surface Pro 7 is fanless; het scherm is een grote warmtebron. Een
+    vaste, niet-maximale helderheid scheelt warmte. Wordt bij elke start
+    gezet omdat Windows/adaptive brightness 'm anders kan terugzetten.
+    config.DISPLAY_BRIGHTNESS = 0 → niet aanraken.
+    """
+    import subprocess
+    try:
+        import config as _cfg
+        pct = int(getattr(_cfg, "DISPLAY_BRIGHTNESS", 0) or 0)
+    except Exception:
+        pct = 0
+    if pct <= 0:
+        return
+    pct = max(10, min(100, pct))
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-WmiObject -Namespace root/WMI -Class "
+             f"WmiMonitorBrightnessMethods).WmiSetBrightness(1,{pct})"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        print(f"[BRIGHTNESS] Schermhelderheid op {pct}% gezet")
+    except Exception as e:
+        print(f"[BRIGHTNESS] Kon helderheid niet zetten: {e}")
+
+
 def _ensure_firewall_rule():
     """Add Windows Firewall rule for the local web server (port 8080).
 
@@ -190,6 +220,9 @@ def main():
 
     # Ensure firewall allows local web server access
     _ensure_firewall_rule()
+
+    # Schermhelderheid vastzetten (warmte/leesbaarheid op de fanless Surface)
+    _set_display_brightness()
 
     # Load fonts
     preferred_font = "DM Sans"
