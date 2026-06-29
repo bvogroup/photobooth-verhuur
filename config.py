@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.118"
+VERSION = "v1.99.119"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -98,6 +98,18 @@ COUNTDOWN_BEEP = True     # Play beep sound during countdown
 # === LED Flash Relay (USB-serial CH340 board) ===
 LED_RELAY_ENABLED = True
 LED_RELAY_PORT = "auto"  # "auto" = vind CH340 board automatisch, of "COM3" voor vaste poort
+
+# === Geavanceerd-tab toegangscode ===
+# De Geavanceerd-tab (serienummer, backend-switch, printer-config) zit
+# achter een aparte code, los van de settings-PIN (1350). Zo kan de
+# operator wel bij Event/Layout/Print maar niet bij Geavanceerd.
+ADVANCED_TAB_CODE = "13501350"
+
+# === Cloud-logs (real-time monitoring via Lovable-project) ===
+# De getimestampte logs worden gebatcht (elke CLOUD_LOG_INTERVAL_SEC)
+# naar de edge function gepusht, gekoppeld aan serienummer + event + klant.
+CLOUD_LOG_ENABLED = True
+CLOUD_LOG_INTERVAL_SEC = 20
 
 # === Colors (Clixibo Design System) ===
 # Warm beige/gold palette matching the Clixibo website

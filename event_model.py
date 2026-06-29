@@ -111,6 +111,8 @@ class Event:
     # Backend-brand: "hippe" (default, DNP QW410) of "huren"
     # (Verhuurophalen — HiTi P525L, 1200x1800 dubbele strip)
     backend_brand: str = "hippe"
+    # Serienummer van de fysieke booth (booth-wide overlay/propagatie)
+    serial_number: str = ""
     # Booth-modus + Linked-koppeling (verhuur-versie)
     booth_mode: str = "standalone"
     linked_booking_id: str = ""

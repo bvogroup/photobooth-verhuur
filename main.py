@@ -159,6 +159,15 @@ def _install_crash_logger():
 
 
 def main():
+    # Getimestampte logging zo vroeg mogelijk activeren — vangt alle
+    # print()-statements en schrijft ze naar DATA_DIR/logs/booth.log.
+    try:
+        import config as _cfg
+        from app_logger import install_logging
+        install_logging(_cfg.DATA_DIR)
+    except Exception as _e:
+        print(f"[APP-LOGGER] niet geactiveerd: {_e}")
+
     _install_crash_logger()
 
     # High DPI support for Surface displays

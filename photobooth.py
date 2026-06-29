@@ -1084,6 +1084,7 @@ class PhotoboothWindow(QMainWindow):
         self.session_id = None     # Timestamp ID for this session
         self._settings_template_widgets = {}
         self.active_event = None  # Currently active Event
+        self._advanced_unlocked = False  # Geavanceerd-tab ontgrendeld deze sessie?
         self._auth_plan = ""     # Current subscription plan (starter/professional)
         self._cached_user = {}   # Cached user session data (avoids repeated settings.json reads)
         self._auth_lock = threading.Lock()  # Lock for thread-safe _auth_plan updates
@@ -1324,6 +1325,15 @@ class PhotoboothWindow(QMainWindow):
         self._apply_live_view_alignment()
         self._rebuild_idle_page()
         self._go_idle()
+
+        # Cloud-logs: uploader starten + initiële context (serienummer +
+        # event + klant + brand) doorgeven. Vanaf nu syncen alle logs.
+        try:
+            import log_uploader
+            log_uploader.start()
+            self._update_log_context()
+        except Exception as _lu_ex:
+            print(f"[LOG-UPLOAD] Start mislukt: {_lu_ex}")
 
         # Auto-couple bij Linked-modus
         QTimer.singleShot(500, self._auto_recouple_on_startup)
@@ -10687,8 +10697,29 @@ class PhotoboothWindow(QMainWindow):
         scroll.setWidget(content)
         return scroll, content_lay
 
+    # Index van de Geavanceerd-tab in tab_names (Event=0, Layout=1,
+    # Print=2, Geavanceerd=3). Achter een aparte code.
+    _ADVANCED_TAB_INDEX = 3
+
     def _switch_settings_tab(self, index):
-        """Switch the active settings tab."""
+        """Switch the active settings tab.
+
+        Geavanceerd (index 3) zit achter config.ADVANCED_TAB_CODE: bij de
+        eerste keer openen deze settings-sessie wordt de code gevraagd.
+        Fout/annuleer → blijf op de huidige tab. Eenmaal ontgrendeld blijft
+        het open tot settings volledig verlaten wordt (_advanced_unlocked
+        wordt gereset in _go_idle)."""
+        if index == self._ADVANCED_TAB_INDEX and not getattr(
+                self, '_advanced_unlocked', False):
+            code = getattr(config, 'ADVANCED_TAB_CODE', '') or ''
+            if code:
+                entered, ok = PinDialog.get_pin(self, "Code Geavanceerd")
+                if not ok or (entered or '').strip() != code:
+                    if ok:
+                        self._show_error("Onjuiste code.")
+                    return  # blijf op huidige tab
+            self._advanced_unlocked = True
+
         self._settings_tab_stack.setCurrentIndex(index)
         for i, btn in enumerate(self._settings_tab_buttons):
             if i == index:
@@ -12308,6 +12339,38 @@ class PhotoboothWindow(QMainWindow):
         tab5_scroll, tab5_lay = self._settings_tab_scroll()
         self._tab5_lay = tab5_lay  # voor verplaatsen Gekoppeld-kaart
 
+        # ── Card: Serienummer (booth-identificatie) ──────────────────
+        card_serial, card_serial_lay = self._settings_card("Serienummer booth")
+        serial_intro = QLabel(
+            "Het unieke serienummer van deze photobooth (letters en cijfers). "
+            "Wordt meegestuurd met de cloud-logs zodat zichtbaar is welke "
+            "booth bij welke klant draait."
+        )
+        serial_intro.setFont(QFont("DM Sans", 11))
+        serial_intro.setWordWrap(True)
+        serial_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_serial_lay.addWidget(serial_intro)
+        serial_row = QHBoxLayout()
+        serial_row.setSpacing(10)
+        serial_lbl = QLabel("Serienummer:")
+        serial_lbl.setFont(QFont("DM Sans", 13, QFont.Bold))
+        serial_lbl.setStyleSheet(label_style)
+        serial_row.addWidget(serial_lbl)
+        self._serial_input = QLineEdit()
+        self._serial_input.setFont(QFont("DM Sans", 14))
+        self._serial_input.setMinimumHeight(44)
+        self._serial_input.setMaxLength(32)
+        self._serial_input.setPlaceholderText("bv. BOOTH-001")
+        self._serial_input.setStyleSheet(
+            f"QLineEdit {{ background: {config.COLOR_INPUT_BG}; color: {config.COLOR_TEXT}; "
+            f"border: 2px solid {config.COLOR_BORDER}; border-radius: 6px; "
+            f"padding: 6px 12px; font-size: 14px; }}"
+        )
+        self._serial_input.editingFinished.connect(self._on_serial_changed)
+        serial_row.addWidget(self._serial_input, stretch=1)
+        card_serial_lay.addLayout(serial_row)
+        tab5_lay.addWidget(card_serial)
+
         # Card: Language
         card_lang, card_lang_lay = self._settings_card(t("language_label").rstrip(":"))
         lang_row = QHBoxLayout()
@@ -13101,6 +13164,9 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_settings_after_pin(self):
         """Open settings panel ZONDER opnieuw PIN te vragen (al gevalideerd)."""
+        # Nieuwe settings-sessie → Geavanceerd weer vergrendelen, zodat de
+        # aparte code (config.ADVANCED_TAB_CODE) opnieuw gevraagd wordt.
+        self._advanced_unlocked = False
         # Pauzeer DNP-poll tijdens settings — anders kan UI Automation
         # focus stelen tijdens typen.
         self._pause_dnp_poll(True)
@@ -13152,6 +13218,8 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[PIN] Error: {e}", flush=True)
                 import traceback; traceback.print_exc()
                 return
+        # Nieuwe settings-sessie → Geavanceerd weer vergrendelen.
+        self._advanced_unlocked = False
         # Zelfde voorbereiding als _go_settings_after_pin: poller pauzeren
         # (focus-steal tijdens typen) + printer-fout overlay verbergen —
         # anders blokkeert het rode scherm de instellingen.
@@ -13431,6 +13499,15 @@ class PhotoboothWindow(QMainWindow):
                 fn()
             except RuntimeError as ex:
                 print(f"[SETTINGS] Sync-blok overgeslagen (widget weg): {ex}")
+
+        # Serienummer-veld syncen (booth-wide; werkt ook zonder event).
+        if hasattr(self, '_serial_input'):
+            try:
+                self._serial_input.blockSignals(True)
+                self._serial_input.setText(self.serial_number)
+                self._serial_input.blockSignals(False)
+            except RuntimeError:
+                pass
 
         if ev:
             # Brand-radio's + PIN als EERSTE syncen — vóór alle fragiele
@@ -14713,6 +14790,55 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Snijden: {'aan' if checked else 'uit'}")
 
+    def _on_serial_changed(self):
+        """Serienummer opgeslagen (booth-wide). Alfanumeriek, getrimd."""
+        if not hasattr(self, '_serial_input'):
+            return
+        val = self._serial_input.text().strip()
+        # Booth-wide persist — werkt ook zonder actief event.
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            bs.serial_number = val
+            bs.save()
+        except Exception as ex:
+            print(f"[SETTINGS] Serienummer booth-wide opslaan mislukt: {ex}")
+        if self.active_event:
+            self.active_event.serial_number = val
+            self.active_event.save(config.EVENTS_DIR)
+        print(f"[SETTINGS] Serienummer: {val!r}")
+        self._update_log_context()
+
+    @property
+    def serial_number(self) -> str:
+        """Serienummer van deze booth (event of booth-wide cache)."""
+        ev = self.active_event
+        if ev and getattr(ev, 'serial_number', ''):
+            return ev.serial_number
+        try:
+            from booth_settings import BoothSettings as _BS
+            if _BS.exists():
+                return _BS.load().serial_number or ""
+        except Exception:
+            pass
+        return ""
+
+    def _update_log_context(self):
+        """Sync de cloud-log context: serienummer + gekoppeld event + klant
+        + brand. Aangeroepen bij startup en bij elke relevante wijziging."""
+        try:
+            import log_uploader
+            ev = self.active_event
+            log_uploader.update_context(
+                serial=self.serial_number,
+                event_id=getattr(ev, 'linked_booking_id', '') if ev else '',
+                customer=getattr(ev, 'linked_booking_label', '') if ev else '',
+                brand=self.backend_brand,
+                token=getattr(ev, 'linked_token', '') if ev else '',
+            )
+        except Exception as e:
+            print(f"[LOG-UPLOAD] Context-update mislukt: {e}")
+
     def _sync_brand_radios(self):
         """Backend-brand radio's + HiTi-rij syncen met de actuele waarde
         (event of booth-wide via self.backend_brand). blockSignals zodat
@@ -14764,6 +14890,7 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
             print(f"[SETTINGS] Backend-brand: {brand}")
             self._update_webcam_status()
+        self._update_log_context()
         if hasattr(self, '_brand_hiti_row'):
             self._brand_hiti_row.setVisible(brand == 'huren')
         if brand == 'huren':
@@ -16722,6 +16849,8 @@ class PhotoboothWindow(QMainWindow):
                 except Exception:
                     pass
         self.active_event.save(config.EVENTS_DIR)
+        # Koppeling gewijzigd → cloud-log context bijwerken (event + klant)
+        self._update_log_context()
 
     def _show_couple_event_dialog(self):
         """Open de event-koppel modal: webcam QR-scan + handmatige fallback.

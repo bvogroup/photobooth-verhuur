@@ -114,6 +114,13 @@ class BoothSettings:
     #                     DNP-statuspoller, geen pakket-delay)
     backend_brand: str = "hippe"
 
+    # ── Serienummer ────────────────────────────────────────────
+    # Uniek nummer van deze fysieke photobooth (alfanumeriek). Booth-wide
+    # want het hoort bij de hardware, niet bij een event. Ingesteld in
+    # Geavanceerd; meegestuurd met de cloud-logs zodat in het Lovable-
+    # project zichtbaar is welke booth bij welke klant draaide.
+    serial_number: str = ""
+
     # ── Booth-modus (verhuur Linked-functie) ──────────────────
     # "standalone" = huidige flow (lokaal + 30-min QR share)
     # "linked"     = gekoppeld aan booking in clixibo, foto's via R2 queue
