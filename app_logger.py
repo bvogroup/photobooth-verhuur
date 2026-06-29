@@ -1,38 +1,39 @@
-"""Centrale logging voor de photobooth.
+"""Centrale logging voor de photobooth — NIET-BLOKKEREND.
 
-Onderschept sys.stdout / sys.stderr en geeft ELKE regel een
-[YYYY-MM-DD HH:MM:SS] prefix. De geprefixte regels gaan naar:
-  1. de originele console (indien aanwezig — in een frozen exe niet)
-  2. een roterend logbestand in DATA_DIR/logs/booth.log
-  3. geregistreerde sinks (de cloud-uploader leest hier de regels uit)
+Onderschept sys.stdout / sys.stderr. Voor elke regel:
+  1. de console krijgt de RAUWE tekst direct + flush (zoals voorheen —
+     de terminal blijft live scrollen, voelt niet als 'hangen');
+  2. een getimestampte kopie ([YYYY-MM-DD HH:MM:SS] prefix) gaat via een
+     wachtrij naar een achtergrond-thread die ze wegschrijft naar
+     DATA_DIR/logs/booth.log (roterend) en doorgeeft aan sinks
+     (de cloud-uploader).
 
-Zo krijgen alle bestaande print()-statements automatisch een tijdstempel
-en worden ze gepersist + naar de cloud gesynct, zonder de aanroepende
-code te wijzigen.
+KRITIEK: de schrijfkant (bestand-IO + sinks) draait op een aparte thread,
+zodat print() vanaf de Qt-hoofdthread NOOIT blokkeert op trage schijf-IO.
+Een eerdere versie deed de file-flush synchroon ín write() — dat kon de
+UI laten haperen / 'blijven laden'.
 """
 
 import os
+import queue
 import sys
 import threading
 from datetime import datetime
 
 _MAX_BYTES = 5 * 1024 * 1024   # roteer boven 5 MB
-_BACKUPS = 3                    # booth.log.1 .. booth.log.3
+_BACKUPS = 3
 
 _log_path = None
-_fh = None
-_size = 0
-_io_lock = threading.RLock()
+_queue = queue.Queue(maxsize=20000)
+_writer_thread = None
 
 _sinks = []
 _sink_lock = threading.Lock()
 
 
 def register_sink(callback):
-    """Registreer een callback(formatted_line: str) die voor elke
-    geprefixte logregel wordt aangeroepen. Gebruikt door de cloud-
-    uploader. De callback MOET licht zijn (alleen bufferen) en mag
-    NIET zelf print()'en — dat zou recursie geven."""
+    """callback(formatted_line: str) voor elke geprefixte regel. De
+    callback MOET licht zijn (alleen bufferen) en niet zelf print()'en."""
     with _sink_lock:
         _sinks.append(callback)
 
@@ -41,70 +42,9 @@ def get_log_path():
     return _log_path
 
 
-def _open_fh():
-    global _fh, _size
-    try:
-        _size = os.path.getsize(_log_path) if os.path.exists(_log_path) else 0
-        _fh = open(_log_path, "a", encoding="utf-8", errors="replace")
-    except Exception:
-        _fh = None
-        _size = 0
-
-
-def _rotate():
-    """Sluit, schuif backups op (booth.log -> booth.log.1 -> ...), heropen."""
-    global _fh, _size
-    try:
-        if _fh is not None:
-            _fh.close()
-    except Exception:
-        pass
-    _fh = None
-    try:
-        for i in range(_BACKUPS, 0, -1):
-            src = _log_path if i == 1 else f"{_log_path}.{i - 1}"
-            dst = f"{_log_path}.{i}"
-            if os.path.exists(src):
-                if os.path.exists(dst):
-                    os.remove(dst)
-                os.rename(src, dst)
-    except Exception:
-        pass
-    _open_fh()
-
-
-def _write_line(formatted):
-    """Schrijf één geprefixte regel naar het logbestand (met rotatie)."""
-    global _fh, _size
-    with _io_lock:
-        if _fh is None:
-            _open_fh()
-        if _fh is None:
-            return
-        try:
-            data = formatted + "\n"
-            _fh.write(data)
-            _fh.flush()
-            _size += len(data.encode("utf-8", "replace"))
-            if _size > _MAX_BYTES:
-                _rotate()
-        except Exception:
-            pass
-
-
-def _dispatch_sinks(formatted):
-    with _sink_lock:
-        sinks = list(_sinks)
-    for s in sinks:
-        try:
-            s(formatted)
-        except Exception:
-            pass
-
-
 class _Tee:
-    """Vervangt sys.stdout/sys.stderr: prefixt per regel met een timestamp
-    en spiegelt naar console + bestand + sinks."""
+    """Vervangt sys.stdout/sys.stderr. Console = rauw + direct flush;
+    bestand/sinks = getimestampt via de achtergrond-wachtrij."""
 
     def __init__(self, original):
         self._original = original
@@ -112,33 +52,35 @@ class _Tee:
         self._lock = threading.Lock()
 
     def write(self, text):
-        # 1. Ongeprefixt naar de echte console (live debugging)
-        try:
-            if self._original is not None:
+        # 1. Console: rauw doorschrijven + flushen (origineel gedrag).
+        if self._original is not None:
+            try:
                 self._original.write(text)
-        except Exception:
-            pass
-        # 2. Per volledige regel prefixen + persisten + dispatchen
+                self._original.flush()
+            except Exception:
+                pass
+        # 2. Per hele regel een getimestampte kopie in de wachtrij zetten.
         try:
             with self._lock:
                 self._buf += text
                 while "\n" in self._buf:
                     line, self._buf = self._buf.split("\n", 1)
-                    if line == "":
+                    if not line:
                         continue
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    formatted = f"[{ts}] {line}"
-                    _write_line(formatted)
-                    _dispatch_sinks(formatted)
+                    try:
+                        _queue.put_nowait(f"[{ts}] {line}")
+                    except queue.Full:
+                        pass  # nooit de schrijver laten blokkeren
         except Exception:
             pass
 
     def flush(self):
-        try:
-            if self._original is not None:
+        if self._original is not None:
+            try:
                 self._original.flush()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     def isatty(self):
         return False
@@ -149,20 +91,81 @@ class _Tee:
         raise OSError("geen fileno")
 
 
+def _writer_loop():
+    """Achtergrond-thread: leegt de wachtrij naar bestand + sinks."""
+    fh = None
+    size = 0
+
+    def _open():
+        nonlocal fh, size
+        try:
+            size = os.path.getsize(_log_path) if os.path.exists(_log_path) else 0
+            fh = open(_log_path, "a", encoding="utf-8", errors="replace")
+        except Exception:
+            fh = None
+            size = 0
+
+    def _rotate():
+        nonlocal fh, size
+        try:
+            if fh is not None:
+                fh.close()
+        except Exception:
+            pass
+        fh = None
+        try:
+            for i in range(_BACKUPS, 0, -1):
+                src = _log_path if i == 1 else f"{_log_path}.{i - 1}"
+                dst = f"{_log_path}.{i}"
+                if os.path.exists(src):
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    os.rename(src, dst)
+        except Exception:
+            pass
+        _open()
+
+    _open()
+    while True:
+        line = _queue.get()
+        if line is None:
+            break
+        # Bestand
+        if fh is not None:
+            try:
+                data = line + "\n"
+                fh.write(data)
+                fh.flush()
+                size += len(data.encode("utf-8", "replace"))
+                if size > _MAX_BYTES:
+                    _rotate()
+            except Exception:
+                pass
+        # Sinks (cloud-uploader)
+        with _sink_lock:
+            sinks = list(_sinks)
+        for s in sinks:
+            try:
+                s(line)
+            except Exception:
+                pass
+
+
 def install_logging(data_dir):
-    """Activeer de getimestampte logging. Roep dit zo vroeg mogelijk in
-    main() aan, vóór andere print()-statements."""
-    global _log_path
+    """Activeer de getimestampte, niet-blokkerende logging. Zo vroeg
+    mogelijk in main() aanroepen."""
+    global _log_path, _writer_thread
     try:
         log_dir = os.path.join(data_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
         _log_path = os.path.join(log_dir, "booth.log")
-        _open_fh()
+        _writer_thread = threading.Thread(target=_writer_loop, daemon=True,
+                                          name="LogWriter")
+        _writer_thread.start()
         sys.stdout = _Tee(sys.__stdout__)
         sys.stderr = _Tee(sys.__stderr__)
     except Exception as e:
-        # Logging mag de app nooit breken
         try:
-            sys.__stdout__.write(f"[APP-LOGGER] init mislukt: {e}\n")
+            (sys.__stdout__ or sys.stdout).write(f"[APP-LOGGER] init mislukt: {e}\n")
         except Exception:
             pass
