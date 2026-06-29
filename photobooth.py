@@ -14830,9 +14830,13 @@ class PhotoboothWindow(QMainWindow):
         print_on = self._print_enabled_toggle.isChecked()
         auto_on = self._auto_print_toggle.isChecked()
         self._printer_settings_container.setVisible(print_on)
-        # Tweede card (Printerinstellingen) ook verbergen als printen uit staat
+        # Verhuur: de Printerinstellingen-kaart (auto-print, aantal prints,
+        # extra prints, eventlimiet) blijft ALTIJD verborgen — die waarden
+        # worden hardcoded geforceerd (1 print, 0 extra, onbeperkt), dus de
+        # controls deden niets. Eerder zette deze regel 'm op print_on en
+        # overschreef daarmee de bewuste verberging bij het opbouwen.
         if hasattr(self, '_print_settings_card'):
-            self._print_settings_card.setVisible(print_on)
+            self._print_settings_card.setVisible(False)
         self._auto_copies_container.setVisible(auto_on)
         # Show extra prints row when auto-print ON, max prints row when OFF
         self._extra_prints_row.setVisible(auto_on)
