@@ -34,6 +34,11 @@ _buf_lock = threading.Lock()
 _ctx = {"serial": "", "event_id": "", "customer": "", "brand": "hippe", "token": ""}
 _ctx_lock = threading.Lock()
 
+# Laatste status-snapshot (rijke heartbeat). Wordt op de main thread
+# gebouwd (Qt-state) en hier thread-safe opgeslagen; elke flush stuurt 'm mee.
+_status = None
+_status_lock = threading.Lock()
+
 _worker = None
 _running = False
 _started = False
@@ -58,6 +63,16 @@ def update_context(serial=None, event_id=None, customer=None, brand=None, token=
             _ctx["brand"] = brand or "hippe"
         if token is not None:
             _ctx["token"] = token or ""
+
+
+def update_status(snapshot):
+    """Zet de laatste status-snapshot (dict). Wordt elke flush meegestuurd
+    als heartbeat. Photobooth roept dit elke ~20s aan vanaf de main thread."""
+    global _status
+    if not isinstance(snapshot, dict):
+        return
+    with _status_lock:
+        _status = snapshot
 
 
 def _on_log_line(formatted):
@@ -117,10 +132,15 @@ def _requeue(lines):
 
 def _flush():
     with _buf_lock:
-        if not _buffer:
-            return
         lines = list(_buffer)
         _buffer.clear()
+
+    with _status_lock:
+        status = dict(_status) if _status else None
+
+    # Niets te sturen? (geen logregels én geen status-heartbeat)
+    if not lines and not status:
+        return
 
     with _ctx_lock:
         ctx = dict(_ctx)
@@ -134,6 +154,7 @@ def _flush():
         "brand": ctx.get("brand", "hippe"),
         "token": ctx.get("token", ""),
         "lines": lines,
+        "status": status,
     }
     try:
         resp = requests.post(

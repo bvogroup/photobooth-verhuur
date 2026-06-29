@@ -1085,6 +1085,7 @@ class PhotoboothWindow(QMainWindow):
         self._settings_template_widgets = {}
         self.active_event = None  # Currently active Event
         self._advanced_unlocked = False  # Geavanceerd-tab ontgrendeld deze sessie?
+        self._app_start_ts = __import__('time').time()  # voor uptime in status
         self._auth_plan = ""     # Current subscription plan (starter/professional)
         self._cached_user = {}   # Cached user session data (avoids repeated settings.json reads)
         self._auth_lock = threading.Lock()  # Lock for thread-safe _auth_plan updates
@@ -1334,6 +1335,16 @@ class PhotoboothWindow(QMainWindow):
             self._update_log_context()
         except Exception as _lu_ex:
             print(f"[LOG-UPLOAD] Start mislukt: {_lu_ex}")
+
+        # Status-heartbeat: elke 20s een rijke snapshot (scherm, prints,
+        # verbindingen camera/COB/printer, internet, uploads, ...) naar de
+        # uploader pushen. Op de main thread (veilig Qt-state lezen).
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(
+            max(5, int(getattr(config, 'CLOUD_LOG_INTERVAL_SEC', 20))) * 1000)
+        self._status_timer.timeout.connect(self._push_status_snapshot)
+        self._status_timer.start()
+        QTimer.singleShot(2000, self._push_status_snapshot)  # eerste meteen
 
         # Auto-couple bij Linked-modus
         QTimer.singleShot(500, self._auto_recouple_on_startup)
@@ -14838,6 +14849,128 @@ class PhotoboothWindow(QMainWindow):
             )
         except Exception as e:
             print(f"[LOG-UPLOAD] Context-update mislukt: {e}")
+
+    def _build_status_snapshot(self) -> dict:
+        """Bouw een rijke statussnapshot van de booth: wat er op het scherm
+        gebeurt, prints, en de verbindingen (camera, COB-relay, printer,
+        internet, uploads). Draait op de main thread (Qt-state veilig)."""
+        import time as _t
+        ev = self.active_event
+        snap = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "version": getattr(config, "VERSION", "?"),
+            "serial": self.serial_number,
+            "brand": self.backend_brand,
+        }
+        # ── Scherm / state (wat is er nu bezig) ──
+        try:
+            st = getattr(self, "state", None)
+            snap["state"] = st.name if st is not None else "?"
+        except Exception:
+            snap["state"] = "?"
+        try:
+            idx = self.stack.currentIndex()
+            snap["screen"] = next((k for k, v in self.pages.items() if v == idx),
+                                  str(idx))
+        except Exception:
+            snap["screen"] = "?"
+        # ── Camera ──
+        try:
+            snap["camera_connected"] = bool(self.camera.is_connected())
+        except Exception:
+            snap["camera_connected"] = False
+        snap["camera_ready"] = bool(getattr(self, "_digicam_ready", False))
+        try:
+            snap["camera_type"] = type(self.camera).__name__
+        except Exception:
+            snap["camera_type"] = "?"
+        snap["camera_mode"] = getattr(ev, "camera_mode", "?") if ev else "?"
+        # ── COB / LED-relay ──
+        try:
+            snap["led_relay_connected"] = bool(self.led.available) if self.led else False
+        except Exception:
+            snap["led_relay_connected"] = False
+        # ── Internet ──
+        snap["online"] = bool(getattr(self, "_has_internet", False))
+        # ── Printer ──
+        snap["printer_name"] = getattr(config, "PRINTER_NAME", "")
+        try:
+            snap["print_enabled"] = bool(self.effective_print_enabled)
+        except Exception:
+            snap["print_enabled"] = None
+        dnp = getattr(self, "_dnp_last_status", None)
+        if dnp is not None:
+            try:
+                snap["printer_connected"] = bool(dnp.connected)
+                snap["printer_level"] = getattr(dnp.level, "value", str(dnp.level))
+                snap["printer_code"] = dnp.code
+                snap["printer_label"] = dnp.label
+                snap["printer_media"] = dnp.media
+                snap["prints_remaining_roll"] = dnp.prints_remaining
+                snap["prints_total_roll"] = dnp.prints_total
+                snap["printer_serial"] = dnp.serial
+                snap["printer_firmware"] = dnp.firmware
+                snap["printer_error_method"] = dnp.error_method
+            except Exception:
+                pass
+        else:
+            # Huren-modus: HiTi zonder DNP-statuspoller
+            snap["printer_connected"] = None
+            snap["printer_label"] = ("HiTi (geen statuspoller)"
+                                     if self.backend_brand == "huren" else "onbekend")
+        # ── Gekoppeld event / klant ──
+        if ev:
+            snap["event_id"] = getattr(ev, "linked_booking_id", "") or ""
+            snap["event_label"] = getattr(ev, "linked_booking_label", "") or ""
+            snap["booth_mode"] = getattr(ev, "booth_mode", "") or ""
+            snap["package"] = getattr(ev, "linked_package", "") or ""
+        # ── Prints / quota / tellers ──
+        snap["session_prints_used"] = int(getattr(self, "_session_prints_used", 0) or 0)
+        if ev:
+            snap["max_prints"] = getattr(ev, "max_prints", None)
+            snap["auto_print_copies"] = getattr(ev, "auto_print_copies", None)
+            snap["session_count"] = getattr(ev, "session_count", None)
+            snap["photo_count"] = getattr(ev, "photo_count", None)
+            quota = int(getattr(ev, "event_print_quota", 0) or 0)
+            used = int(getattr(ev, "event_prints_used", 0) or 0)
+            snap["event_print_quota"] = quota
+            snap["event_prints_used"] = used
+            if quota > 0:
+                snap["event_prints_remaining"] = max(0, quota - used)
+        # ── Uploads (cloud-foto's) ──
+        try:
+            bid = getattr(ev, "linked_booking_id", "") if ev else ""
+            if bid:
+                from cloud_uploader import get_status as _us
+                u = _us(bid)
+                snap["uploads"] = {
+                    "total": u.get("total", 0), "uploaded": u.get("uploaded", 0),
+                    "pending": u.get("pending", 0), "failed": u.get("failed", 0),
+                }
+        except Exception:
+            pass
+        # ── Schijf ──
+        try:
+            import shutil
+            free = shutil.disk_usage(config.PHOTO_DIR).free / (1024 ** 3)
+            snap["disk_free_gb"] = round(free, 1)
+        except Exception:
+            pass
+        # ── Uptime ──
+        try:
+            snap["uptime_sec"] = int(_t.time() - getattr(self, "_app_start_ts", _t.time()))
+        except Exception:
+            pass
+        return snap
+
+    def _push_status_snapshot(self):
+        """Bouw de snapshot (main thread) en geef 'm aan de uploader. De
+        eerstvolgende flush (~20s) stuurt 'm mee als heartbeat."""
+        try:
+            import log_uploader
+            log_uploader.update_status(self._build_status_snapshot())
+        except Exception as e:
+            print(f"[STATUS] Snapshot mislukt: {e}")
 
     def _sync_brand_radios(self):
         """Backend-brand radio's + HiTi-rij syncen met de actuele waarde
