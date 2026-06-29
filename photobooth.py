@@ -9288,6 +9288,33 @@ class PhotoboothWindow(QMainWindow):
             return PROFILE_4X3
         return PROFILE_4X6_NOCUT
 
+    def _is_before_event_date(self, ev) -> bool:
+        """True als vandaag VÓÓR de event-datum valt. False als op/na de
+        event-datum, of als er geen geldige datum bekend is (dan geldt de
+        test-limiet niet)."""
+        # Primair de booking-datum; fallback op het handmatige date-veld.
+        raw = (getattr(ev, 'linked_event_date', '') or
+               getattr(ev, 'date', '') or '')[:10]
+        if not raw:
+            return False
+        try:
+            from datetime import date as _date
+            parts = raw.split('-')
+            event_day = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+            return _date.today() < event_day
+        except Exception:
+            return False  # onparseerbare datum → geen limiet
+
+    def _test_print_allowed(self, ev, copies: int) -> bool:
+        """Vóór de event-datum: alleen toestaan als de test-teller + copies
+        binnen config.TEST_PRINT_LIMIT blijft. Op/na de event-datum (of geen
+        datum): altijd toegestaan."""
+        if not self._is_before_event_date(ev):
+            return True
+        limit = int(getattr(config, 'TEST_PRINT_LIMIT', 10))
+        used = int(getattr(ev, 'test_prints_used', 0) or 0)
+        return used + int(copies) <= limit
+
     def _do_print_job(self, copies=1):
         """Execute a print job (shared between auto-print and manual print).
 
@@ -9355,6 +9382,22 @@ class PhotoboothWindow(QMainWindow):
                     self._sharing_print_btn.setEnabled(False)
                 print(f"[PRINT-QUOTA] Blokkeer: used={used}, quota={quota}, gevraagd={copies}")
                 return
+
+        # Test-print-limiet vóór de event-datum: tot de event-datum max
+        # config.TEST_PRINT_LIMIT prints (testen). Daarna geblokkeerd tot de
+        # event-datum; vanaf de event-datum geen limiet. Geen datum bekend →
+        # geen limiet (nooit per ongeluk blokkeren).
+        if ev and not self._test_print_allowed(ev, copies):
+            limit = int(getattr(config, 'TEST_PRINT_LIMIT', 10))
+            self._sharing_print_status.setText(
+                f"Testlimiet bereikt ({limit} prints). Printen kan weer "
+                f"vanaf de event-datum.")
+            self._sharing_print_status.show()
+            if hasattr(self, '_sharing_print_btn'):
+                self._sharing_print_btn.setEnabled(False)
+            print(f"[TEST-PRINT] Geblokkeerd — limiet {limit} bereikt vóór "
+                  f"event-datum {getattr(ev, 'linked_event_date', '')!r}")
+            return
 
         # Pakket-afhankelijke print-delay: standard wacht langer dan premium.
         # Geen apart fullscreen overlay meer — alles inline op het sharing-
@@ -9713,12 +9756,22 @@ class PhotoboothWindow(QMainWindow):
                 pass
         ev = self.active_event
         if ev:
+            _ev_dirty = False
             quota = int(getattr(ev, 'event_print_quota', 0) or 0)
             if quota > 0:
                 ev.event_prints_used = int(getattr(ev, 'event_prints_used', 0) or 0) + int(copies)
+                _ev_dirty = True
+                print(f"[PRINT-QUOTA] Used: {ev.event_prints_used}/{quota}")
+            # Test-print-teller alleen ophogen zolang we vóór de event-datum
+            # zijn (op/na de event-datum geldt de limiet niet).
+            if self._is_before_event_date(ev):
+                ev.test_prints_used = int(getattr(ev, 'test_prints_used', 0) or 0) + int(copies)
+                _ev_dirty = True
+                print(f"[TEST-PRINT] Used: {ev.test_prints_used}/"
+                      f"{getattr(config, 'TEST_PRINT_LIMIT', 10)} (vóór event-datum)")
+            if _ev_dirty:
                 try:
                     ev.save(config.EVENTS_DIR)
-                    print(f"[PRINT-QUOTA] Used: {ev.event_prints_used}/{quota}")
                 except Exception as ex:
                     print(f"[PRINT-QUOTA] Save fout: {ex}")
                 # UI bijwerken als de Print-tab open staat
@@ -14940,6 +14993,15 @@ class PhotoboothWindow(QMainWindow):
             snap["event_prints_used"] = used
             if quota > 0:
                 snap["event_prints_remaining"] = max(0, quota - used)
+            # Test-print-limiet vóór de event-datum
+            snap["event_date"] = getattr(ev, "linked_event_date", "") or ""
+            before = self._is_before_event_date(ev)
+            snap["before_event_date"] = before
+            if before:
+                tlimit = int(getattr(config, "TEST_PRINT_LIMIT", 10))
+                tused = int(getattr(ev, "test_prints_used", 0) or 0)
+                snap["test_prints_used"] = tused
+                snap["test_prints_remaining"] = max(0, tlimit - tused)
         # ── Uploads (cloud-foto's) ──
         try:
             bid = getattr(ev, "linked_booking_id", "") if ev else ""
@@ -16904,6 +16966,11 @@ class PhotoboothWindow(QMainWindow):
         date = (b.get("event_date") or b.get("event_start_date")
                 or q.get("event_date") or q.get("event_start_date") or "")
         label = f"{name}" + (f" · {date}" if date else "")
+        # Event-datum bewaren voor de test-print-limiet (max N prints vóór
+        # de event-datum, daarna onbeperkt). Alleen overschrijven als we een
+        # datum hebben — een lege response mag een bekende datum niet wissen.
+        if date:
+            self.active_event.linked_event_date = str(date)[:10]
         # Re-couple cleanup: oude uploader stoppen als we naar een ANDERE booking
         # switchen, anders blijft die op de oude queue draaien.
         old_id = self.active_event.linked_booking_id

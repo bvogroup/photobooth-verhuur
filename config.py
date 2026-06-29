@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.123"
+VERSION = "v1.99.124"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -110,6 +110,12 @@ ADVANCED_TAB_CODE = "13501350"
 # naar de edge function gepusht, gekoppeld aan serienummer + event + klant.
 CLOUD_LOG_ENABLED = True
 CLOUD_LOG_INTERVAL_SEC = 20
+
+# === Test-print-limiet ===
+# Vóór de event-datum mogen er maximaal zoveel prints gemaakt worden (om
+# te testen). Daarna is printen geblokkeerd tot de event-datum; vanaf de
+# event-datum geldt geen limiet meer.
+TEST_PRINT_LIMIT = 10
 
 # === Schermhelderheid ===
 # De Surface Pro 7 is fanless (passief gekoeld). Het scherm is een grote

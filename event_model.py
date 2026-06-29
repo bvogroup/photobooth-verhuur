@@ -132,6 +132,11 @@ class Event:
     # eigen pakket-limiet heeft.
     event_print_quota: int = 0
     event_prints_used: int = 0       # Teller, increment na elke succesvolle print
+    # Test-print-limiet vóór de event-datum: tot de event-datum mogen er
+    # maximaal config.TEST_PRINT_LIMIT prints gemaakt worden (om te testen),
+    # daarna geblokkeerd tot de event-datum. Vanaf de event-datum: onbeperkt.
+    linked_event_date: str = ""      # YYYY-MM-DD (uit de booking)
+    test_prints_used: int = 0        # Teller test-prints gemaakt vóór de event-datum
     created_at: str = ""             # ISO timestamp
     updated_at: str = ""             # ISO timestamp
 
