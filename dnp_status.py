@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -629,26 +630,56 @@ def _parse_controls(controls: list, status: DNPStatus):
 
 _USB_BACKEND = None
 _USB_BACKEND_ERR = ""
+
+
+def _libusb_dll_candidates():
+    """Mogelijke locaties van libusb-1.0.dll, in volgorde van voorkeur.
+    Dekt zowel de dev-omgeving (pip-pakket) als de frozen PyInstaller-build
+    (gebundeld in _internal/libusb/... of los naast de exe)."""
+    dirs = []
+    try:
+        import libusb as _libusb_pkg
+        dirs.append(os.path.join(os.path.dirname(_libusb_pkg.__file__),
+                                 "_platform", "windows", "x86_64"))
+    except Exception:
+        pass
+    bases = []
+    if getattr(sys, "_MEIPASS", None):
+        bases.append(sys._MEIPASS)
+    if getattr(sys, "frozen", False):
+        bases.append(os.path.dirname(sys.executable))
+    for base in bases:
+        dirs.append(os.path.join(base, "libusb", "_platform", "windows", "x86_64"))
+        dirs.append(base)  # losse DLL naast de exe
+    return [d for d in dirs if d]
+
+
 try:
     import usb.core
     import usb.backend.libusb1
-    import libusb as _libusb_pkg
-    _dll_dir = os.path.join(
-        os.path.dirname(_libusb_pkg.__file__),
-        "_platform", "windows", "x86_64",
-    )
-    if os.path.isdir(_dll_dir):
-        try:
-            os.add_dll_directory(_dll_dir)
-        except Exception:
-            pass
+    _dll_path = None
+    for _d in _libusb_dll_candidates():
+        _cand = os.path.join(_d, "libusb-1.0.dll")
+        if os.path.isfile(_cand):
+            try:
+                os.add_dll_directory(_d)
+            except Exception:
+                pass
+            _dll_path = _cand
+            break
+    if _dll_path:
         _USB_BACKEND = usb.backend.libusb1.get_backend(
-            find_library=lambda x: os.path.join(_dll_dir, "libusb-1.0.dll")
+            find_library=lambda x: _dll_path
         )
     if _USB_BACKEND is None:
-        _USB_BACKEND_ERR = "libusb-1.0.dll niet gevonden"
+        _USB_BACKEND_ERR = "libusb-1.0.dll niet gevonden (USB-cross-check overgeslagen)"
 except Exception as e:
-    _USB_BACKEND_ERR = f"pyusb/libusb import faal: {e}"
+    _USB_BACKEND_ERR = f"pyusb/libusb niet beschikbaar: {e}"
+
+# Heeft libusb de DNP-printer ÉÉN keer echt gezien deze sessie? Zo niet, dan
+# is het device niet aan WinUSB gebonden en zegt een 'niet gevonden' van
+# libusb NIETS — dan mag de cross-check de printer nooit offline forceren.
+_LIBUSB_SAW_DEVICE = False
 
 
 DNP_VENDOR_ID = 0x1452
@@ -657,6 +688,7 @@ QW410_PRODUCT_IDS = (0x9201,)
 
 def read_via_usb_enum() -> DNPStatus:
     """Enumereer USB-devices, return DNPStatus met alleen connected-veld."""
+    global _LIBUSB_SAW_DEVICE
     status = DNPStatus(error_method="libusb1_enum")
     if _USB_BACKEND is None:
         status.detail = _USB_BACKEND_ERR
@@ -665,6 +697,7 @@ def read_via_usb_enum() -> DNPStatus:
     try:
         for dev in usb.core.find(find_all=True, backend=_USB_BACKEND):
             if dev.idVendor == DNP_VENDOR_ID and dev.idProduct in QW410_PRODUCT_IDS:
+                _LIBUSB_SAW_DEVICE = True
                 status.connected = True
                 status.level = StatusLevel.UNKNOWN  # we weten verder niks
                 status.label = "USB-printer aangesloten"
@@ -787,7 +820,12 @@ class StatusPoller:
         """
         try:
             usb_check = read_via_usb_enum()
-            if (usb_check.error_method == "libusb1_enum"
+            # KRITISCH: alleen offline forceren als libusb het device deze
+            # sessie ÉÉN keer echt heeft gezien. Zonder WinUSB-binding ziet
+            # libusb de DNP nooit — een 'niet gevonden' betekent dan niets en
+            # mag een werkende printer niet ten onrechte offline zetten.
+            if (_LIBUSB_SAW_DEVICE
+                    and usb_check.error_method == "libusb1_enum"
                     and not usb_check.connected
                     and usb_check.level == StatusLevel.ERROR):
                 # Log alleen bij transitie — niet elke 2 sec opnieuw

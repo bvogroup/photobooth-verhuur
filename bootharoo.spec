@@ -19,6 +19,13 @@ app_dir = os.path.dirname(os.path.abspath(SPEC))
 # This is required because cv2's bootstrap re-imports itself natively
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
 
+# Collect the 'libusb' pip package incl. libusb-1.0.dll. Zonder dit ontbreekt
+# de DLL in de frozen build en faalt de DNP USB-statuscheck met
+# "libusb-1.0.dll niet gevonden" (dnp_status.py zoekt 'm in
+# libusb/_platform/windows/x86_64/). Het primaire status-pad is UI Automation;
+# libusb is de USB plug/unplug cross-check.
+libusb_datas, libusb_binaries, libusb_hiddenimports = collect_all('libusb')
+
 a = Analysis(
     [os.path.join(app_dir, 'splash_starter.pyw')],
     pathex=[app_dir],
@@ -28,7 +35,7 @@ a = Analysis(
         (os.path.join(app_dir, 'EdsImage.dll'), '.'),
         # Windows printer spooler — required by printer.py via ctypes.WinDLL('winspool.drv')
         (r'C:\Windows\System32\winspool.drv', '.'),
-    ] + cv2_binaries,
+    ] + cv2_binaries + libusb_binaries,
     datas=[
         # Flask web templates for QR download page
         (os.path.join(app_dir, 'web', 'templates'), os.path.join('web', 'templates')),
@@ -48,7 +55,7 @@ a = Analysis(
          'Lib', 'site-packages', 'botocore', 'data'), os.path.join('botocore', 'data')),
         (os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Programs', 'Python', 'Python314',
          'Lib', 'site-packages', 'boto3', 'data'), os.path.join('boto3', 'data')),
-    ] + cv2_datas,
+    ] + cv2_datas + libusb_datas,
     hiddenimports=[
         # Qt5
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',
@@ -79,6 +86,9 @@ a = Analysis(
         'email.mime.base',
         # SSL certificate trust (Windows cert store)
         'truststore',
+        # USB-enumeratie voor DNP-statuscheck (libusb-1.0 backend via pyusb)
+        'usb', 'usb.core', 'usb.backend', 'usb.backend.libusb1', 'libusb',
+    ] + libusb_hiddenimports + [
         # NOTE: cv2 is intentionally NOT here — it must be loaded from disk
         # by Python's FileFinder, not by PyInstaller's FrozenImporter.
         # cv2 files are included via cv2_datas + cv2_binaries above.

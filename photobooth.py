@@ -6624,9 +6624,10 @@ class PhotoboothWindow(QMainWindow):
         """Maak in-memory default Template-objecten voor de actieve booking
         wanneer geen cloud-templates beschikbaar zijn.
 
-        Returns 2 templates: '4 foto's op een vel' + 'strips' (variant
-        afhankelijk van event.printer_mode: 3strips/premium of 4x6/standard).
-        Achtergrond is leeg (wit). Niet opgeslagen naar disk.
+        Pakket-bewust:
+          - standaard (4x6) → ALLEEN '4 foto's op een vel' (2x2 landscape)
+          - premium  (3strips) → '4 foto's op een vel' + '3 strips van 3 foto's'
+        Nooit een 2-foto opmaak. Achtergrond is leeg (wit). Niet opgeslagen.
         """
         from template_model import Template, PhotoFrame
         ev = self.active_event
@@ -6656,37 +6657,24 @@ class PhotoboothWindow(QMainWindow):
             is_4x3_strip=False,
         )
 
-        # ── Template 2: Strips (variant op basis van pakket) ──
-        if is_premium:
-            # DNP triple strip — 600x1200 canvas, 3 frames, auto-cut
-            strips = Template(
-                name="3 strips van 3 foto's",
-                background_path="",
-                frames=[
-                    PhotoFrame(x=48, y=30,  width=504, height=283, rotation=0),
-                    PhotoFrame(x=48, y=343, width=504, height=283, rotation=0),
-                    PhotoFrame(x=48, y=656, width=504, height=283, rotation=0),
-                ],
-                is_double_strip=False,
-                cut_default=True,
-                is_triple_strip=True,
-                is_4x3_strip=False,
-            )
-        else:
-            # Canon dubbele strip — 600x1800 canvas (mirrored bij print)
-            strips = Template(
-                name="2 strips van 3 foto's",
-                background_path="",
-                frames=[
-                    PhotoFrame(x=30, y=105,  width=540, height=360, rotation=0),
-                    PhotoFrame(x=30, y=720,  width=540, height=360, rotation=0),
-                    PhotoFrame(x=30, y=1335, width=540, height=360, rotation=0),
-                ],
-                is_double_strip=False,
-                cut_default=True,
-                is_triple_strip=False,
-                is_4x3_strip=False,
-            )
+        # Standaard pakket: ALLEEN de 4-foto 2x2 opmaak (geen strip, nooit 2-foto).
+        if not is_premium:
+            return [sheet_4]
+
+        # ── Premium: daarnaast de 3-foto strip (DNP triple, auto-cut) ──
+        strips = Template(
+            name="3 strips van 3 foto's",
+            background_path="",
+            frames=[
+                PhotoFrame(x=48, y=30,  width=504, height=283, rotation=0),
+                PhotoFrame(x=48, y=343, width=504, height=283, rotation=0),
+                PhotoFrame(x=48, y=656, width=504, height=283, rotation=0),
+            ],
+            is_double_strip=False,
+            cut_default=True,
+            is_triple_strip=True,
+            is_4x3_strip=False,
+        )
         return [sheet_4, strips]
 
     def _get_linked_templates_for_booking(self):
@@ -17463,23 +17451,20 @@ class PhotoboothWindow(QMainWindow):
             except OSError:
                 pass
 
-        # Genereer beide varianten zodat operator kan kiezen.
-        # BEHOUD bestaande templates als ze al bestaan (= user edits) tenzij
-        # expliciet force_regen aan staat (Ververs-knop of eerste coupling).
-        # Verhuurophalen: ALTIJD 3 foto's — geen 2-foto variant aanbieden;
-        # de keuzepagina valt dan automatisch weg (1 template = auto-select).
-        if self.backend_brand == 'huren':
-            counts = (3,)
-            stale_2foto = os.path.join(config.TEMPLATES_DIR,
-                                       f"linked_{booking_id}_2foto.json")
-            if os.path.isfile(stale_2foto):
-                try:
-                    os.remove(stale_2foto)
-                    print("[LINKED] 2-foto variant verwijderd (huren-modus)")
-                except OSError:
-                    pass
-        else:
-            counts = (2, 3)
+        # NOOIT een 2-foto variant — niet bij Verhuurophalen én niet bij Hippe.
+        # De legacy auto-gen maakt alleen nog de 3-foto strip (fallback voor
+        # designs zonder cloud-template). De 4-foto 2x2 opmaak loopt via het
+        # portaal (cloud-template, Pad A). Een eventuele oude 2-foto variant
+        # wordt opgeruimd zodat hij niet meer in de keuzelijst blijft hangen.
+        counts = (3,)
+        stale_2foto = os.path.join(config.TEMPLATES_DIR,
+                                   f"linked_{booking_id}_2foto.json")
+        if os.path.isfile(stale_2foto):
+            try:
+                os.remove(stale_2foto)
+                print("[LINKED] Oude 2-foto variant verwijderd")
+            except OSError:
+                pass
         variants_created = []
         for count in counts:
             tmpl_path = os.path.join(config.TEMPLATES_DIR, f"linked_{booking_id}_{count}foto.json")
@@ -17498,14 +17483,9 @@ class PhotoboothWindow(QMainWindow):
         # Template-keuze: alleen overschrijven als er nog niets gekozen is
         # OF als de huidige keuze geen linked-variant van DEZE booking is.
         # Anders respecteert het de user-keuze tussen 2/3 foto.
-        expected_prefix = f"Event {booking_id[:8]} ("
-        current = ev.template_name or ""
-        if self.backend_brand == 'huren':
-            # Verhuurophalen: er bestaat alleen een 3-foto variant
-            ev.template_name = f"Event {booking_id[:8]} (3 foto's)"
-        elif not current.startswith(expected_prefix) or not current.endswith(" foto's)"):
-            default_count = ev.linked_photo_count or 3
-            ev.template_name = f"Event {booking_id[:8]} ({default_count} foto's)"
+        # Er bestaat alleen nog een 3-foto variant (Pad B), dus de keuze is
+        # eenduidig — geen 2/3-keuzepagina meer.
+        ev.template_name = f"Event {booking_id[:8]} (3 foto's)"
         # Belangrijk: clear event.background_path zodat template-bg uit cloud wint
         ev.background_path = ""
         ev.save(config.EVENTS_DIR)
