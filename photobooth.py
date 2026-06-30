@@ -8054,34 +8054,34 @@ class PhotoboothWindow(QMainWindow):
 
         # — Rechts: knoppenpaneel (kaart) —
         right = QWidget()
-        right.setFixedWidth(320)
+        right.setFixedWidth(340)
         right.setStyleSheet(
             "QWidget { background: rgba(255,255,255,0.05); border-radius: 18px; }"
         )
         right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(22, 22, 22, 22)
+        right_lay.setContentsMargins(20, 22, 20, 22)
         right_lay.setSpacing(12)
         right_lay.addStretch()
 
-        # Volgende foto maken — GROEN
-        self._filter_next_btn = QPushButton("Volgende foto maken")
+        # Volgende foto maken — GROEN (2 regels zodat 'ie nooit afkapt)
+        self._filter_next_btn = QPushButton("Volgende\nfoto maken")
         self._filter_next_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_next_btn.setFont(QFont("DM Sans", 17, QFont.Bold))
-        self._filter_next_btn.setMinimumHeight(78)
+        self._filter_next_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        self._filter_next_btn.setMinimumHeight(96)
         self._filter_next_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 12px; }}"
+            f"border: none; border-radius: 16px; padding: 10px; }}"
             f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
             f"QPushButton:pressed {{ background: #3A8B5E; }}"
         )
         self._filter_next_btn.clicked.connect(self._filter_next)
         right_lay.addWidget(self._filter_next_btn)
 
-        # Foto opnieuw nemen — neutraal
-        self._filter_retake_btn = QPushButton("Foto opnieuw nemen")
+        # Foto opnieuw nemen — neutraal (2 regels)
+        self._filter_retake_btn = QPushButton("Foto opnieuw\nnemen")
         self._filter_retake_btn.setCursor(Qt.PointingHandCursor)
         self._filter_retake_btn.setFont(QFont("DM Sans", 15))
-        self._filter_retake_btn.setMinimumHeight(58)
+        self._filter_retake_btn.setMinimumHeight(74)
         self._filter_retake_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.10); color: white; "
             "border: 1px solid rgba(255,255,255,0.22); border-radius: 14px; "
@@ -8094,8 +8094,8 @@ class PhotoboothWindow(QMainWindow):
         # Stoppen — rood
         self._filter_stop_btn = QPushButton("Stoppen")
         self._filter_stop_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_stop_btn.setFont(QFont("DM Sans", 14))
-        self._filter_stop_btn.setMinimumHeight(50)
+        self._filter_stop_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
+        self._filter_stop_btn.setMinimumHeight(54)
         self._filter_stop_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
             f"border: none; border-radius: 14px; padding: 6px; }}"
@@ -8187,7 +8187,7 @@ class PhotoboothWindow(QMainWindow):
         last = (photo_idx >= self.num_photos - 1)
         self._filter_title.setText(f"Foto {photo_idx + 1} van {self.num_photos}")
         self._filter_subtitle.setText("Kies hieronder een filter")
-        self._filter_next_btn.setText("Klaar" if last else "Volgende foto maken")
+        self._filter_next_btn.setText("Klaar" if last else "Volgende\nfoto maken")
         # Toon meteen de zojuist gemaakte foto (hergebruik de al-gespiegelde/
         # gecropte pixmap van _show_captured_preview) zodat het scherm nooit
         # leeg/'ladend' oogt. De async build verfijnt 'm + voegt filters toe.
