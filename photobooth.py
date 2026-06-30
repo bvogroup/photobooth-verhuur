@@ -6749,8 +6749,23 @@ class PhotoboothWindow(QMainWindow):
         for fname in sorted(os.listdir(config.TEMPLATES_DIR)):
             if not (fname.startswith(prefix) and fname.endswith(".json")):
                 continue
+            fpath = os.path.join(config.TEMPLATES_DIR, fname)
             try:
-                t = Template.load(os.path.join(config.TEMPLATES_DIR, fname))
+                t = Template.load(fpath)
+                # NOOIT een 2-foto opmaak tonen. Oude events die vóór de
+                # 2-foto-stop gekoppeld zijn, hebben dat bestand nog op schijf;
+                # filter 'm hier weg én ruim het verouderde bestand op zodat
+                # 'ie nooit meer in de keuzelijst verschijnt (zelf-herstellend).
+                n_photos = getattr(t, 'num_photos', None)
+                if n_photos is None:
+                    n_photos = len(getattr(t, 'frames', []))
+                if n_photos == 2:
+                    print(f"[TEMPLATE-PICKER] 2-foto variant overgeslagen + opgeruimd: {fname}")
+                    try:
+                        os.remove(fpath)
+                    except OSError:
+                        pass
+                    continue
                 results.append(t)
             except Exception as e:
                 print(f"[TEMPLATE-PICKER] Kon {fname} niet laden: {e}")
