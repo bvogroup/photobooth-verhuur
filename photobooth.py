@@ -1426,37 +1426,13 @@ class PhotoboothWindow(QMainWindow):
             print(f"[WATCHDOG] Niet gestart: {e}")
             self._cloud_watchdog = None
 
-        # DNP QW410 status-poller — leest via UI Automation (geen filter,
-        # geen extra setup). Werkt graceful: als de DNP-driver/dialog
-        # niet beschikbaar is valt 'm terug op USB-enumeratie (alleen
-        # plug/unplug detectie).
-        try:
-            from dnp_status import StatusPoller
-            # Printer-naam: gebruik de geconfigureerde printer (per
-            # settings.json). De UI-scrape opent de bijbehorende
-            # Voorkeursinstellingen dialog off-screen.
-            if self.backend_brand == 'huren':
-                # Verhuurophalen: HiTi P525L — geen DNP-statuspoller,
-                # geen UI-Automation, geen printer-foutmeldingen.
-                print("[DNP-STATUS] Poller overgeslagen — Verhuurophalen-modus")
-                raise RuntimeError("huren-modus: geen DNP poller")
-            self._dnp_poller = StatusPoller(
-                # 4s i.p.v. 2s: elke poll is een UI-Automation-scrape (CPU-
-                # intensief, draait continu). 4s halveert die belasting en
-                # houdt de printerstatus nog ruim actueel genoeg.
-                interval_sec=4.0,
-                printer_name=config.PRINTER_NAME,
-            )
-            # Cross-thread: poller draait op bg-thread, UI-update gaat via pyqtSignal
-            self._dnp_poller.on_change(
-                lambda st: self._dnp_status_signal.emit(st)
-            )
-            self._dnp_poller.start()
-            print(f"[DNP-STATUS] Poller gestart (2s interval, "
-                  f"printer={config.PRINTER_NAME!r})")
-        except Exception as e:
-            print(f"[DNP-STATUS] Poller niet gestart: {e}")
-            self._dnp_poller = None
+        # DNP QW410 status-poller — leest via UI Automation. Start via een
+        # helper zodat de schakelaar 'Printer-storingsmeldingen' (Geavanceerd
+        # → Printen) 'm ook runtime aan/uit kan zetten, met de keuze onthouden
+        # in settings.json. Wordt overgeslagen in Verhuurophalen-modus of als
+        # de storingsmeldingen uit staan.
+        self._dnp_poller = None
+        self._start_printer_status_poller()
 
         # Wifi-monitor uitgeschakeld — gebruiker wil deze flow niet meer zien.
         # Methodes blijven bestaan voor backwards compat maar starten niet.
@@ -1624,6 +1600,13 @@ class PhotoboothWindow(QMainWindow):
         print(f"[DNP-STATUS] level={status.level.value} code={status.code} "
               f"label={status.label!r} connected={status.connected} "
               f"method={status.error_method}")
+
+        # Storingsmeldingen uitgezet door de operator (bv. tijdelijke
+        # niet-DNP printer zoals een Canon CP1500): nooit een overlay tonen.
+        if not self._printer_status_enabled():
+            if getattr(self, '_dnp_error_overlay', None) is not None:
+                self._hide_dnp_error_overlay()
+            return
 
         # In settings NOOIT een fout-overlay — de operator moet bij de
         # instellingen kunnen (printer kiezen, profiel vastleggen) juist
@@ -11927,6 +11910,28 @@ class PhotoboothWindow(QMainWindow):
         test_row.addStretch()
         connect_lay.addLayout(test_row)
 
+        # --- Printer-storingsmeldingen aan/uit (standaard AAN) ---
+        # Leest de printerstatus uit (online/offline/papier-op) en toont
+        # storingsmeldingen. Zet uit bij een tijdelijke niet-DNP printer
+        # (bv. Canon CP1500) om valse meldingen te voorkomen. De keuze wordt
+        # onthouden in settings.json.
+        connect_lay.addSpacing(6)
+        self._printer_status_toggle = ToggleSwitch("Printer-storingsmeldingen")
+        self._printer_status_toggle.setFont(QFont("DM Sans", 13))
+        self._printer_status_toggle.setStyleSheet(toggle_style)
+        self._printer_status_toggle.setChecked(self._printer_status_enabled())
+        self._printer_status_toggle.toggled.connect(self._on_printer_status_toggled)
+        connect_lay.addWidget(self._printer_status_toggle)
+
+        _ps_hint = QLabel(
+            "Zet uit bij een tijdelijke niet-ondersteunde printer\n"
+            "(bijv. Canon CP1500) om valse storingsmeldingen te voorkomen."
+        )
+        _ps_hint.setFont(QFont("DM Sans", 10))
+        _ps_hint.setStyleSheet(dim_label_style)
+        _ps_hint.setWordWrap(True)
+        connect_lay.addWidget(_ps_hint)
+
         # DNP printer-profielen staan NIET inline op deze tab (was te makkelijk
         # toegankelijk voor klanten). Capture-UI zit nu achter een knop in
         # Geavanceerd → 'DNP printer-instellingen' die een dialog opent.
@@ -14993,6 +14998,67 @@ class PhotoboothWindow(QMainWindow):
             self._layout_bg_label.setText(t("bg_white"))
             self._layout_bg_label.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
             self._layout_bg_remove_btn.setVisible(False)
+
+    # ── Printer-storingsmeldingen (statusuitlezing) aan/uit ──────────
+    def _printer_status_enabled(self):
+        """Of de printer-statusuitlezing (storingsmeldingen) aan staat.
+
+        Per-booth opgeslagen in settings.json; standaard AAN. Uitzetten als
+        er tijdelijk een niet-DNP printer (bv. Canon CP1500) gekoppeld wordt,
+        zodat er geen valse foutmeldingen verschijnen.
+        """
+        return bool(self._load_app_setting("printer_status_enabled", True))
+
+    def _start_printer_status_poller(self):
+        """Start (of herstart) de DNP-statuspoller, mits van toepassing."""
+        self._stop_printer_status_poller()
+        try:
+            from dnp_status import StatusPoller
+            if getattr(self, 'backend_brand', '') == 'huren':
+                print("[DNP-STATUS] Poller overgeslagen — Verhuurophalen-modus")
+                self._dnp_poller = None
+                return
+            if not self._printer_status_enabled():
+                print("[DNP-STATUS] Poller overgeslagen — storingsmeldingen staan uit")
+                self._dnp_poller = None
+                return
+            self._dnp_poller = StatusPoller(
+                interval_sec=4.0,
+                printer_name=config.PRINTER_NAME,
+            )
+            self._dnp_poller.on_change(lambda st: self._dnp_status_signal.emit(st))
+            self._dnp_poller.start()
+            print(f"[DNP-STATUS] Poller gestart (4s interval, "
+                  f"printer={config.PRINTER_NAME!r})")
+        except Exception as e:
+            print(f"[DNP-STATUS] Poller niet gestart: {e}")
+            self._dnp_poller = None
+
+    def _stop_printer_status_poller(self):
+        """Stop de statuspoller. stop() joint tot ~10s, dus op een bg-thread
+        zodat de UI niet bevriest bij het omzetten van de schakelaar."""
+        p = getattr(self, '_dnp_poller', None)
+        self._dnp_poller = None
+        if p is not None:
+            def _quiet_stop():
+                try:
+                    p.stop()
+                except Exception:
+                    pass
+            threading.Thread(target=_quiet_stop, daemon=True).start()
+
+    def _on_printer_status_toggled(self, checked):
+        """Schakelaar 'Printer-storingsmeldingen' — onthoud + poller aan/uit."""
+        enabled = bool(checked)
+        self._save_app_setting("printer_status_enabled", enabled)
+        print(f"[SETTINGS] Printer-storingsmeldingen: {'AAN' if enabled else 'UIT'}")
+        if enabled:
+            self._start_printer_status_poller()
+        else:
+            self._stop_printer_status_poller()
+            # Sluit een eventueel openstaande storings-overlay direct.
+            if getattr(self, '_dnp_error_overlay', None) is not None:
+                self._hide_dnp_error_overlay()
 
     def _on_select_printer(self):
         """Open Windows printer selection dialog and persist choice."""
