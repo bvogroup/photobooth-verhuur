@@ -7842,7 +7842,11 @@ class PhotoboothWindow(QMainWindow):
             # als in de losse geüploade foto, en is 'opnieuw nemen' schoon
             # (er is nog niets verwerkt/geüpload om ongedaan te maken).
             self._show_captured_preview(dest)
-            self._show_filter_screen(dest, captured_idx)
+            # Toon de gemaakte foto eerst ~1 sec (niet te snel), dan pas de
+            # filters.
+            QTimer.singleShot(
+                1000, lambda d=dest, i=captured_idx: self._show_filter_screen(d, i)
+            )
             return
 
         # ── Klassiek gedrag (filterscherm uitgeschakeld) ──
@@ -7950,91 +7954,83 @@ class PhotoboothWindow(QMainWindow):
     # 'Foto opnieuw nemen' of 'Stoppen'. Geen auto-timeout.
 
     def _pil_to_qpixmap(self, pil_img):
-        """Converteer een PIL-afbeelding naar een QPixmap (RGB)."""
-        im = pil_img.convert("RGB")
-        data = im.tobytes("raw", "RGB")
-        qimg = QImage(data, im.width, im.height, im.width * 3, QImage.Format_RGB888)
+        """Converteer een PIL-afbeelding naar een QPixmap (RGB of RGBA)."""
+        if pil_img.mode == "RGBA":
+            data = pil_img.tobytes("raw", "RGBA")
+            qimg = QImage(data, pil_img.width, pil_img.height,
+                          pil_img.width * 4, QImage.Format_RGBA8888)
+        else:
+            im = pil_img.convert("RGB")
+            data = im.tobytes("raw", "RGB")
+            qimg = QImage(data, im.width, im.height, im.width * 3, QImage.Format_RGB888)
         return QPixmap.fromImage(qimg.copy())
 
     def _build_filter_page(self):
-        """Bouw het filterscherm: links foto, onder filters, rechts knoppen."""
+        """Filterscherm: boven foto (links) + knoppen (rechts), onderaan een
+        filterbalk over de volle breedte met 2 rijen van 8 filters."""
         page = QWidget()
-        page.setStyleSheet("background: #1a1a1a;")
+        page.setStyleSheet("background: #131318;")
         self._filter_page = page
-        root = QHBoxLayout(page)
+        root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Links: titel + grote foto + filterstrip ──
+        # ══ Bovenkant: foto (links) + knoppen (rechts) ══
+        top = QWidget()
+        top.setStyleSheet("background: transparent;")
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(34, 28, 28, 16)
+        top_lay.setSpacing(24)
+
+        # — Links: titel + grote foto —
         left = QWidget()
         left.setStyleSheet("background: transparent;")
         left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(24, 18, 18, 16)
-        left_lay.setSpacing(12)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(4)
 
         self._filter_title = QLabel("Kies een filter")
-        self._filter_title.setAlignment(Qt.AlignCenter)
-        self._filter_title.setFont(QFont("DM Sans", 20, QFont.Bold))
-        self._filter_title.setStyleSheet("color: white; background: transparent;")
+        self._filter_title.setFont(QFont("DM Sans", 24, QFont.Bold))
+        self._filter_title.setStyleSheet("color: #ffffff; background: transparent;")
         left_lay.addWidget(self._filter_title)
+
+        self._filter_subtitle = QLabel("Tik onderin op een filter")
+        self._filter_subtitle.setFont(QFont("DM Sans", 14))
+        self._filter_subtitle.setStyleSheet(
+            f"color: {config.COLOR_PRIMARY}; background: transparent;"
+        )
+        left_lay.addWidget(self._filter_subtitle)
+        left_lay.addSpacing(8)
 
         self._filter_preview_label = QLabel("Foto laden…")
         self._filter_preview_label.setAlignment(Qt.AlignCenter)
         self._filter_preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._filter_preview_label.setStyleSheet(
-            "color: #888; background: transparent; font-size: 18px;"
+            "color: #777; background: rgba(255,255,255,0.03); "
+            "border-radius: 18px; font-size: 18px;"
         )
         left_lay.addWidget(self._filter_preview_label, stretch=1)
+        top_lay.addWidget(left, stretch=1)
 
-        # Filterstrip — horizontaal scrollbaar
-        self._filter_thumbs_scroll = QScrollArea()
-        self._filter_thumbs_scroll.setWidgetResizable(True)
-        self._filter_thumbs_scroll.setFixedHeight(190)
-        self._filter_thumbs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._filter_thumbs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._filter_thumbs_scroll.setStyleSheet(
-            "QScrollArea { border: none; background: rgba(255,255,255,0.04); "
-            "border-radius: 14px; }"
-            "QScrollBar:horizontal { height: 10px; background: transparent; }"
-            "QScrollBar::handle:horizontal { background: rgba(255,255,255,0.3); "
-            "border-radius: 5px; min-width: 40px; }"
-        )
-        thumbs_holder = QWidget()
-        thumbs_holder.setStyleSheet("background: transparent;")
-        self._filter_thumbs_layout = QHBoxLayout(thumbs_holder)
-        self._filter_thumbs_layout.setContentsMargins(12, 10, 12, 10)
-        self._filter_thumbs_layout.setSpacing(10)
-        self._filter_thumbs_layout.setAlignment(Qt.AlignLeft)
-        self._filter_thumbs_scroll.setWidget(thumbs_holder)
-        left_lay.addWidget(self._filter_thumbs_scroll)
-
-        root.addWidget(left, stretch=1)
-
-        # ── Rechts: knoppen (zoals de overige schermen) ──
+        # — Rechts: knoppenpaneel (kaart) —
         right = QWidget()
-        right.setFixedWidth(340)
-        right.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        right.setFixedWidth(360)
+        right.setStyleSheet(
+            "QWidget { background: rgba(255,255,255,0.05); border-radius: 20px; }"
+        )
         right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(26, 24, 26, 24)
+        right_lay.setContentsMargins(28, 28, 28, 28)
         right_lay.setSpacing(16)
         right_lay.addStretch()
 
-        hint = QLabel("Kies links een filter\nvoor deze foto")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setFont(QFont("DM Sans", 14))
-        hint.setStyleSheet("color: #aaa; background: transparent;")
-        hint.setWordWrap(True)
-        right_lay.addWidget(hint)
-        right_lay.addSpacing(6)
-
-        # Volgende foto maken — GROEN (zoals de gevraagd)
+        # Volgende foto maken — GROEN
         self._filter_next_btn = QPushButton("Volgende foto maken  →")
         self._filter_next_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_next_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._filter_next_btn.setMinimumHeight(82)
+        self._filter_next_btn.setFont(QFont("DM Sans", 19, QFont.Bold))
+        self._filter_next_btn.setMinimumHeight(88)
         self._filter_next_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
+            f"border: none; border-radius: 18px; padding: 16px; }}"
             f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
             f"QPushButton:pressed {{ background: #3A8B5E; }}"
         )
@@ -8045,12 +8041,12 @@ class PhotoboothWindow(QMainWindow):
         self._filter_retake_btn = QPushButton("↺  Foto opnieuw nemen")
         self._filter_retake_btn.setCursor(Qt.PointingHandCursor)
         self._filter_retake_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        self._filter_retake_btn.setMinimumHeight(64)
+        self._filter_retake_btn.setMinimumHeight(66)
         self._filter_retake_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.12); color: white; "
-            "border: 1px solid rgba(255,255,255,0.3); border-radius: 14px; "
+            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
+            "border: 1px solid rgba(255,255,255,0.25); border-radius: 16px; "
             "padding: 10px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.22); }"
+            "QPushButton:hover { background: rgba(255,255,255,0.20); }"
         )
         self._filter_retake_btn.clicked.connect(self._filter_retake)
         right_lay.addWidget(self._filter_retake_btn)
@@ -8059,17 +8055,52 @@ class PhotoboothWindow(QMainWindow):
         self._filter_stop_btn = QPushButton("✕  Stoppen")
         self._filter_stop_btn.setCursor(Qt.PointingHandCursor)
         self._filter_stop_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
-        self._filter_stop_btn.setMinimumHeight(58)
+        self._filter_stop_btn.setMinimumHeight(56)
         self._filter_stop_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
-            f"border: none; border-radius: 14px; padding: 8px; }}"
+            f"border: none; border-radius: 16px; padding: 8px; }}"
             f"QPushButton:hover {{ background: #A93223; }}"
         )
         self._filter_stop_btn.clicked.connect(self._filter_stop)
         right_lay.addWidget(self._filter_stop_btn)
 
         right_lay.addStretch()
-        root.addWidget(right)
+        top_lay.addWidget(right)
+
+        root.addWidget(top, stretch=1)
+
+        # ══ Onderkant: filterbalk over de volle breedte (2 rijen × 8) ══
+        bar = QWidget()
+        bar.setStyleSheet(
+            "QWidget#filterbar { background: rgba(255,255,255,0.05); "
+            "border-top: 1px solid rgba(255,255,255,0.08); }"
+        )
+        bar.setObjectName("filterbar")
+        bar_lay = QVBoxLayout(bar)
+        bar_lay.setContentsMargins(28, 14, 28, 18)
+        bar_lay.setSpacing(10)
+
+        self._filter_bar_header = QLabel("FILTERS")
+        self._filter_bar_header.setAlignment(Qt.AlignCenter)
+        self._filter_bar_header.setFont(QFont("DM Sans", 11, QFont.Bold))
+        self._filter_bar_header.setStyleSheet(
+            "color: rgba(255,255,255,0.45); background: transparent; "
+            "letter-spacing: 2px;"
+        )
+        bar_lay.addWidget(self._filter_bar_header)
+
+        grid_holder = QWidget()
+        grid_holder.setStyleSheet("background: transparent;")
+        self._filter_thumbs_layout = QGridLayout(grid_holder)
+        self._filter_thumbs_layout.setContentsMargins(0, 0, 0, 0)
+        self._filter_thumbs_layout.setHorizontalSpacing(12)
+        self._filter_thumbs_layout.setVerticalSpacing(10)
+        # Verdeel de 8 kolommen gelijk over de volle breedte (links → rechts).
+        for c in range(8):
+            self._filter_thumbs_layout.setColumnStretch(c, 1)
+        bar_lay.addWidget(grid_holder)
+
+        root.addWidget(bar)
 
         # BELANGRIJK: voeg de pagina toe aan de stack, anders wijst
         # pages["filter"] naar een niet-bestaande index en negeert Qt de
@@ -8103,6 +8134,9 @@ class PhotoboothWindow(QMainWindow):
 
     def _show_filter_screen(self, photo_path, photo_idx):
         """Toon het filterscherm voor de zojuist gemaakte foto."""
+        # Sessie kan tijdens de 1-sec vertraging geannuleerd zijn.
+        if self.state == State.IDLE:
+            return
         self.state = State.FILTER
         # Houd live frames tegen zodat de gemaakte foto blijft staan.
         self._showing_preview = True
@@ -8175,10 +8209,21 @@ class PhotoboothWindow(QMainWindow):
                 base = img
                 base.thumbnail((900, 900), Image.LANCZOS)
                 preview = _filters.apply_filter(base, current_fid)
-                tbox = ImageOps.fit(base, (150, 108), Image.LANCZOS)
+
+                def _round(im, rad=14):
+                    from PIL import Image as _I, ImageDraw as _D
+                    im = im.convert("RGBA")
+                    w, h = im.size
+                    mask = _I.new("L", (w, h), 0)
+                    _D.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1],
+                                                    radius=rad, fill=255)
+                    im.putalpha(mask)
+                    return im
+
+                tbox = ImageOps.fit(base, (168, 112), Image.LANCZOS)
                 thumbs = []
                 for fid, label in _filters.FILTERS:
-                    thumbs.append((fid, label, _filters.apply_filter(tbox, fid)))
+                    thumbs.append((fid, label, _round(_filters.apply_filter(tbox, fid))))
                 self._filter_ready_signal.emit({
                     'token': token, 'idx': photo_idx,
                     'base': base, 'preview': preview, 'thumbs': thumbs,
@@ -8206,17 +8251,18 @@ class PhotoboothWindow(QMainWindow):
             print(f"[FILTER] thumbs_ready fout: {e}")
 
     def _populate_filter_thumbs(self, thumbs, current_fid):
-        """Vul de filterstrip met klikbare thumbnailknoppen."""
+        """Vul de filterbalk met klikbare thumbnails — 2 rijen × 8 kolommen."""
         self._clear_filter_thumbs()
         style = (
-            "QToolButton { background: rgba(255,255,255,0.06); color: #ddd; "
-            "border: 3px solid transparent; border-radius: 12px; padding: 6px; "
+            "QToolButton { background: rgba(255,255,255,0.05); color: #cfcfcf; "
+            "border: 3px solid transparent; border-radius: 16px; padding: 6px; "
             "font-size: 13px; }"
-            "QToolButton:hover { background: rgba(255,255,255,0.14); }"
+            "QToolButton:hover { background: rgba(255,255,255,0.12); color: #fff; }"
             "QToolButton:checked { border: 3px solid " + config.COLOR_PRIMARY + "; "
-            "color: white; background: rgba(214,194,155,0.18); }"
+            "color: #fff; background: rgba(214,194,155,0.16); font-weight: bold; }"
         )
-        for fid, label, pil_im in thumbs:
+        cols = 8
+        for i, (fid, label, pil_im) in enumerate(thumbs):
             pix = self._pil_to_qpixmap(pil_im)
             btn = QToolButton()
             btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -8227,8 +8273,10 @@ class PhotoboothWindow(QMainWindow):
             btn.setChecked(fid == current_fid)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(style)
+            btn.setFixedSize(190, 158)
             btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
-            self._filter_thumbs_layout.addWidget(btn)
+            r, c = divmod(i, cols)
+            self._filter_thumbs_layout.addWidget(btn, r, c, alignment=Qt.AlignCenter)
             self._filter_thumb_btns[fid] = btn
 
     def _set_filter_preview(self, pil_img):
