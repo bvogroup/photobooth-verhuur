@@ -88,6 +88,9 @@ a = Analysis(
         'truststore',
         # USB-enumeratie voor DNP-statuscheck (libusb-1.0 backend via pyusb)
         'usb', 'usb.core', 'usb.backend', 'usb.backend.libusb1', 'libusb',
+        # Eigen modules (function-level imports — expliciet voor de zekerheid)
+        'filters',
+        'PIL.ImageFilter', 'PIL.ImageEnhance',
     ] + libusb_hiddenimports + [
         # NOTE: cv2 is intentionally NOT here — it must be loaded from disk
         # by Python's FileFinder, not by PyInstaller's FrozenImporter.

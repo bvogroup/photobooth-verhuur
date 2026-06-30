@@ -18,10 +18,11 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QSizePolicy, QGraphicsDropShadowEffect,
     QScrollArea, QGridLayout, QLineEdit, QComboBox, QInputDialog, QFrame,
-    QCheckBox, QSpinBox, QTextEdit, QDialog, QProgressBar, QRadioButton
+    QCheckBox, QSpinBox, QTextEdit, QDialog, QProgressBar, QRadioButton,
+    QToolButton
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QEventLoop, QThread, pyqtSignal
-from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, QCursor, QBitmap
+from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, QCursor, QBitmap, QIcon
 
 import config
 from camera import (Camera, CaptureThread, EDSDKWorker,
@@ -54,6 +55,7 @@ class State(Enum):
     PAYMENT = auto()
     CUSTOM_CHOICE = auto()
     CUSTOM_PAYMENT = auto()
+    FILTER = auto()
 
 
 STYLESHEET = f"""
@@ -931,6 +933,8 @@ class PhotoboothWindow(QMainWindow):
     _update_check_signal = pyqtSignal(object)   # dict van updater.check_for_update
     _update_progress_signal = pyqtSignal(int)   # download-percentage
     _update_done_signal = pyqtSignal(bool, str) # (gestart?, foutmelding)
+    # Filterscherm: thumbnails + preview klaar (bg-thread → main thread)
+    _filter_ready_signal = pyqtSignal(object)   # dict met token/idx/base/preview/thumbs
 
     def __init__(self):
         super().__init__()
@@ -1070,6 +1074,7 @@ class PhotoboothWindow(QMainWindow):
         self._update_check_signal.connect(self._on_update_check_result)
         self._update_progress_signal.connect(self._on_update_progress)
         self._update_done_signal.connect(self._on_update_done)
+        self._filter_ready_signal.connect(self._on_filter_thumbs_ready)
         # Timer voor 2-sec wifi-check op idle scherm (zelf gestart in _go_idle)
         self._idle_wifi_check_timer = QTimer(self)
         self._idle_wifi_check_timer.setInterval(2000)
@@ -1088,6 +1093,13 @@ class PhotoboothWindow(QMainWindow):
         self._strip_bg = None      # Pre-loaded PIL background image
         self._processed_photos = []
         self._processed_lock = threading.Lock()
+        # Filterscherm (na elke foto): gekozen filter per frame-index +
+        # invalidatie-token voor async thumbnail-builds + context van de
+        # huidige filter-foto.
+        self._photo_filters = {}
+        self._filter_token = 0
+        self._filter_ctx = None
+        self._filter_thumb_btns = {}
         self.countdown_value = 0
         self.session_id = None     # Timestamp ID for this session
         self._settings_template_widgets = {}
@@ -1246,6 +1258,8 @@ class PhotoboothWindow(QMainWindow):
         self.pages["welcome"] = 16
         self._build_qr_scan_page()
         self.pages["scan_qr"] = 17
+        self._build_filter_page()
+        self.pages["filter"] = 18
 
     # ── Auth / Login ──────────────────────────
 
@@ -6304,6 +6318,7 @@ class PhotoboothWindow(QMainWindow):
         self.selected_template = None
         self._strip_bg = None
         self._processed_photos = []
+        self._photo_filters = {}
         self.session_id = None
         self._capture_search_folders = None
         self._capture_existing_files = None
@@ -7243,6 +7258,7 @@ class PhotoboothWindow(QMainWindow):
         self.current_photo_num = 0
         self.photos = []
         self._processed_photos = []
+        self._photo_filters = {}
         self.session_id = self._new_session_id()
         self._rebuild_thumbnails()
         self.camera.configure_save_folder()
@@ -7788,8 +7804,13 @@ class PhotoboothWindow(QMainWindow):
         self._reset_countdown_ui()
         self._end_flash_effect()
 
-        # Restart live view only if more photos needed (not after last photo)
-        if self.current_photo_num < self.num_photos - 1:
+        captured_idx = self.current_photo_num
+        filters_on = getattr(config, 'FILTERS_ENABLED', False)
+
+        # Restart live view: needed for the next photo, and — with the filter
+        # screen — also after the LAST photo so 'Foto opnieuw nemen' works on
+        # every photo.
+        if captured_idx < self.num_photos - 1 or filters_on:
             # Small delay after capture for camera mirror to settle
             QTimer.singleShot(200, self.camera.start_live_view)
 
@@ -7801,7 +7822,7 @@ class PhotoboothWindow(QMainWindow):
         raw_dir = self._get_raw_dir()
         dest = os.path.join(
             raw_dir,
-            self._timestamp_filename(ext=ext, photo_num=self.current_photo_num + 1),
+            self._timestamp_filename(ext=ext, photo_num=captured_idx + 1),
         )
         if file_path != dest:
             try:
@@ -7812,14 +7833,23 @@ class PhotoboothWindow(QMainWindow):
                 dest = file_path
 
         self.photos.append(dest)
-        self._update_thumbnail(self.current_photo_num, dest)
+        self._update_thumbnail(captured_idx, dest)
 
+        if filters_on:
+            # Filterscherm: de foto wordt PAS verwerkt voor de strip én
+            # geüpload nadat de gast een filter koos en op 'Volgende' drukt
+            # (zie _filter_next). Zo komt het gekozen filter zowel in de strip
+            # als in de losse geüploade foto, en is 'opnieuw nemen' schoon
+            # (er is nog niets verwerkt/geüpload om ongedaan te maken).
+            self._show_captured_preview(dest)
+            self._show_filter_screen(dest, captured_idx)
+            return
+
+        # ── Klassiek gedrag (filterscherm uitgeschakeld) ──
         # Linked-modus: enqueue voor cloud upload
         self._maybe_enqueue_linked(dest)
-
         # Pre-process photo for strip building
-        self._process_photo_for_strip(dest, self.current_photo_num)
-
+        self._process_photo_for_strip(dest, captured_idx)
         # Show captured photo briefly, then live view resumes on screen
         self._show_captured_preview(dest)
 
@@ -7913,6 +7943,391 @@ class PhotoboothWindow(QMainWindow):
         if self.active_event:
             self.active_event.increment_photos(self.num_photos, config.EVENTS_DIR)
         self._create_and_show_strip()
+
+    # ── Filterscherm (na elke foto) ─────────────────────────────
+    # Links de foto, onderin de filterkeuzes, rechts de knoppen. Er wordt
+    # ALLEEN op de gast gewacht: de sessie gaat pas door bij 'Volgende' (groen),
+    # 'Foto opnieuw nemen' of 'Stoppen'. Geen auto-timeout.
+
+    def _pil_to_qpixmap(self, pil_img):
+        """Converteer een PIL-afbeelding naar een QPixmap (RGB)."""
+        im = pil_img.convert("RGB")
+        data = im.tobytes("raw", "RGB")
+        qimg = QImage(data, im.width, im.height, im.width * 3, QImage.Format_RGB888)
+        return QPixmap.fromImage(qimg.copy())
+
+    def _build_filter_page(self):
+        """Bouw het filterscherm: links foto, onder filters, rechts knoppen."""
+        page = QWidget()
+        page.setStyleSheet("background: #1a1a1a;")
+        self._filter_page = page
+        root = QHBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Links: titel + grote foto + filterstrip ──
+        left = QWidget()
+        left.setStyleSheet("background: transparent;")
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(24, 18, 18, 16)
+        left_lay.setSpacing(12)
+
+        self._filter_title = QLabel("Kies een filter")
+        self._filter_title.setAlignment(Qt.AlignCenter)
+        self._filter_title.setFont(QFont("DM Sans", 20, QFont.Bold))
+        self._filter_title.setStyleSheet("color: white; background: transparent;")
+        left_lay.addWidget(self._filter_title)
+
+        self._filter_preview_label = QLabel("Foto laden…")
+        self._filter_preview_label.setAlignment(Qt.AlignCenter)
+        self._filter_preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._filter_preview_label.setStyleSheet(
+            "color: #888; background: transparent; font-size: 18px;"
+        )
+        left_lay.addWidget(self._filter_preview_label, stretch=1)
+
+        # Filterstrip — horizontaal scrollbaar
+        self._filter_thumbs_scroll = QScrollArea()
+        self._filter_thumbs_scroll.setWidgetResizable(True)
+        self._filter_thumbs_scroll.setFixedHeight(190)
+        self._filter_thumbs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._filter_thumbs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._filter_thumbs_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: rgba(255,255,255,0.04); "
+            "border-radius: 14px; }"
+            "QScrollBar:horizontal { height: 10px; background: transparent; }"
+            "QScrollBar::handle:horizontal { background: rgba(255,255,255,0.3); "
+            "border-radius: 5px; min-width: 40px; }"
+        )
+        thumbs_holder = QWidget()
+        thumbs_holder.setStyleSheet("background: transparent;")
+        self._filter_thumbs_layout = QHBoxLayout(thumbs_holder)
+        self._filter_thumbs_layout.setContentsMargins(12, 10, 12, 10)
+        self._filter_thumbs_layout.setSpacing(10)
+        self._filter_thumbs_layout.setAlignment(Qt.AlignLeft)
+        self._filter_thumbs_scroll.setWidget(thumbs_holder)
+        left_lay.addWidget(self._filter_thumbs_scroll)
+
+        root.addWidget(left, stretch=1)
+
+        # ── Rechts: knoppen (zoals de overige schermen) ──
+        right = QWidget()
+        right.setFixedWidth(340)
+        right.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(26, 24, 26, 24)
+        right_lay.setSpacing(16)
+        right_lay.addStretch()
+
+        hint = QLabel("Kies links een filter\nvoor deze foto")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("DM Sans", 14))
+        hint.setStyleSheet("color: #aaa; background: transparent;")
+        hint.setWordWrap(True)
+        right_lay.addWidget(hint)
+        right_lay.addSpacing(6)
+
+        # Volgende foto maken — GROEN (zoals de gevraagd)
+        self._filter_next_btn = QPushButton("Volgende foto maken  →")
+        self._filter_next_btn.setCursor(Qt.PointingHandCursor)
+        self._filter_next_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        self._filter_next_btn.setMinimumHeight(82)
+        self._filter_next_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
+            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #3A8B5E; }}"
+        )
+        self._filter_next_btn.clicked.connect(self._filter_next)
+        right_lay.addWidget(self._filter_next_btn)
+
+        # Foto opnieuw nemen — neutraal
+        self._filter_retake_btn = QPushButton("↺  Foto opnieuw nemen")
+        self._filter_retake_btn.setCursor(Qt.PointingHandCursor)
+        self._filter_retake_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
+        self._filter_retake_btn.setMinimumHeight(64)
+        self._filter_retake_btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.12); color: white; "
+            "border: 1px solid rgba(255,255,255,0.3); border-radius: 14px; "
+            "padding: 10px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.22); }"
+        )
+        self._filter_retake_btn.clicked.connect(self._filter_retake)
+        right_lay.addWidget(self._filter_retake_btn)
+
+        # Stoppen — rood
+        self._filter_stop_btn = QPushButton("✕  Stoppen")
+        self._filter_stop_btn.setCursor(Qt.PointingHandCursor)
+        self._filter_stop_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
+        self._filter_stop_btn.setMinimumHeight(58)
+        self._filter_stop_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
+            f"border: none; border-radius: 14px; padding: 8px; }}"
+            f"QPushButton:hover {{ background: #A93223; }}"
+        )
+        self._filter_stop_btn.clicked.connect(self._filter_stop)
+        right_lay.addWidget(self._filter_stop_btn)
+
+        right_lay.addStretch()
+        root.addWidget(right)
+
+    def _clear_filter_thumbs(self):
+        """Verwijder alle filter-thumbnailknoppen uit de strip."""
+        self._filter_thumb_btns = {}
+        lay = getattr(self, '_filter_thumbs_layout', None)
+        if lay is None:
+            return
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _reset_thumbnail_at(self, idx):
+        """Zet één onderste sessie-thumbnail terug op placeholder (na retake)."""
+        if 0 <= idx < len(self.thumb_labels):
+            thumb = self.thumb_labels[idx]
+            thumb.setPixmap(QPixmap())
+            thumb.setText(str(idx + 1))
+            thumb.setStyleSheet(
+                "background: rgba(255,255,255,0.15); "
+                "border: 2px dashed rgba(255,255,255,0.4); border-radius: 8px; "
+                "color: rgba(255,255,255,0.5);"
+            )
+
+    def _show_filter_screen(self, photo_path, photo_idx):
+        """Toon het filterscherm voor de zojuist gemaakte foto."""
+        self.state = State.FILTER
+        # Houd live frames tegen zodat de gemaakte foto blijft staan.
+        self._showing_preview = True
+        cur = self._photo_filters.get(photo_idx, 'origineel')
+        self._photo_filters[photo_idx] = cur
+        self._filter_ctx = {'path': photo_path, 'idx': photo_idx,
+                            'base': None, 'thumbs': None}
+        last = (photo_idx >= self.num_photos - 1)
+        self._filter_title.setText(
+            f"Foto {photo_idx + 1} van {self.num_photos} — kies een filter"
+        )
+        self._filter_next_btn.setText("Klaar  ✓" if last else "Volgende foto maken  →")
+        self._filter_preview_label.setText("Foto laden…")
+        self._filter_preview_label.setPixmap(QPixmap())
+        self._clear_filter_thumbs()
+        self.stack.setCurrentIndex(self.pages["filter"])
+        self._build_filter_thumbs_async(photo_path, photo_idx, cur)
+
+    def _build_filter_thumbs_async(self, photo_path, photo_idx, current_fid):
+        """Bouw (op een bg-thread) de grote preview + 16 filter-thumbnails."""
+        self._filter_token += 1
+        token = self._filter_token
+        ev = self.active_event
+        cam_mirror = bool(getattr(ev, 'camera_mirror', False)) if ev else False
+        cam_rot = int(getattr(ev, 'camera_rotation', 0)) if ev else 0
+        template = self.selected_template
+        fw = fh = 0
+        if template and 0 <= photo_idx < len(template.frames):
+            frame = template.frames[photo_idx]
+            fw, fh = frame.width, frame.height
+            if getattr(frame, 'rotation', 0) in (90, 270, -90, -270):
+                fw, fh = fh, fw
+
+        def _work():
+            try:
+                from PIL import Image, ImageOps
+                import filters as _filters
+                with Image.open(photo_path) as raw:
+                    img = ImageOps.exif_transpose(raw)
+                    img = img.convert("RGB")
+                if cam_mirror:
+                    img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                if cam_rot:
+                    img = img.rotate(-cam_rot, expand=True)
+                # Center-crop naar frame-aspect (zoals de korte capture-preview)
+                if fw > 0 and fh > 0:
+                    tr = fw / fh
+                    iw, ih = img.size
+                    cr = iw / ih if ih else 1.0
+                    if abs(cr - tr) > 0.02:
+                        if cr > tr:
+                            nw = int(ih * tr); x = (iw - nw) // 2
+                            img = img.crop((x, 0, x + nw, ih))
+                        else:
+                            nh = int(iw / tr); y = (ih - nh) // 2
+                            img = img.crop((0, y, iw, y + nh))
+                base = img
+                base.thumbnail((900, 900), Image.LANCZOS)
+                preview = _filters.apply_filter(base, current_fid)
+                tbox = ImageOps.fit(base, (150, 108), Image.LANCZOS)
+                thumbs = []
+                for fid, label in _filters.FILTERS:
+                    thumbs.append((fid, label, _filters.apply_filter(tbox, fid)))
+                self._filter_ready_signal.emit({
+                    'token': token, 'idx': photo_idx,
+                    'base': base, 'preview': preview, 'thumbs': thumbs,
+                })
+            except Exception as e:
+                print(f"[FILTER] Thumb-build fout: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_filter_thumbs_ready(self, payload):
+        """Main-thread: ontvang preview + thumbnails en toon ze."""
+        try:
+            if not payload or payload.get('token') != self._filter_token:
+                return  # verouderd — andere foto of al doorgegaan
+            if self._filter_ctx is None:
+                return
+            self._filter_ctx['base'] = payload.get('base')
+            self._filter_ctx['thumbs'] = payload.get('thumbs')
+            cur = self._photo_filters.get(payload.get('idx'), 'origineel')
+            self._populate_filter_thumbs(payload.get('thumbs') or [], cur)
+            prev = payload.get('preview')
+            if prev is not None:
+                self._set_filter_preview(prev)
+        except Exception as e:
+            print(f"[FILTER] thumbs_ready fout: {e}")
+
+    def _populate_filter_thumbs(self, thumbs, current_fid):
+        """Vul de filterstrip met klikbare thumbnailknoppen."""
+        self._clear_filter_thumbs()
+        style = (
+            "QToolButton { background: rgba(255,255,255,0.06); color: #ddd; "
+            "border: 3px solid transparent; border-radius: 12px; padding: 6px; "
+            "font-size: 13px; }"
+            "QToolButton:hover { background: rgba(255,255,255,0.14); }"
+            "QToolButton:checked { border: 3px solid " + config.COLOR_PRIMARY + "; "
+            "color: white; background: rgba(214,194,155,0.18); }"
+        )
+        for fid, label, pil_im in thumbs:
+            pix = self._pil_to_qpixmap(pil_im)
+            btn = QToolButton()
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            btn.setIcon(QIcon(pix))
+            btn.setIconSize(QSize(pix.width(), pix.height()))
+            btn.setText(label)
+            btn.setCheckable(True)
+            btn.setChecked(fid == current_fid)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(style)
+            btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
+            self._filter_thumbs_layout.addWidget(btn)
+            self._filter_thumb_btns[fid] = btn
+
+    def _set_filter_preview(self, pil_img):
+        """Toon de grote preview met het huidige filter, op labelgrootte."""
+        if self._filter_ctx is not None:
+            self._filter_ctx['preview_pil'] = pil_img
+        lbl = self._filter_preview_label
+        # Bij eerste tonen kan de label-layout nog niet klaar zijn → retry.
+        if lbl.width() < 80 or lbl.height() < 80:
+            QTimer.singleShot(60, lambda: self._set_filter_preview(pil_img))
+            return
+        pix = self._pil_to_qpixmap(pil_img)
+        dpr = lbl.devicePixelRatioF()
+        scaled = pix.scaled(int(lbl.width() * dpr), int(lbl.height() * dpr),
+                            Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
+        lbl.setText("")
+        lbl.setPixmap(scaled)
+
+    def _filter_select(self, fid):
+        """Gast koos een filter — markeer en herrender de grote preview."""
+        if self._filter_ctx is None:
+            return
+        idx = self._filter_ctx.get('idx')
+        self._photo_filters[idx] = fid
+        for f, btn in self._filter_thumb_btns.items():
+            btn.setChecked(f == fid)
+        base = self._filter_ctx.get('base')
+        if base is not None:
+            try:
+                import filters as _filters
+                self._set_filter_preview(_filters.apply_filter(base, fid))
+            except Exception as e:
+                print(f"[FILTER] Preview-render fout: {e}")
+
+    def _enqueue_photo_filtered(self, dest, fid):
+        """Upload de losse foto — gefilterd indien een filter gekozen is."""
+        if not fid or fid == 'origineel':
+            self._maybe_enqueue_linked(dest)
+            return
+        # In standalone-modus wordt er toch niet geüpload — sla het
+        # wegschrijven van een gefilterde kopie dan over (geen rommel in raw/).
+        ev = self.active_event
+        linked = bool(ev and getattr(ev, 'booth_mode', 'standalone') == 'linked'
+                      and getattr(ev, 'linked_booking_id', ''))
+        if not linked:
+            return
+
+        def _work():
+            path = dest
+            try:
+                from PIL import Image
+                import filters as _filters
+                with Image.open(dest) as im:
+                    out = _filters.apply_filter(im, fid)
+                root, ext = os.path.splitext(dest)
+                fpath = f"{root}_f{ext or '.jpg'}"
+                out.save(fpath, quality=95)
+                path = fpath
+            except Exception as e:
+                print(f"[FILTER] Upload-filter mislukt: {e}")
+                path = dest
+            self._maybe_enqueue_linked(path)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _filter_next(self):
+        """Groene knop: pas filter toe (strip + upload) en ga door."""
+        # Consumeer de context meteen → waterdicht tegen dubbelklik (de
+        # state-overgang gebeurt pas async via timer/strip-build).
+        ctx = self._filter_ctx
+        if ctx is None:
+            return
+        self._filter_ctx = None
+        idx = ctx.get('idx', self.current_photo_num)
+        dest = ctx.get('path')
+        fid = self._photo_filters.get(idx, 'origineel')
+        self._filter_token += 1  # stop eventuele lopende thumb-build
+        self._showing_preview = False
+        if dest:
+            # Verwerk voor de strip (past het filter toe) + upload de losse foto.
+            self._process_photo_for_strip(dest, idx)
+            self._enqueue_photo_filtered(dest, fid)
+        self.current_photo_num = idx + 1
+        if self.current_photo_num < self.num_photos:
+            self._continue_after_preview()
+        else:
+            # Geef de laatste foto een kleine voorsprong om te verwerken
+            # voordat de strip gebouwd wordt (matcht het klassieke gedrag).
+            QTimer.singleShot(500, self._finish_after_preview)
+
+    def _filter_retake(self):
+        """Maak de huidige foto opnieuw (verwijder de zojuist gemaakte)."""
+        ctx = self._filter_ctx
+        if ctx is None:
+            return
+        self._filter_ctx = None
+        idx = ctx.get('idx', self.current_photo_num)
+        self._filter_token += 1
+        # Verwijder de zojuist gemaakte foto + reset de thumbnail.
+        if self.photos and len(self.photos) == idx + 1:
+            try:
+                self.photos.pop()
+            except Exception:
+                pass
+        self._photo_filters.pop(idx, None)
+        self._reset_thumbnail_at(idx)
+        self.current_photo_num = idx
+        self._showing_preview = False
+        self._continue_after_preview()
+
+    def _filter_stop(self):
+        """Stop de sessie volledig en ga terug naar idle."""
+        self._filter_token += 1
+        self._filter_ctx = None
+        self._showing_preview = False
+        self._cancel_session()
 
     def _auto_next_photo(self):
         """Automatically start countdown for next photo."""
@@ -8012,6 +8427,20 @@ class PhotoboothWindow(QMainWindow):
                           f"foto={'L' if img_land else 'P'} → draai 90°)")
                 # Crop-to-fit: vult het frame exact, snijdt overtollige randen af
                 img = ImageOps.fit(img, (frame.width, frame.height), Image.LANCZOS)
+                # Pas het door de gast gekozen filter toe (na elke foto). Het
+                # filter komt zo in de geprinte/gedeelde strip terecht.
+                fid = None
+                try:
+                    fid = self._photo_filters.get(frame_index)
+                except Exception:
+                    fid = None
+                if fid and fid != 'origineel':
+                    try:
+                        import filters as _filters
+                        img = _filters.apply_filter(img, fid)
+                        print(f"[STRIP] Foto {frame_index + 1} filter '{fid}' toegepast")
+                    except Exception as _fe:
+                        print(f"[STRIP] Filter '{fid}' mislukt: {_fe}")
                 with self._processed_lock:
                     self._processed_photos.append((frame_index, img))
                 print(f"[STRIP] Foto {frame_index + 1} voorverwerkt ({frame.width}x{frame.height})")

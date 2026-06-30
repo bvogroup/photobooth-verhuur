@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.128"
+VERSION = "v1.99.129"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -94,6 +94,14 @@ CAPTURE_SCREEN_DURATION_MS = 500  # How long capture screen is shown (ms)
 REVIEW_TIMEOUT_SEC = 60  # Auto-print after this many seconds on review page
 THANK_YOU_DURATION_SEC = 4
 COUNTDOWN_BEEP = True     # Play beep sound during countdown
+
+# === Filterscherm (na elke foto) ===
+# Na elke gemaakte foto verschijnt een scherm waar de gast een filter kan
+# kiezen (zwart-wit, sepia, ...). Links de foto, onderin de filters, rechts
+# de knoppen. Er wordt ALLEEN op de gast gewacht (geen auto-timeout); de
+# sessie gaat pas door bij een knopdruk. 0/False = filterscherm overslaan
+# (oude gedrag: foto kort tonen en automatisch door).
+FILTERS_ENABLED = True
 
 # === LED Flash Relay (USB-serial CH340 board) ===
 LED_RELAY_ENABLED = True
