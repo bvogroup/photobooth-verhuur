@@ -7,7 +7,7 @@
 ;   3. "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "Bootharoo"
-#define MyAppVersion "1.99.131"
+#define MyAppVersion "1.99.132"
 #define MyAppPublisher "Bootharoo"
 #define MyAppURL "https://bootharoo.com"
 #define MyAppExeName "Bootharoo.exe"
