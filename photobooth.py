@@ -8071,6 +8071,11 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addStretch()
         root.addWidget(right)
 
+        # BELANGRIJK: voeg de pagina toe aan de stack, anders wijst
+        # pages["filter"] naar een niet-bestaande index en negeert Qt de
+        # setCurrentIndex stilletjes (blijft op de foto-preview hangen).
+        self.stack.addWidget(page)
+
     def _clear_filter_thumbs(self):
         """Verwijder alle filter-thumbnailknoppen uit de strip."""
         self._filter_thumb_btns = {}
@@ -8110,8 +8115,21 @@ class PhotoboothWindow(QMainWindow):
             f"Foto {photo_idx + 1} van {self.num_photos} — kies een filter"
         )
         self._filter_next_btn.setText("Klaar  ✓" if last else "Volgende foto maken  →")
-        self._filter_preview_label.setText("Foto laden…")
-        self._filter_preview_label.setPixmap(QPixmap())
+        # Toon meteen de zojuist gemaakte foto (hergebruik de al-gespiegelde/
+        # gecropte pixmap van _show_captured_preview) zodat het scherm nooit
+        # leeg/'ladend' oogt. De async build verfijnt 'm + voegt filters toe.
+        shown = False
+        try:
+            cap_pm = self.countdown_live_label.pixmap()
+            if cap_pm is not None and not cap_pm.isNull():
+                self._filter_preview_label.setText("")
+                self._filter_preview_label.setPixmap(cap_pm)
+                shown = True
+        except Exception:
+            shown = False
+        if not shown:
+            self._filter_preview_label.setText("Foto laden…")
+            self._filter_preview_label.setPixmap(QPixmap())
         self._clear_filter_thumbs()
         self.stack.setCurrentIndex(self.pages["filter"])
         self._build_filter_thumbs_async(photo_path, photo_idx, cur)
