@@ -9807,28 +9807,25 @@ class PhotoboothWindow(QMainWindow):
 
     def _print_phase(self, ev) -> str:
         """Bepaal de print-fase t.o.v. de event-datum:
-            'test'   = vóór de event-datum → max config.TEST_PRINT_LIMIT prints
-            'open'   = op de event-datum t/m de dag erna → onbeperkt
-                       (events lopen vaak de nacht door)
-            'closed' = vanaf 2 dagen na de event-datum → geen prints meer
-            'none'   = geen/onparseerbare datum → geen limiet (altijd open)
+            'test' = vóór de event-datum → max config.TEST_PRINT_LIMIT prints
+            'open' = op en NA de event-datum → onbeperkt (geen sluiting meer)
+            'none' = geen/onparseerbare datum → geen limiet (altijd open)
         """
         raw = (getattr(ev, 'linked_event_date', '') or
                getattr(ev, 'date', '') or '')[:10]
         if not raw:
             return 'none'
         try:
-            from datetime import date as _date, timedelta as _td
+            from datetime import date as _date
             parts = raw.split('-')
             event_day = _date(int(parts[0]), int(parts[1]), int(parts[2]))
         except Exception:
             return 'none'  # onparseerbare datum → geen limiet
-        today = _date.today()
-        if today < event_day:
+        # Vóór de event-datum = testfase (max TEST_PRINT_LIMIT). Op en na de
+        # event-datum mag er onbeperkt geprint worden — geen sluiting meer.
+        if _date.today() < event_day:
             return 'test'
-        if today <= event_day + _td(days=1):   # event-dag + de dag erna
-            return 'open'
-        return 'closed'
+        return 'open'
 
     def _is_before_event_date(self, ev) -> bool:
         """Compat-helper: True als we in de test-fase zitten (vóór event-datum)."""
@@ -9836,15 +9833,12 @@ class PhotoboothWindow(QMainWindow):
 
     def _test_print_allowed(self, ev, copies: int) -> bool:
         """Mag deze print door?
-            'open'/'none' → ja
-            'closed'      → nee (printvenster voorbij)
+            'open'/'none' → ja (op/na de event-datum: onbeperkt)
             'test'        → alleen als test-teller + copies binnen de limiet blijft
         """
         phase = self._print_phase(ev)
         if phase in ('open', 'none'):
             return True
-        if phase == 'closed':
-            return False
         limit = int(getattr(config, 'TEST_PRINT_LIMIT', 10))
         used = int(getattr(ev, 'test_prints_used', 0) or 0)
         return used + int(copies) <= limit
@@ -9918,23 +9912,17 @@ class PhotoboothWindow(QMainWindow):
                 return
 
         # Print-venster t.o.v. de event-datum:
-        #   test   → max config.TEST_PRINT_LIMIT test-prints vóór de event-datum
-        #   open   → event-dag + de dag erna: onbeperkt
-        #   closed → vanaf 2 dagen na de event-datum: geen prints meer
+        #   test → max config.TEST_PRINT_LIMIT test-prints vóór de event-datum
+        #   open → op en na de event-datum: onbeperkt (geen sluiting meer)
         if ev and not self._test_print_allowed(ev, copies):
-            phase = self._print_phase(ev)
-            if phase == 'closed':
-                msg = ("Printperiode voorbij — printen kon tot de dag na "
-                       "de event-datum.")
-            else:
-                limit = int(getattr(config, 'TEST_PRINT_LIMIT', 10))
-                msg = (f"Testlimiet bereikt ({limit} prints). Printen kan "
-                       f"weer vanaf de event-datum.")
+            limit = int(getattr(config, 'TEST_PRINT_LIMIT', 10))
+            msg = (f"Testlimiet bereikt ({limit} prints). Printen kan "
+                   f"weer vanaf de event-datum.")
             self._sharing_print_status.setText(msg)
             self._sharing_print_status.show()
             if hasattr(self, '_sharing_print_btn'):
                 self._sharing_print_btn.setEnabled(False)
-            print(f"[TEST-PRINT] Geblokkeerd ({phase}) — "
+            print(f"[TEST-PRINT] Geblokkeerd (testlimiet {limit}) — "
                   f"event-datum {getattr(ev, 'linked_event_date', '')!r}")
             return
 
