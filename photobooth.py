@@ -4450,9 +4450,10 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addWidget(self._sharing_print_btn)
 
         # ── Inline print-delay knoppen (verborgen tot 'Ja print' klik) ──
-        # Tijdens de pakket-afhankelijke afkoelperiode (5s premium / 20s
-        # standard) komt hier de print-knop niet meer, maar de mogelijkheid
-        # om de pending print alsnog te annuleren of opnieuw te fotograferen.
+        # Tijdens de pakket-afhankelijke afkoelperiode (5s premium / 30s
+        # standaard; 0s als storingsmeldingen uit staan) komt hier de print-
+        # knop niet meer, maar de mogelijkheid om de pending print alsnog te
+        # annuleren of opnieuw te fotograferen.
         self._sharing_cancel_print_btn = QPushButton("✕  Annuleer print")
         self._sharing_cancel_print_btn.setCursor(Qt.PointingHandCursor)
         self._sharing_cancel_print_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
@@ -9843,6 +9844,22 @@ class PhotoboothWindow(QMainWindow):
         used = int(getattr(ev, 'test_prints_used', 0) or 0)
         return used + int(copies) <= limit
 
+    def _compute_print_delay_sec(self, ev) -> int:
+        """Print-vertraging in seconden vóór de daadwerkelijke print begint:
+            premium pakket  → 5 sec
+            standaard/overig → 30 sec
+            0 sec bij Verhuurophalen (geen pakketten) OF wanneer de
+            printer-storingsmeldingen uit staan (bv. tijdelijke niet-DNP
+            printer zoals een Canon CP1500 → direct printen).
+        """
+        package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
+        delay_sec = {"premium": 5, "standard": 30}.get(package, 30)
+        if getattr(self, 'backend_brand', '') == 'huren':
+            return 0
+        if not self._printer_status_enabled():
+            return 0
+        return delay_sec
+
     def _do_print_job(self, copies=1):
         """Execute a print job (shared between auto-print and manual print).
 
@@ -9926,18 +9943,12 @@ class PhotoboothWindow(QMainWindow):
                   f"event-datum {getattr(ev, 'linked_event_date', '')!r}")
             return
 
-        # Pakket-afhankelijke print-delay: standard wacht langer dan premium.
+        # Pakket-afhankelijke print-delay (zie _compute_print_delay_sec).
         # Geen apart fullscreen overlay meer — alles inline op het sharing-
         # scherm. Tijdens de delay blijft de QR-code zichtbaar zodat de
         # gast die alvast kan scannen.
-        # SAFE DEFAULT: als pakket onbekend, kies "standard" (20 sec) zodat
-        # we per ongeluk geen premium service geven aan iemand die er niet
-        # voor betaald heeft.
         package = (getattr(ev, 'linked_package', '') or '').lower() if ev else ''
-        delay_sec = {"premium": 5, "standard": 20}.get(package, 20)
-        if self.backend_brand == 'huren':
-            # Verhuurophalen kent geen pakketten — direct printen
-            delay_sec = 0
+        delay_sec = self._compute_print_delay_sec(ev)
         print(f"[PRINTER] Pakket={package or 'onbekend'}, print-delay={delay_sec}s, copies={copies}")
         self._start_inline_print_delay(copies=copies, delay_sec=delay_sec)
 
