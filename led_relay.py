@@ -62,25 +62,70 @@ class LedRelay:
         self._serial = None
         self._is_on = False          # logische toestand (voor idempotente off)
         self._watchdog = None        # threading.Timer die geforceerd uitzet
+        self._port_cfg = port        # "auto" of vaste poort (bv. "COM3")
+        self._baudrate = baudrate
 
         if serial is None:
             print("[LED] pyserial niet geïnstalleerd — LED flash uitgeschakeld")
             return
 
-        if not port or port == "auto":
-            detected = autodetect_port()
-            if detected is None:
-                print("[LED] Geen CH340 relay-board gevonden — flash uitgeschakeld")
-                return
-            port = detected
-            print(f"[LED] Relay auto-gevonden op {port}")
+        # Eerste verbindpoging. Mislukt 'ie (board nog niet ingeplugd), dan
+        # blijft de photobooth gewoon draaien; de periodieke sweep +
+        # opname-trigger in photobooth.py proberen het daarna opnieuw.
+        if not self.ensure_connected():
+            print("[LED] Geen relay-board bij start — wordt periodiek opnieuw geprobeerd")
 
-        try:
-            self._serial = serial.Serial(port, baudrate, timeout=0.5)
-            print(f"[LED] Relay verbonden op {port}")
-        except Exception as e:
-            print(f"[LED] Relay niet beschikbaar op {port}: {e} — flash uitgeschakeld")
-            self._serial = None
+    def ensure_connected(self) -> bool:
+        """(Her)verbind met het relay-board als het nu niet beschikbaar is.
+
+        Veilig om herhaald aan te roepen (periodieke sweep elke ~10s + vóór
+        elke opname): opent alleen als er nog geen open verbinding is, en
+        detecteert een verdwenen poort (unplug / COM-renummering) zodat een
+        los of laat ingeplugd board alsnog wordt opgepakt.
+
+        Returns True als er na afloop verbinding is.
+        """
+        if serial is None:
+            return False
+        with self._lock:
+            if self._serial is not None and self._serial.is_open:
+                # Al open — check of de poort fysiek nog bestaat.
+                try:
+                    devices = [p.device for p in serial.tools.list_ports.comports()]
+                    if self._serial.port in devices:
+                        return True
+                    print(f"[LED] Poort {self._serial.port} verdwenen — herverbinden")
+                except Exception:
+                    return True  # kon niet checken → ga uit van OK
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
+            elif self._serial is not None:
+                # Dood handle opruimen.
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
+
+            # Bepaal de poort. Bij "auto" elke keer opnieuw detecteren zodat
+            # een later ingeplugd board / COM-renummering wordt opgepakt.
+            port = self._port_cfg
+            if not port or port == "auto":
+                port = autodetect_port()
+                if port is None:
+                    return False
+            try:
+                self._serial = serial.Serial(port, self._baudrate, timeout=0.5)
+                self._is_on = False
+                print(f"[LED] Relay verbonden op {port}")
+                return True
+            except Exception as e:
+                print(f"[LED] Relay (her)verbinden mislukt op {port}: {e}")
+                self._serial = None
+                return False
 
     @property
     def available(self):

@@ -1096,6 +1096,16 @@ class PhotoboothWindow(QMainWindow):
             self._led_safety_timer.timeout.connect(self._led_safety_tick)
             self._led_safety_timer.start()
 
+            # COB-LED reconnect-sweep: probeer de relay elke 10s (her)te
+            # verbinden zodat een los, laat-ingeplugd of op een andere
+            # COM-poort belanden board alsnog wordt opgepakt. Draait op een
+            # bg-thread (serial-open kan even duren) zodat de UI nooit hapert.
+            self._led_reconnect_pending = False
+            self._led_reconnect_timer = QTimer(self)
+            self._led_reconnect_timer.setInterval(10000)  # elke 10 sec
+            self._led_reconnect_timer.timeout.connect(self._led_reconnect_tick)
+            self._led_reconnect_timer.start()
+
         self.state = State.IDLE
         # Connect cross-thread SumUp signals (daemon thread → main thread)
         self._sumup_payment_signal.connect(self._sumup_auto_start_session)
@@ -7510,6 +7520,12 @@ class PhotoboothWindow(QMainWindow):
         self.state = State.COUNTDOWN
         self._showing_preview = False  # Allow live frames to show again
 
+        # COB-LED: als de flits-relay (nog) niet verbonden is, probeer 'm nu
+        # alvast (niet-blokkerend) te verbinden. De countdown duurt enkele
+        # seconden, dus de flits voor deze foto — óók de 1e — heeft zo maximaal
+        # kans op een werkende verbinding.
+        self._led_try_connect_async()
+
         # Hide the start button during countdown
         self.capture_btn.hide()
 
@@ -7820,6 +7836,35 @@ class PhotoboothWindow(QMainWindow):
             return
         if self.state not in (State.COUNTDOWN, State.CAPTURE):
             self.led.ensure_off()
+
+    def _led_reconnect_tick(self):
+        """Periodiek (10s): probeer de COB-LED (her)te verbinden zodat een
+        los, laat-ingeplugd of op een andere COM-poort verschenen relay
+        alsnog wordt opgepakt. Draait op een bg-thread (serial-open kan even
+        duren) zodat de UI nooit hapert; overlappende runs worden vermeden."""
+        if not self.led or getattr(self, '_led_reconnect_pending', False):
+            return
+        self._led_reconnect_pending = True
+
+        def _work():
+            try:
+                self.led.ensure_connected()
+            except Exception as e:
+                print(f"[LED] Reconnect-tick fout: {e}")
+            finally:
+                self._led_reconnect_pending = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _led_try_connect_async(self):
+        """Kick een niet-blokkerende (her)verbindpoging voor de COB-LED —
+        gebruikt bij de start van een opname zodat de flits voor de 1e foto
+        zoveel mogelijk kans heeft op een werkende verbinding."""
+        if not self.led or self.led.available:
+            return
+        threading.Thread(
+            target=lambda: self.led.ensure_connected(), daemon=True
+        ).start()
 
     def _end_flash_effect(self):
         """Hide capture screen and restore live view display.
