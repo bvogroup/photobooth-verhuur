@@ -37,6 +37,9 @@ def main():
     profile_key = sys.argv[5] if len(sys.argv) > 5 else ""
     if profile_key in ("", "-"):
         profile_key = None
+    # Optionele 6e arg: skip_checks ('1' = statuscheck + profiel-vereiste
+    # overslaan → werkt met elke printer; gezet als storingsmeldingen uit).
+    skip_checks = len(sys.argv) > 6 and sys.argv[6] == "1"
 
     # Set DATA_DIR before importing printer (so load_saved_devmode finds DEVMODE).
     # Plain `import config` works here because splash_starter.pyw's --print-worker
@@ -47,7 +50,8 @@ def main():
 
     from printer import print_photo, PrinterError
     try:
-        print_photo(image_path, printer_name, copies, profile_key=profile_key)
+        print_photo(image_path, printer_name, copies, profile_key=profile_key,
+                    skip_status_check=skip_checks)
     except PrinterError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

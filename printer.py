@@ -395,7 +395,8 @@ def wait_for_job_completion(printer_name, job_start_time, timeout=30):
     return True, "Print job al door de printer verwerkt (queue leeg)"
 
 
-def print_photo(image_path, printer_name, copies=1, profile_key=None):
+def print_photo(image_path, printer_name, copies=1, profile_key=None,
+                skip_status_check=False):
     """
     Print a photo to the specified printer using Windows GDI.
 
@@ -415,11 +416,18 @@ def print_photo(image_path, printer_name, copies=1, profile_key=None):
     Returns:
         True on success, raises PrinterError on failure
     """
-    # 1. Check printer status before sending
-    ok, status_msg = check_printer_status(printer_name)
-    if not ok:
-        raise PrinterError(status_msg)
-    print(f"[PRINTER] Status: {status_msg}")
+    # 1. Check printer status before sending.
+    # skip_status_check=True (storingsmeldingen uit): sla de Windows-spooler-
+    # statuscheck over zodat ELKE printer print, ook een niet-DNP/niet-P525
+    # type (bv. tijdelijke HiTi P310W) waarvan de driver afwijkende
+    # statusvlaggen rapporteert.
+    if not skip_status_check:
+        ok, status_msg = check_printer_status(printer_name)
+        if not ok:
+            raise PrinterError(status_msg)
+        print(f"[PRINTER] Status: {status_msg}")
+    else:
+        print("[PRINTER] Statuscheck overgeslagen (storingsmeldingen uit)")
 
     # Find the exact printer name
     exact_name = find_printer(printer_name)
@@ -454,11 +462,19 @@ def print_photo(image_path, printer_name, copies=1, profile_key=None):
         if profile_key:
             saved_devmode = load_saved_devmode(printer_name, profile_key)
             if saved_devmode is None:
-                raise PrinterError(
-                    f"Printer-profiel '{profile_key}' is niet vastgelegd op "
-                    f"deze machine. Leg het profiel vast via Instellingen → "
-                    f"Geavanceerd → printer-profielen, en probeer opnieuw."
-                )
+                if skip_status_check:
+                    # Storingsmeldingen uit → niet blokkeren op een ontbrekend
+                    # DNP-profiel; val terug op de legacy/default DEVMODE zodat
+                    # de print alsnog uitgaat op een willekeurige printer.
+                    print(f"[PRINTER] Profiel '{profile_key}' niet vastgelegd — "
+                          f"val terug op legacy/default DEVMODE (checks uit)")
+                    saved_devmode = load_saved_devmode(printer_name)
+                else:
+                    raise PrinterError(
+                        f"Printer-profiel '{profile_key}' is niet vastgelegd op "
+                        f"deze machine. Leg het profiel vast via Instellingen → "
+                        f"Geavanceerd → printer-profielen, en probeer opnieuw."
+                    )
         else:
             saved_devmode = load_saved_devmode(printer_name)
 

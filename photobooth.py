@@ -894,12 +894,14 @@ class SubprocessPrintThread(QThread):
     print_failed = pyqtSignal(str)
     print_status = pyqtSignal(str)
 
-    def __init__(self, image_path, printer_name, copies=1, profile_key=None):
+    def __init__(self, image_path, printer_name, copies=1, profile_key=None,
+                 skip_status_check=False):
         super().__init__()
         self.image_path = image_path
         self.printer_name = printer_name
         self.copies = copies
         self.profile_key = profile_key
+        self.skip_status_check = skip_status_check
 
     def run(self):
         import subprocess
@@ -908,19 +910,22 @@ class SubprocessPrintThread(QThread):
 
         # DNP-profiel als 5e CLI arg ('-' = geen profiel = legacy HiTi pad)
         profile_arg = self.profile_key or "-"
+        # 6e CLI arg: '1' = statuscheck + profiel-vereiste overslaan (werkt
+        # met elke printer; gezet als de storingsmeldingen uit staan).
+        skip_arg = "1" if self.skip_status_check else "0"
 
         # Determine Python executable and worker script path
         if getattr(sys, 'frozen', False):
             cmd = [sys.executable, "--print-worker",
                    self.image_path, self.printer_name,
-                   str(self.copies), config.DATA_DIR, profile_arg]
+                   str(self.copies), config.DATA_DIR, profile_arg, skip_arg]
         else:
             worker_script = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "print_worker.py"
             )
             cmd = [sys.executable, worker_script,
                    self.image_path, self.printer_name,
-                   str(self.copies), config.DATA_DIR, profile_arg]
+                   str(self.copies), config.DATA_DIR, profile_arg, skip_arg]
 
         try:
             print(f"[PRINTER] Subprocess: {' '.join(str(c) for c in cmd[:4])}...")
@@ -9891,12 +9896,16 @@ class PhotoboothWindow(QMainWindow):
         # drukt, en deelt COM-objecten met de poller-thread (apartment-
         # unsafe).
         st = None
-        if getattr(self, '_dnp_poller', None) is not None:
+        # Storingsmeldingen uit → geen pre-print statuscheck/overlay; laat de
+        # print gewoon doorgaan (werkt zo met elke printer, bv. HiTi P310W).
+        if not self._printer_status_enabled():
+            st = None
+        elif getattr(self, '_dnp_poller', None) is not None:
             try:
                 st = self._dnp_poller.get()
             except Exception as e:
                 print(f"[PRINT-PRECHECK] poller.get fout (niet kritiek): {e}")
-        if st is None:
+        if st is None and self._printer_status_enabled():
             st = getattr(self, '_dnp_last_status', None)
         if st is not None and st.is_blocking():
             print(f"[PRINT-PRECHECK] Blokkerende fout — print uitgesteld "
@@ -10123,8 +10132,10 @@ class PhotoboothWindow(QMainWindow):
                 print("[DNP-STATUS] Poller gepauzeerd voor print")
             except Exception as e:
                 print(f"[DNP-STATUS] Pause-fout (niet kritiek): {e}")
-        self.print_thread = SubprocessPrintThread(self.strip_path, config.PRINTER_NAME, copies,
-                                                  profile_key=profile_key)
+        self.print_thread = SubprocessPrintThread(
+            self.strip_path, config.PRINTER_NAME, copies,
+            profile_key=profile_key,
+            skip_status_check=not self._printer_status_enabled())
         self.print_thread.print_complete.connect(
             lambda c=copies: self._on_print_complete_with_quota(c)
         )
@@ -15495,7 +15506,8 @@ class PhotoboothWindow(QMainWindow):
             '4x3': PROFILE_4X3,
         }.get(mode)
         self._test_print_thread = SubprocessPrintThread(
-            test_path, config.PRINTER_NAME, 1, profile_key=test_profile)
+            test_path, config.PRINTER_NAME, 1, profile_key=test_profile,
+            skip_status_check=not self._printer_status_enabled())
         self._test_print_thread.print_failed.connect(
             lambda msg: self._devmode_status_label.setText(f"⚠ Test mislukt: {msg[:80]}")
             if hasattr(self, '_devmode_status_label') else None
