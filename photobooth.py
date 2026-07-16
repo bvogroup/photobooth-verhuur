@@ -13963,9 +13963,11 @@ class PhotoboothWindow(QMainWindow):
             self._handover_active = True
             self._handover_photo_path = None
             self._handover_pending_update = None
-            self.num_photos = 1
             self.current_photo_num = 0
-            # Zorg voor een template (voor crop/countdown); val terug op preset.
+            # num_photos is read-only (afgeleid van de template) en hoeft niet
+            # gezet te worden: _on_capture_complete vertakt ná de 1e foto al
+            # naar de handover-flow, dus er wordt maar één foto gemaakt.
+            # Zorg wel dat er een template is (voor countdown/crop).
             if not self.selected_template:
                 try:
                     presets = get_preset_layouts()
