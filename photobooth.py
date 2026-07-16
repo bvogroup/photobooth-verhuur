@@ -976,6 +976,9 @@ class PhotoboothWindow(QMainWindow):
     _update_done_signal = pyqtSignal(bool, str) # (gestart?, foutmelding)
     # Filterscherm: thumbnails + preview klaar (bg-thread → main thread)
     _filter_ready_signal = pyqtSignal(object)   # dict met token/idx/base/preview/thumbs
+    # Overdracht/afsluit-testflow (bg-thread → main thread)
+    _handover_wifi_signal = pyqtSignal(bool)    # heeft internet ja/nee
+    _handover_update_signal = pyqtSignal(object) # dict van updater.check_for_update
 
     def __init__(self):
         super().__init__()
@@ -1126,6 +1129,8 @@ class PhotoboothWindow(QMainWindow):
         self._update_progress_signal.connect(self._on_update_progress)
         self._update_done_signal.connect(self._on_update_done)
         self._filter_ready_signal.connect(self._on_filter_thumbs_ready)
+        self._handover_wifi_signal.connect(self._on_handover_wifi)
+        self._handover_update_signal.connect(self._on_handover_update)
         # Timer voor 2-sec wifi-check op idle scherm (zelf gestart in _go_idle)
         self._idle_wifi_check_timer = QTimer(self)
         self._idle_wifi_check_timer.setInterval(2000)
@@ -6294,6 +6299,11 @@ class PhotoboothWindow(QMainWindow):
 
     def _go_idle(self):
         print(f"[UI] _go_idle aangeroepen (was state={self.state})", flush=True)
+        # Vangnet: verlaat de overdracht-testflow (voorkomt dat een stale vlag
+        # een volgende normale capture kaapt) + ruim de overlay op.
+        if getattr(self, '_handover_active', False):
+            self._handover_active = False
+        self._handover_clear_overlay()
         # Resume DNP-poll bij terugkeer naar idle (UI-Automation focus-steal
         # is alleen risico wanneer er pc-input wordt gegeven).
         self._pause_dnp_poll(False)
@@ -7914,6 +7924,12 @@ class PhotoboothWindow(QMainWindow):
         self._live_view_frozen = False
         self._reset_countdown_ui()
         self._end_flash_effect()
+
+        # Overdracht-/afsluit-testflow: geen normale strip/filter-flow, maar
+        # de losse testfoto tonen ter beoordeling.
+        if getattr(self, '_handover_active', False):
+            self._handover_on_photo(file_path)
+            return
 
         captured_idx = self.current_photo_num
         filters_on = getattr(config, 'FILTERS_ENABLED', False)
@@ -13866,16 +13882,25 @@ class PhotoboothWindow(QMainWindow):
         self._on_refresh_event_clicked()
 
     def _lock_action_unlink(self, dlg):
-        """Loskoppelen vraagt PIN; bij correct PIN: clear linked_* en sluit."""
+        """Loskoppelen vraagt PIN. Standaard-code (event-PIN, 1350) → gewoon
+        loskoppelen. Speciale code 2718 → overdracht-/afsluit-testflow."""
         pin = self.active_event.pin_code if self.active_event else ""
-        if pin:
-            try:
-                entered, ok = PinDialog.get_pin(self, t("enter_pin"))
-                if not ok or entered != pin:
-                    return
-            except Exception as e:
-                print(f"[LOCK] PIN-prompt fout: {e}")
-                return
+        try:
+            entered, ok = PinDialog.get_pin(self, t("enter_pin"))
+        except Exception as e:
+            print(f"[LOCK] PIN-prompt fout: {e}")
+            return
+        if not ok:
+            return
+        entered = (entered or "").strip()
+        # Speciale code → afsluit-/overdracht-test i.p.v. loskoppelen.
+        if entered == "2718":
+            dlg.accept()
+            self._start_handover_flow()
+            return
+        # Normale loskoppel-code (event-PIN). Bij lege pin: geen check.
+        if pin and entered != pin:
+            return
         # PIN ok → volledig unlink
         ev = self.active_event
         old_booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
@@ -13919,6 +13944,337 @@ class PhotoboothWindow(QMainWindow):
         dlg.accept()
         # Terug naar welcome-page (idle routeert automatisch)
         self._go_idle()
+
+    # ══════════════════════════════════════════════════════════════════
+    # Overdracht-/afsluit-testflow (code 2718 bij Loskoppelen)
+    #   1. testfoto maken (countdown 5→0 + flits, zoals normaal)
+    #   2. "Ziet de foto er goed uit?"  ja → printen / nee → terug
+    #   3. losse foto printen (geen vertraging); fout → melding + opnieuw
+    #   4. "Ziet de print er goed uit?" ja → verder / nee → terug
+    #   5. wifi-check → update-check → event loskoppelen → QR-scherm
+    # ══════════════════════════════════════════════════════════════════
+
+    def _start_handover_flow(self):
+        """Start de afsluit-/overdracht-test met een testfoto."""
+        print("[HANDOVER] Start afsluit-/overdracht-test (code 2718)")
+        self._handover_active = True
+        self._handover_photo_path = None
+        self._handover_pending_update = None
+        self.num_photos = 1
+        # Zorg voor een template (voor crop/countdown); val terug op preset.
+        if not self.selected_template:
+            try:
+                presets = get_preset_layouts()
+                if presets:
+                    self.selected_template = presets[0]
+            except Exception:
+                pass
+        self._handover_clear_overlay()
+        # Hergebruik de normale capture-flow (countdown 5→0 + flits + capture).
+        self._go_direct_capture()
+
+    def _handover_on_photo(self, file_path):
+        """Testfoto gemaakt → toon 'Ziet de foto er goed uit?'."""
+        self._stop_live_view(blocking=False)
+        try:
+            import tempfile
+            ext = os.path.splitext(file_path)[1] or ".jpg"
+            dest = os.path.join(tempfile.gettempdir(), f"handover_test{ext}")
+            shutil.copy2(file_path, dest)
+            self._handover_photo_path = dest
+        except Exception:
+            self._handover_photo_path = file_path
+        self._handover_overlay(
+            "Ziet de foto er goed uit?",
+            image_path=self._handover_photo_path,
+            buttons=[("Ja", config.COLOR_SUCCESS, self._handover_photo_ok),
+                     ("Nee", config.COLOR_DANGER, self._handover_abort)])
+
+    def _handover_clear_overlay(self):
+        w = getattr(self, '_handover_overlay_widget', None)
+        if w is not None:
+            try:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+            except Exception:
+                pass
+        self._handover_overlay_widget = None
+
+    def _handover_overlay(self, title, subtitle="", image_path=None, buttons=None):
+        """Fullscreen vraag-/melding-overlay met 1-3 knoppen."""
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        self._handover_clear_overlay()
+        ov = QWidget(self)
+        ov.setGeometry(0, 0, self.width(), self.height())
+        ov.setStyleSheet("background: #15151b;")
+        lay = QVBoxLayout(ov)
+        lay.setContentsMargins(60, 48, 60, 48)
+        lay.setSpacing(16)
+        lay.addStretch()
+
+        t = QLabel(title)
+        t.setAlignment(Qt.AlignCenter)
+        t.setFont(QFont("DM Sans", 30, QFont.Bold))
+        t.setStyleSheet("color: white; background: transparent;")
+        t.setWordWrap(True)
+        lay.addWidget(t)
+
+        if subtitle:
+            s = QLabel(subtitle)
+            s.setAlignment(Qt.AlignCenter)
+            s.setFont(QFont("DM Sans", 16))
+            s.setStyleSheet("color: #aaa; background: transparent;")
+            s.setWordWrap(True)
+            lay.addWidget(s)
+
+        if image_path:
+            img = _FitLabel()
+            img.setAlignment(Qt.AlignCenter)
+            img.setMinimumHeight(340)
+            img.setStyleSheet("background: transparent;")
+            pm = QPixmap(image_path)
+            if not pm.isNull():
+                img.setSourcePixmap(pm)
+            lay.addWidget(img, stretch=1)
+
+        lay.addSpacing(12)
+        row = QHBoxLayout()
+        row.setSpacing(18)
+        row.addStretch()
+        for (label, color, cb) in (buttons or []):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFont(QFont("DM Sans", 18, QFont.Bold))
+            b.setMinimumHeight(76)
+            b.setMinimumWidth(200)
+            b.setStyleSheet(
+                f"QPushButton {{ background: {color}; color: white; border: none; "
+                f"border-radius: 16px; padding: 14px 30px; }}"
+                f"QPushButton:hover {{ background: {color}; }}"
+            )
+            b.clicked.connect(lambda _=False, f=cb: f())
+            row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+        lay.addStretch()
+
+        ov.show()
+        ov.raise_()
+        self._handover_overlay_widget = ov
+
+    def _handover_photo_ok(self):
+        """Foto goedgekeurd → losse foto direct printen (geen vertraging).
+
+        Testprint = de hele foto op één vel (geen strip-cut), ongeacht het
+        gekoppelde template. Huren (HiTi) gebruikt het legacy DEVMODE-blob.
+        """
+        self._handover_overlay("Bezig met printen…",
+                               subtitle="Een moment geduld.")
+        if getattr(self, 'backend_brand', '') == 'huren':
+            profile = None
+        else:
+            from printer import PROFILE_4X6_NOCUT
+            profile = PROFILE_4X6_NOCUT
+        try:
+            th = SubprocessPrintThread(
+                self._handover_photo_path, config.PRINTER_NAME, 1,
+                profile_key=profile,
+                skip_status_check=not self._printer_status_enabled())
+            th.print_complete.connect(self._handover_print_ok)
+            th.print_failed.connect(self._handover_print_failed)
+            if not hasattr(self, '_print_threads_alive'):
+                self._print_threads_alive = []
+            self._print_threads_alive.append(th)
+            th.finished.connect(
+                lambda t=th: self._print_threads_alive.remove(t)
+                if t in self._print_threads_alive else None)
+            self._handover_print_thread = th
+            th.start()
+        except Exception as e:
+            self._handover_print_failed(str(e))
+
+    def _handover_print_failed(self, msg):
+        """Printfout → melding + opnieuw proberen of stoppen."""
+        self._handover_overlay(
+            "Printer-fout",
+            subtitle=str(msg)[:220],
+            buttons=[("Opnieuw proberen", config.COLOR_PRIMARY, self._handover_photo_ok),
+                     ("Stoppen", config.COLOR_DANGER, self._handover_abort)])
+
+    def _handover_print_ok(self):
+        """Print klaar → 'Ziet de print er goed uit?'."""
+        self._handover_overlay(
+            "Ziet de print er goed uit?",
+            buttons=[("Ja", config.COLOR_SUCCESS, self._handover_print_confirmed),
+                     ("Nee", config.COLOR_DANGER, self._handover_abort)])
+
+    def _handover_print_confirmed(self):
+        """Print goedgekeurd → wifi + update-check."""
+        self._handover_check_wifi()
+
+    def _handover_check_wifi(self):
+        self._handover_overlay("Verbinding controleren…")
+        def _work():
+            ok = self._handover_has_internet()
+            self._handover_wifi_signal.emit(ok)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _handover_has_internet(self) -> bool:
+        import socket
+        for host in (("1.1.1.1", 53), ("8.8.8.8", 53)):
+            try:
+                s = socket.create_connection(host, timeout=3)
+                s.close()
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _on_handover_wifi(self, ok):
+        if not getattr(self, '_handover_active', False):
+            return
+        if not ok:
+            self._handover_overlay(
+                "Geen wifi",
+                subtitle="Zet de photobooth terug op wifi en probeer opnieuw.",
+                buttons=[("Wifi instellen", config.COLOR_PRIMARY, self._handover_open_wifi),
+                         ("Doorgaan", config.COLOR_SECONDARY, self._handover_check_wifi),
+                         ("Overslaan", config.COLOR_DANGER, self._handover_finish_uncouple)])
+            return
+        self._handover_check_updates()
+
+    def _handover_open_wifi(self):
+        """Open het Windows wifi-instellingenpaneel."""
+        try:
+            os.startfile("ms-settings:network-wifi")
+        except Exception as e:
+            print(f"[HANDOVER] Wifi-instellingen openen mislukt: {e}")
+
+    def _handover_check_updates(self):
+        self._handover_overlay("Controleren op updates…")
+        def _work():
+            try:
+                import updater
+                res = updater.check_for_update()
+            except Exception as e:
+                res = {"error": str(e)}
+            self._handover_update_signal.emit(res)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_handover_update(self, res):
+        if not getattr(self, '_handover_active', False):
+            return
+        res = res or {}
+        if res.get("_update_failed"):
+            self._handover_overlay(
+                "Updaten mislukt",
+                subtitle="De booth is al losgekoppeld. Probeer later opnieuw via Geavanceerd.",
+                buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_goto_qr)])
+            return
+        if res.get("error"):
+            self._handover_overlay(
+                "Kon niet controleren op updates",
+                subtitle=str(res.get("error"))[:180],
+                buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_finish_uncouple)])
+            return
+        if res.get("newer") and res.get("url"):
+            self._handover_pending_update = res
+            self._handover_overlay(
+                "Update beschikbaar",
+                subtitle=f"Nieuwe versie: {res.get('latest', '')}. Nu updaten?",
+                buttons=[("Ja, updaten", config.COLOR_SUCCESS, self._handover_do_update),
+                         ("Nee", config.COLOR_SECONDARY, self._handover_finish_uncouple)])
+        else:
+            self._handover_overlay(
+                "Je bent up-to-date",
+                subtitle=f"Versie {res.get('current', config.VERSION)}",
+                buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_finish_uncouple)])
+
+    def _handover_do_update(self):
+        """Update installeren + app herstart automatisch. Event wordt nu al
+        losgekoppeld zodat de booth na de herstart schoon op het QR-scherm staat."""
+        res = getattr(self, '_handover_pending_update', None) or {}
+        url = res.get("url", "")
+        if not url:
+            self._handover_finish_uncouple()
+            return
+        self._do_uncouple_event()
+        self._handover_overlay(
+            "Bezig met updaten…",
+            subtitle="De software wordt bijgewerkt en herstart daarna automatisch.")
+        def _work():
+            ok = False
+            try:
+                import updater
+                path = updater.download_installer(url)
+                if path:
+                    ok = updater.run_installer(path)
+            except Exception as e:
+                print(f"[HANDOVER] Update fout: {e}")
+            if not ok:
+                self._handover_update_signal.emit({"_update_failed": True})
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _do_uncouple_event(self):
+        """Koppel het huidige event los (clear linked_* + stop uploader +
+        verwijder lokale linked-template files). Navigeert NIET zelf."""
+        ev = self.active_event
+        old = getattr(ev, 'linked_booking_id', '') if ev else ''
+        if ev:
+            ev.linked_booking_id = ""
+            ev.linked_token = ""
+            ev.linked_booking_label = ""
+            ev.linked_design_path = ""
+            ev.linked_photo_count = 0
+            ev.template_name = ""
+            ev.background_path = ""
+            try:
+                ev.save(config.EVENTS_DIR)
+            except Exception as e:
+                print(f"[HANDOVER] Event opslaan mislukt: {e}")
+            if old:
+                try:
+                    from cloud_uploader import stop_worker
+                    stop_worker(old)
+                except Exception:
+                    pass
+                try:
+                    if os.path.isdir(config.TEMPLATES_DIR):
+                        prefix = f"linked_{old}_"
+                        for fname in os.listdir(config.TEMPLATES_DIR):
+                            if fname.startswith(prefix) and fname.endswith(".json"):
+                                try:
+                                    os.remove(os.path.join(config.TEMPLATES_DIR, fname))
+                                except OSError:
+                                    pass
+                except Exception:
+                    pass
+        print(f"[HANDOVER] Event losgekoppeld (was: {old})")
+
+    def _handover_finish_uncouple(self):
+        """Rond af: event loskoppelen + naar het QR-scherm."""
+        self._do_uncouple_event()
+        self._handover_goto_qr()
+
+    def _handover_goto_qr(self):
+        """Naar het scan-QR-scherm (welcome, want geen booking meer)."""
+        self._handover_cleanup()
+        self._go_idle()
+
+    def _handover_abort(self):
+        """'Nee' bij foto/print, of Stoppen → terug naar het normale scherm
+        (event blijft gekoppeld)."""
+        self._handover_cleanup()
+        self._go_idle()
+
+    def _handover_cleanup(self):
+        self._handover_active = False
+        self._handover_clear_overlay()
+        try:
+            self._stop_live_view(blocking=False)
+        except Exception:
+            pass
 
     def _lock_action_advanced(self, dlg):
         """Geavanceerde instellingen vraagt PIN; bij ok: settings openen."""
