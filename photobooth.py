@@ -13896,7 +13896,9 @@ class PhotoboothWindow(QMainWindow):
         # Speciale code → afsluit-/overdracht-test i.p.v. loskoppelen.
         if entered == "2718":
             dlg.accept()
-            self._start_handover_flow()
+            # Start PAS nadat de modale dialog volledig gesloten is (niet
+            # genest in exec_), anders kan de capture-start falen.
+            QTimer.singleShot(200, self._start_handover_flow)
             return
         # Normale loskoppel-code (event-PIN). Bij lege pin: geen check.
         if pin and entered != pin:
@@ -13957,21 +13959,35 @@ class PhotoboothWindow(QMainWindow):
     def _start_handover_flow(self):
         """Start de afsluit-/overdracht-test met een testfoto."""
         print("[HANDOVER] Start afsluit-/overdracht-test (code 2718)")
-        self._handover_active = True
-        self._handover_photo_path = None
-        self._handover_pending_update = None
-        self.num_photos = 1
-        # Zorg voor een template (voor crop/countdown); val terug op preset.
-        if not self.selected_template:
+        try:
+            self._handover_active = True
+            self._handover_photo_path = None
+            self._handover_pending_update = None
+            self.num_photos = 1
+            self.current_photo_num = 0
+            # Zorg voor een template (voor crop/countdown); val terug op preset.
+            if not self.selected_template:
+                try:
+                    presets = get_preset_layouts()
+                    if presets:
+                        self.selected_template = presets[0]
+                except Exception:
+                    pass
+            self._handover_clear_overlay()
+            # Hergebruik de normale capture-flow (countdown 5→0 + flits + capture).
+            self._go_direct_capture()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[HANDOVER] Start mislukt: {e}")
+            self._handover_active = False
             try:
-                presets = get_preset_layouts()
-                if presets:
-                    self.selected_template = presets[0]
+                self._handover_overlay(
+                    "Testflow kon niet starten",
+                    subtitle=f"{e}",
+                    buttons=[("Terug", config.COLOR_SECONDARY, self._handover_abort)])
             except Exception:
-                pass
-        self._handover_clear_overlay()
-        # Hergebruik de normale capture-flow (countdown 5→0 + flits + capture).
-        self._go_direct_capture()
+                self._go_idle()
 
     def _handover_on_photo(self, file_path):
         """Testfoto gemaakt → toon 'Ziet de foto er goed uit?'."""
