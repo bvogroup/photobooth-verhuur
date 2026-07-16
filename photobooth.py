@@ -3128,6 +3128,14 @@ class PhotoboothWindow(QMainWindow):
         )
         self._welcome_lock_btn.clicked.connect(self._go_settings)
 
+        # ── Serienummer links-onder (zoals ingesteld in Geavanceerd) ──
+        self._welcome_serial_label = QLabel("", page)
+        self._welcome_serial_label.setFont(QFont("DM Sans", 14))
+        self._welcome_serial_label.setStyleSheet(
+            f"color: {config.COLOR_TEXT_DIM}; background: transparent;"
+        )
+        self._welcome_serial_label.show()
+
         # ── Periodic wifi/internet check ─────────────────────────────
         # Interval 1.5 sec — 3 pings in ~5 sec, snelle commit naar juiste card.
         self._welcome_wifi_timer = QTimer(self)
@@ -3143,11 +3151,23 @@ class PhotoboothWindow(QMainWindow):
         return page
 
     def _welcome_resize_event(self, event):
-        """Houd het slotje rechts-onder bij elke resize."""
+        """Houd het slotje rechts-onder + serienummer links-onder bij resize."""
         if hasattr(self, '_welcome_lock_btn'):
             page = self._welcome_page
             self._welcome_lock_btn.move(page.width() - 80, page.height() - 80)
             self._welcome_lock_btn.raise_()
+        self._refresh_welcome_serial()
+
+    def _refresh_welcome_serial(self):
+        """Zet het serienummer (uit Geavanceerd) links-onder op de welcome-
+        pagina en positioneer het."""
+        if not hasattr(self, '_welcome_serial_label'):
+            return
+        self._welcome_serial_label.setText((self.serial_number or "").strip())
+        self._welcome_serial_label.adjustSize()
+        page = self._welcome_page
+        self._welcome_serial_label.move(24, page.height() - 44)
+        self._welcome_serial_label.raise_()
 
     def _build_welcome_wifi_card(self):
         """Card die getoond wordt bij geen internetverbinding."""
@@ -3453,6 +3473,7 @@ class PhotoboothWindow(QMainWindow):
         """Annuleer-knop → stop worker + terug naar welcome."""
         self._scan_qr_stop_worker()
         self.stack.setCurrentIndex(self.pages["welcome"])
+        self._refresh_welcome_serial()
         print("[SCAN-QR] Geannuleerd, terug naar welcome")
 
     def _scan_qr_stop_worker(self):
@@ -6391,6 +6412,7 @@ class PhotoboothWindow(QMainWindow):
                 if hasattr(self, '_welcome_spinner_timer'):
                     self._welcome_spinner_timer.start()
             self.stack.setCurrentIndex(self.pages["welcome"])
+            self._refresh_welcome_serial()
             # Start ping-check direct (eerste van de 3) + timer voor follow-ups
             if hasattr(self, '_welcome_wifi_timer'):
                 self._welcome_check_connectivity()
@@ -6427,18 +6449,22 @@ class PhotoboothWindow(QMainWindow):
             self._idle_wifi_check_tick()
             if not self._idle_wifi_check_timer.isActive():
                 self._idle_wifi_check_timer.start()
-        # Disk warning on idle screen (eventnaam bewust NIET tonen \u2014
-        # gebruiker-verzoek: geen "Event: ..." label linksonderin).
-        status_text = ""
+        # Serienummer linksonderin (zoals ingesteld in Geavanceerd), op de plek
+        # waar vroeger "Event: ..." stond. Bij lage schijfruimte komt de
+        # waarschuwing erachter.
+        parts = []
+        sn = (self.serial_number or "").strip()
+        if sn:
+            parts.append(sn)
         try:
             import shutil
             disk = shutil.disk_usage(config.PHOTO_DIR)
             free_gb = disk.free / (1024 ** 3)
             if free_gb < 10.0:
-                status_text = f"\u26a0 Schijfruimte: {free_gb:.1f} GB vrij"
+                parts.append(f"\u26a0 Schijfruimte: {free_gb:.1f} GB vrij")
         except Exception:
             pass
-        self.status_label.setText(status_text)
+        self.status_label.setText("   \u00b7   ".join(parts))
         # Start payment polling if enabled
         if self.active_event and self.active_event.payment_enabled:
             self._start_payment_polling()
@@ -13560,12 +13586,24 @@ class PhotoboothWindow(QMainWindow):
         self._brand_hiti_row.setVisible(False)
         tab5_lay.addWidget(card_brand)
 
+        tab5_lay.addStretch()
+
+        # Serienummer onderaan de Geavanceerd-tab (links) — read-only weergave
+        # naast het invoerveld hierboven, zodat 'ie ook hier duidelijk zichtbaar
+        # is. Wordt bijgewerkt in _refresh_adv_serial_footer.
+        self._adv_serial_footer = QLabel("")
+        self._adv_serial_footer.setFont(QFont("DM Sans", 11, QFont.Bold))
+        self._adv_serial_footer.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._adv_serial_footer.setStyleSheet(
+            f"color: {config.COLOR_TEXT_DIM}; padding: 0 10px;"
+        )
+        tab5_lay.addWidget(self._adv_serial_footer)
+
         # App version at bottom of Advanced tab — dynamisch vanuit config.VERSION
         version_label = QLabel(t("version", version=config.VERSION))
         version_label.setFont(QFont("DM Sans", 9))
         version_label.setAlignment(Qt.AlignCenter)
         version_label.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; padding: 10px;")
-        tab5_lay.addStretch()
         tab5_lay.addWidget(version_label)
         self._settings_tab_stack.addWidget(tab5_scroll)
 
@@ -14243,6 +14281,9 @@ class PhotoboothWindow(QMainWindow):
                 self._serial_input.blockSignals(True)
                 self._serial_input.setText(self.serial_number)
                 self._serial_input.blockSignals(False)
+                if hasattr(self, '_adv_serial_footer'):
+                    self._adv_serial_footer.setText(
+                        f"Serienummer: {self.serial_number}" if self.serial_number else "")
             except RuntimeError:
                 pass
 
@@ -15607,6 +15648,12 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
         print(f"[SETTINGS] Serienummer: {val!r}")
         self._update_log_context()
+        # Ververs de zichtbare weergaves (Geavanceerd-footer + welcome-scherm;
+        # het idle-scherm pakt 'm op bij de volgende _go_idle).
+        if hasattr(self, '_adv_serial_footer'):
+            self._adv_serial_footer.setText(f"Serienummer: {val}" if val else "")
+        if hasattr(self, '_welcome_serial_label'):
+            self._refresh_welcome_serial()
 
     @property
     def serial_number(self) -> str:
