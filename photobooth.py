@@ -2833,6 +2833,13 @@ class PhotoboothWindow(QMainWindow):
                 if saved_printer:
                     config.PRINTER_NAME = saved_printer
                     print(f"[PRINTER] Hersteld: {saved_printer}")
+                    # DNP QW410: ingebakken 4x6-profielen wegschrijven als ze
+                    # op deze PC nog niet vastgelegd zijn (bestaande blijven).
+                    try:
+                        from printer import ensure_dnp_reference_devmode
+                        ensure_dnp_reference_devmode(saved_printer)
+                    except Exception as _e:
+                        print(f"[PRINTER] DNP-referentieprofiel schrijven mislukt: {_e}")
                     # Direct label updaten — _printer_name_label is op dit moment
                     # al gebouwd in __init__ met de oude hardcoded default.
                     if hasattr(self, '_printer_name_label'):
@@ -15537,6 +15544,14 @@ class PhotoboothWindow(QMainWindow):
             config.PRINTER_NAME = selected
             self._printer_name_label.setText(selected)
             self._save_app_setting("printer_name", selected)
+            # DNP QW410: ingebakken 4x6-profielen (nocut/cut) automatisch
+            # wegschrijven als ze nog niet vastgelegd zijn — geen handmatige
+            # capture meer nodig. Bestaande captures blijven ongemoeid.
+            try:
+                from printer import ensure_dnp_reference_devmode
+                ensure_dnp_reference_devmode(selected)
+            except Exception as e:
+                print(f"[SETTINGS] DNP-referentieprofiel schrijven mislukt: {e}")
             self._update_devmode_status()
             print(f"[SETTINGS] Printer geselecteerd: {selected}")
 

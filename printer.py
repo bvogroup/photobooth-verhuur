@@ -250,6 +250,48 @@ def get_profile_status(printer_name):
     return {key: has_saved_devmode(printer_name, key) for key in DNP_PROFILE_KEYS}
 
 
+def ensure_dnp_reference_devmode(printer_name):
+    """Schrijf de INGEBAKKEN DNP QW410 DEVMODE-profielen (4x6 nocut/cut) weg
+    als ze op deze PC nog niet zijn vastgelegd voor deze printer.
+
+    - Alleen voor DNP QW410-printers (naam bevat 'qw410'/'dnp').
+    - Bestaande capture-bestanden worden NOOIT overschreven (respecteert een
+      eventuele handmatig ingestelde profiel).
+    - dmDeviceName wordt op de doel-queue gezet zodat het DEVMODE matcht.
+
+    Zo hoeft een nieuwe/andere PC de 4x6-profielen niet meer handmatig te
+    capturen. Returnt de lijst van weggeschreven profiel-sleutels.
+    """
+    written = []
+    try:
+        target = find_printer(printer_name) or printer_name or ""
+        low = target.lower()
+        if not ("qw410" in low or "dnp" in low):
+            return written  # geen DNP QW410 → niets doen (bv. HiTi)
+        try:
+            from dnp_ref_devmode import DNP_REF
+        except Exception as e:
+            print(f"[PRINTER] Ingebakken DNP-profielen niet beschikbaar: {e}")
+            return written
+        for profile_key, blob in DNP_REF.items():
+            path = _devmode_path(target, profile_key)
+            if os.path.isfile(path):
+                continue  # al vastgelegd → respecteer bestaande
+            try:
+                patched = _patch_devmode_device_name(blob, target)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(patched)
+                written.append(profile_key)
+                print(f"[PRINTER] Ingebakken DNP-profiel geschreven: {profile_key} "
+                      f"-> {os.path.basename(path)}")
+            except Exception as e:
+                print(f"[PRINTER] Kon ingebakken profiel {profile_key} niet schrijven: {e}")
+    except Exception as e:
+        print(f"[PRINTER] ensure_dnp_reference_devmode fout: {e}")
+    return written
+
+
 def check_printer_status(printer_name):
     """Check if printer is online and ready.
 
