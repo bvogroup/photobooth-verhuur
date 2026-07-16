@@ -15269,7 +15269,7 @@ class PhotoboothWindow(QMainWindow):
         Geavanceerd → DNP printer-instellingen klikken zien dit.
         """
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-        from printer import DNP_PROFILE_KEYS, DNP_PROFILE_LABELS
+        from printer import DNP_PROFILE_KEYS, DNP_PROFILE_LABELS, PROFILE_4X3
 
         dlg = QDialog(self)
         dlg.setWindowTitle("DNP printer-instellingen")
@@ -15302,6 +15302,8 @@ class PhotoboothWindow(QMainWindow):
         self._dnp_profile_status_labels = {}
         self._dnp_profile_capture_btns = {}
         for key in DNP_PROFILE_KEYS:
+            if key == PROFILE_4X3:
+                continue  # 4x3 wordt niet gebruikt — niet tonen/instellen
             row = QHBoxLayout()
             row.setSpacing(12)
             status = QLabel("✗")

@@ -2,7 +2,7 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.140"
+VERSION = "v1.99.141"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -111,7 +111,7 @@ LED_RELAY_PORT = "auto"  # "auto" = vind CH340 board automatisch, of "COM3" voor
 # De Geavanceerd-tab (serienummer, backend-switch, printer-config) zit
 # achter een aparte code, los van de settings-PIN (1350). Zo kan de
 # operator wel bij Event/Layout/Print maar niet bij Geavanceerd.
-ADVANCED_TAB_CODE = "13501350"
+ADVANCED_TAB_CODE = "2321"
 
 # === Cloud-logs (real-time monitoring via Lovable-project) ===
 # De getimestampte logs worden gebatcht (elke CLOUD_LOG_INTERVAL_SEC)
