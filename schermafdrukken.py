@@ -92,8 +92,12 @@ def _knop(tekst, stijl, hoogte):
     return k
 
 
-def _nepevent(map_naam, sessies=15):
+def _nepevent(map_naam, sessies=30):
     """Een echte photos/<event>/{raw,strips}/ met plaatshouders erin.
+
+    Genoeg sessies om het raster in beide standen vol te krijgen. Sinds het
+    raster van rand tot rand loopt zijn dat er meer dan de vijftien uit het
+    ontwerp: liggend 6 x 3 = 18, staand 5 x 5 = 25.
 
     Niet een platte map met losse bestanden, want dan wordt er nooit gekozen
     tussen raw/ en strips/ en toets je juist het ding niet dat op de booth

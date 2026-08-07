@@ -78,7 +78,7 @@ def onderdeel(naam, doen, *args):
 
 
 # ── een echte mappenstructuur, geen losse plaatshouders ────────────────────
-def bouw_event(basis, sessies=18, opnamen=3):
+def bouw_event(basis, sessies=30, opnamen=3):
     """photos/<event>/{raw,strips}/ zoals photobooth.py hem werkelijk schrijft.
 
     De stroken in strips/ staan er als lokaas. Leest de collage ooit uit de
@@ -148,14 +148,32 @@ def toets_vult_het_scherm(page, dpr):
     print("\nVult de collage het scherm", flush=True)
     L = page._layout
     deel = L.raster_b / float(L.W)
-    print(f"        raster {L.raster_b} van {L.W} punten breed", flush=True)
-    eis(0.80 <= deel <= 0.95,
-        f"het raster vult {deel*100:.0f}% van de breedte (ontwerp: 87%)")
-    eis(abs(L.raster_b - 1.307 * L.H) <= 0.02 * L.raster_b,
-        f"de rasterbreedte klopt met de hoogte ({L.raster_b} tegen "
-        f"{1.307*L.H:.0f} verwacht)")
-    eis(L.raster_x > 0 and L.raster_x + L.raster_b <= L.W,
-        f"het raster past binnen het scherm (marge {L.raster_x})")
+    print(f"        raster {L.raster_b} van {L.W} punten breed, overhang "
+          f"{L.overhang:.0f} per kant", flush=True)
+
+    # Van rand tot rand, met aan weerszijden een stuk buiten beeld. Halve
+    # foto's aan de randen zijn de bedoeling: dan leest het als een wand met
+    # foto's die doorloopt in plaats van een blok dat ergens ophoudt.
+    eis(deel > 1.0,
+        f"het raster loopt tot voorbij de rand ({deel*100:.0f}% van de breedte)")
+    eis(L.raster_x < 0, f"het begint links van de rand (x={L.raster_x})")
+    eis(L.raster_x + L.raster_b > L.W,
+        f"en eindigt rechts erbuiten (tot {L.raster_x + L.raster_b} van {L.W})")
+    eis(abs(abs(L.raster_x) - (L.raster_b - L.W + L.raster_x)) <= 1,
+        "links en rechts hangt er evenveel over — symmetrisch afgesneden")
+
+    # En dat overhangen is geen smaak maar een som: de hele opbouw kruipt heen
+    # en weer tegen inbranden, en op het uiterste punt van die beweging mag er
+    # aan geen van beide kanten een lege strook ontstaan.
+    ax, ay = page.verschuiving_bereik()
+    eis(L.overhang >= ax,
+        f"de overhang ({L.overhang:.0f}) vangt de verschuiving op ({ax})")
+    eis(L.raster_x + ax <= 0,
+        f"bij volle uitslag naar rechts blijft de linkerrand gevuld "
+        f"({L.raster_x + ax})")
+    eis(L.raster_x + L.raster_b - ax >= L.W,
+        f"en bij volle uitslag naar links de rechterrand "
+        f"({L.raster_x + L.raster_b - ax} tegen {L.W})")
 
     # Een samengestelde rij moet net zo breed zijn als het raster. Zou de rij
     # op de logische maat gemaakt worden en de tegels op de fysieke, dan liep
@@ -166,7 +184,7 @@ def toets_vult_het_scherm(page, dpr):
         f"{strook.width()/dpr:.0f} punten, raster + tussenruimte is "
         f"{L.raster_b + L.gap}")
     eis(abs(strook.width() / dpr / L.kolommen - (L.tw + L.gap)) <= 2,
-        "en er passen precies vijf tegels in")
+        f"en er passen precies {L.kolommen} tegels in")
 
     # En de instructie hoort ONDER de collage te staan, over de volle breedte
     # gecentreerd — niet ernaast.
@@ -220,14 +238,11 @@ def toets_maat_van_de_stapel(achtergrond, paden, dpr):
     eis(L.W <= sg.width() + 2 and L.H <= sg.height() + 2,
         f"de indeling blijft binnen het scherm ({L.W}x{L.H} tegen "
         f"{sg.width()}x{sg.height()})")
-    # Hoeveel procent van de breedte het raster vult hangt van de
-    # beeldverhouding af — op 3:2 is dat 87%, op 4:3 bijna alles. Wat áltijd
-    # moet gelden: het raster volgt de hoogte, en het past binnen de breedte.
-    eis(abs(L.raster_b - 1.307 * L.H) <= 0.02 * L.raster_b,
-        f"het raster volgt de hoogte ({L.raster_b} tegen {1.307*L.H:.0f})")
-    eis(L.raster_x >= 0 and L.raster_x + L.raster_b <= L.W,
-        f"en past binnen de breedte ({L.raster_b} van {L.W}, marge "
-        f"{L.raster_x})")
+    eis(L.raster_b > L.W,
+        f"het raster loopt ook hier tot voorbij de rand ({L.raster_b} van {L.W})")
+    eis(L.overhang >= L.overhang_min,
+        f"met genoeg overhang voor de verschuiving ({L.overhang:.0f} tegen "
+        f"{L.overhang_min})")
     eis(page._vlak.width() > 0 and page._vlak.height() > 0,
         f"het zichtbare vlak is bepaald ({page._vlak.width()}x"
         f"{page._vlak.height()} op +{page._vlak.x()}+{page._vlak.y()})")
@@ -273,9 +288,12 @@ def toets_opbouw(achtergrond, paden, dpr):
     eis(abs(page._dpr - dpr) < 1e-6,
         f"de schermschaal is overgenomen ({page._dpr:g}x)")
 
-    # Het raster uit het ontwerp: 5x3 liggend, 3x5 staand, allebei vijftien.
-    eis((L.kolommen, L.rijen) == (5, 3), f"raster {L.kolommen}x{L.rijen}")
-    eis(L.n == 15, f"vijftien tegels ({L.n})")
+    # Drie rijen liggend, en zoveel kolommen als er nodig zijn om van rand
+    # tot rand te lopen. Dat zijn er meer dan de vijf uit het ontwerp: de
+    # zijmarge is vervallen, de tegelmaat niet.
+    eis(L.rijen == 3, f"drie rijen ({L.rijen})")
+    eis(L.kolommen >= 6, f"{L.kolommen} kolommen — meer dan het scherm breed is")
+    eis(L.n == L.kolommen * L.rijen, f"{L.n} tegels")
     eis(page.rijen_zichtbaar() == 3, "drie rijen vol")
 
     # De tegel hoort 456 x 285 FYSIEKE pixels te zijn, ongeacht de schaal.
@@ -286,7 +304,8 @@ def toets_opbouw(achtergrond, paden, dpr):
         f"(ontwerp: 456x285)")
     eis(abs(tegel.devicePixelRatio() - dpr) < 1e-6,
         "de tegel weet van de schermschaal")
-    eis(len(page._miniaturen) == 15, f"vijftien miniaturen ({len(page._miniaturen)})")
+    eis(len(page._miniaturen) == L.n,
+        f"{len(page._miniaturen)} miniaturen, precies het raster vol")
 
     # Elke rij is één brede afbeelding — geen smalle kolom. Was dit ooit
     # andersom, dan kreeg je precies de "verticale stroken" van de klacht.
@@ -382,6 +401,8 @@ def toets_verschuiving(page, dpr):
 
     # En het schuiven van de foto's mag uit ZONDER dat de bescherming meegaat.
     # Dat is de hele reden dat die twee gescheiden zijn.
+    eis(startscherm.SCHUIVEN_STANDAARD is False,
+        "het schuiven van de foto's staat standaard uit")
     page.zet_schuiven(False)
     eis(page._schuiven is False, "het schuiven kan uit")
     eis(page._timer.interval() >= 400,
@@ -538,7 +559,7 @@ def main():
 
     werkmap = tempfile.mkdtemp(prefix="startscherm-toets-")
     try:
-        sessies = 18
+        sessies = 30
         raw, strips = bouw_event(os.path.join(werkmap, "Testfeest"), sessies)
         onderdeel("de fotokeuze", toets_fotokeuze, raw, strips, sessies)
         paden = startscherm.fotos_van_event(raw)

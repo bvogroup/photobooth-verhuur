@@ -110,6 +110,18 @@ KOP_ZWAAR = "Plus Jakarta Sans ExtraBold"
 SCHUIF_PX_S = 12.0      # schuifsnelheid van een rij, punten per seconde
 OVERVLOEI_MS = 1200     # een vervangen tegel vloeit in 1,2 s over
 
+# ...maar het schuiven staat STANDAARD UIT. De opdrachtgever heeft er twee keer
+# zelf over begonnen: "misschien moeten we het maar gewoon statisch houden" en
+# daarna "die foto's bewegen nog steeds heen en weer en heel traag".
+#
+# Het kost inderdaad niets — gemeten op de booth zelf: zes milliseconde van de
+# veertig, met het schuiven aan. Maar goedkoop is geen reden om iets aan te
+# laten staan dat er niet uitziet. De collage doet zijn werk stilstaand net zo
+# goed: de foto's van het feest staan er, en er komt elke sessie een nieuwe bij.
+#
+# De schakelaar blijft; alleen de standaardstand gaat om.
+SCHUIVEN_STANDAARD = False
+
 # Twee tekenfrequenties, want er zijn twee soorten beweging en ze kosten niet
 # hetzelfde. Zie de klasse Collage: schuiven is versiering en mag uit; de
 # verschuiving tegen inbranden is bescherming en blijft altijd aan. Staat het
@@ -172,13 +184,33 @@ class Layout:
         self.logo_w, self.logo_h = r(LOGO_W), r(LOGO_H)
         self.ronding = max(4, r(RONDING))
 
-        # Het raster kantelt mee met het scherm: 5x3 liggend, 3x5 staand.
-        self.kolommen, self.rijen = (5, 3) if self.liggend else (3, 5)
+        # HET RASTER LOOPT VAN RAND TOT RAND.
+        #
+        # Niet vijf tegels met een marge ernaast, maar zoveel hele tegels als
+        # er nodig zijn om de breedte te dekken, met aan weerszijden een stuk
+        # dat buiten beeld valt. Je ziet aan de randen dus halve foto's, en dat
+        # is de bedoeling: dan leest het als een wand met foto's die doorloopt,
+        # in plaats van een blok dat ergens ophoudt.
+        #
+        # Hoeveel er minimaal moet overhangen is geen smaak maar een som. De
+        # hele opbouw kruipt heen en weer tegen inbranden, DRIFT_X punten naar
+        # weerszijden. Hangt het raster minder ver over dan die uitslag, dan
+        # komt op het uiterste punt van die beweging de rand van het raster
+        # het scherm binnen en staat er een lege strook. Vandaar de uitslag
+        # plus twee punten speling.
+        self.overhang_min = int(math.ceil(DRIFT_X * self.s)) + 2
+        nodig = W + 2 * self.overhang_min
+        self.kolommen = max(2, int(math.ceil(
+            (nodig + self.gap) / float(self.tw + self.gap))))
+        # De rijen volgen de stand van het scherm, zoals in het ontwerp.
+        self.rijen = 3 if self.liggend else 5
         self.n = self.kolommen * self.rijen
 
         self.raster_b = self.kolommen * self.tw + (self.kolommen - 1) * self.gap
         self.raster_h = self.rijen * self.th + (self.rijen - 1) * self.gap
+        # Deelt zich vanzelf symmetrisch: links en rechts evenveel eraf.
         self.raster_x = (W - self.raster_b) // 2
+        self.overhang = (self.raster_b - W) / 2.0
         self.raster_y = self.mv
 
         self.logo_x = (W - self.logo_w) // 2
@@ -316,7 +348,7 @@ class Collage(QWidget):
         self._tekst = QPixmap()
         self._gemeld = None       # laatst gemelde verschuiving, hele punten
 
-        self._schuiven = True     # versiering; de instellingen zetten dit
+        self._schuiven = SCHUIVEN_STANDAARD
         self._klok = QElapsedTimer()
         self._klok.start()
         self._timer = QTimer(self)
@@ -330,6 +362,10 @@ class Collage(QWidget):
         self._teken_som = 0.0
         self._teken_ergste = 0.0
         self._volgend_verslag = 0
+        self._drift_vorige = None
+        self._drift_stappen = 0
+        self._drift_pad = 0.0
+        self._drift_grootste_stap = 0.0
 
     # ── leven ──────────────────────────────────────────────────────────────
     def start(self):
@@ -397,9 +433,19 @@ class Collage(QWidget):
               f"{self._timer.interval()} ms per beeldje beschikbaar) | "
               f"zichtbaar {self._vlak.width()}x{self._vlak.height()}, raster "
               f"{L.raster_b if L else 0} = "
-              f"{100.0 * (L.raster_b if L else 0) / max(1, self._vlak.width()):.0f}%, "
+              f"{100.0 * (L.raster_b if L else 0) / max(1, self._vlak.width()):.0f}% "
+              f"met {L.overhang if L else 0:.0f} overhang per kant, "
               f"rij {self._stroken[0].width() if self._stroken else 0} px",
               flush=True)
+        # En wat de verschuiving tegen inbranden werkelijk doet. Die hoort
+        # onzichtbaar te zijn; dat is af te lezen aan de stapgrootte. Springt
+        # hij met meer dan een fysieke pixel tegelijk, dan valt hij op.
+        dx, dy = self._verschuiving()
+        print(f"[COLLAGE] verschuiving staat op {dx * self._dpr:+.0f}, "
+              f"{dy * self._dpr:+.0f} fysieke pixels | {self._drift_stappen} "
+              f"stappen sinds de start, grootste {self._drift_grootste_stap:.0f} "
+              f"fysieke pixel(s), samen {self._drift_pad * self._dpr:.0f} pixels "
+              f"afgelegd", flush=True)
         self._beeldjes = 0
         self._teken_som = 0.0
         self._teken_ergste = 0.0
@@ -424,14 +470,45 @@ class Collage(QWidget):
         pad herhaalt zich pas na ruim drie uur en staat nergens stil. De
         uitslag schaalt met het scherm — 56 punten is gemeten op de
         ontwerpmaat, niet op logische punten.
+
+        De uitkomst wordt op HELE FYSIEKE PIXELS gezet. Twee redenen, en de
+        tweede is de belangrijkste:
+
+        * Zonder dat staat elke laag per beeldje op een andere onderpixel en
+          moet Qt hem opnieuw bemonsteren. Dat maakt de instructie zachter en
+          kost rekenwerk, terwijl er niets tegenover staat.
+        * En zo is de beweging meetbaar in plaats van te beoordelen: de
+          kleinste stap is per definitie één fysieke pixel — 0,095 mm op dit
+          scherm — en hoe vaak zo'n stap valt, staat in het logboek. Bij een
+          topsnelheid van 0,53 pixel per seconde is dat ongeveer twee keer per
+          seconde één pixel, en dat is niet te zien.
         """
         L = self._layout
         if L is None:
             return 0.0, 0.0
         if t is None:
             t = self._klok.elapsed() / 1000.0
-        return (DRIFT_X * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_X),
-                DRIFT_Y * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y))
+        dx = DRIFT_X * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_X)
+        dy = DRIFT_Y * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y)
+        stap = 1.0 / max(1e-6, self._dpr)
+        return round(dx / stap) * stap, round(dy / stap) * stap
+
+    def _tel_verschuiving(self, dx, dy):
+        """Bijhouden hoe de verschuiving zich werkelijk gedraagt.
+
+        Dit is de derde ronde op dit scherm, dus dit hoort niet meer van een
+        foto van een beeldscherm af te hangen. Zie _verslag_tekentijd() voor
+        de regel die hieruit volgt.
+        """
+        vorig = self._drift_vorige
+        self._drift_vorige = (dx, dy)
+        if vorig is None or (dx, dy) == vorig:
+            return
+        sprong = math.hypot(dx - vorig[0], dy - vorig[1])
+        self._drift_stappen += 1
+        self._drift_pad += sprong
+        self._drift_grootste_stap = max(self._drift_grootste_stap,
+                                        sprong * self._dpr)
 
     def _meld_verschuiving(self):
         """Melden zodra er een hele punt verschoven is, niet vaker.
@@ -677,11 +754,14 @@ class Collage(QWidget):
               f"{self._dpr:g}x = {f(L.W)}x{f(L.H)} fysiek"
               f"{'  (LET OP: widget wijkt af van zichtbaar vlak)' if eigen != vlak else ''}",
               flush=True)
+        genoeg = "ja" if L.overhang >= L.overhang_min else "TE WEINIG"
         print(f"[COLLAGE] raster {L.kolommen}x{L.rijen} ({L.n} tegels) | tegel "
               f"{L.tw}x{L.th} logisch = {f(L.tw)}x{f(L.th)} fysiek | "
               f"rasterbreedte {L.raster_b} van {L.W} = "
-              f"{100.0 * L.raster_b / max(1, L.W):.0f}% (hoort ~87%) | "
-              f"zijmarge {L.raster_x}", flush=True)
+              f"{100.0 * L.raster_b / max(1, L.W):.0f}% (hoort >100%: het "
+              f"raster loopt tot voorbij de rand) | overhang {L.overhang:.0f} "
+              f"punten per kant, nodig {L.overhang_min} voor de verschuiving "
+              f"— {genoeg}", flush=True)
 
     def _herbouw_beeld(self):
         """Miniaturen en rijen opnieuw maken op de maat die nu geldt."""
@@ -905,6 +985,7 @@ class Collage(QWidget):
         #    slotje en het serienummer liggen buiten deze widget en krijgen
         #    dezelfde verschuiving via het signaal `verschoven`.
         dx, dy = self._verschuiving(t)
+        self._tel_verschuiving(dx, dy)
         p.translate(dx, dy)
 
         # 3. de schuivende rijen
@@ -915,13 +996,20 @@ class Collage(QWidget):
                 if r >= len(self._stroken):
                     break
                 y = L.rij_y(r)
-                # om en om de andere kant op; dat leest rustiger dan alles
-                # dezelfde kant op. Staat het schuiven uit, dan staat elke rij
-                # netjes op zijn plek — de foto's zijn dan gewoon te zien,
-                # alleen niet in beweging.
+                # ALLE RIJEN DEZELFDE KANT OP.
+                #
+                # Hier ging het om en om: rij 0 en 2 naar links, rij 1 naar
+                # rechts. Bedoeld als "leest rustiger", maar op de booth
+                # leverde het precies de klacht op — "die foto's bewegen heen
+                # en weer". Wie naar het scherm kijkt ziet niet drie rijen die
+                # ieder één kant op gaan, hij ziet foto's die tegen elkaar in
+                # bewegen. Eén richting dus.
+                #
+                # Staat het schuiven uit — en dat is de standaard — dan staat
+                # elke rij netjes op zijn plek. De foto's zijn dan gewoon te
+                # zien, alleen niet in beweging.
                 if self._schuiven:
-                    richting = -1 if (r % 2 == 0) else 1
-                    verschuiving = (richting * SCHUIF_PX_S * t) % periode
+                    verschuiving = (-SCHUIF_PX_S * t) % periode
                 else:
                     verschuiving = 0
                 p.setClipRect(QRect(L.raster_x, int(y), L.raster_b, L.th))
