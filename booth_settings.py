@@ -114,6 +114,16 @@ class BoothSettings:
     #                     DNP-statuspoller, geen pakket-delay)
     backend_brand: str = "hippe"
 
+    # ── Software-updates ───────────────────────────────────────
+    # Welk releasekanaal "controleren op updates" ophaalt:
+    #   "production" (standaard) = de nieuwste definitieve release
+    #   "beta"                   = de nieuwste voorloopversie (prerelease),
+    #                              óók als er een nieuwere productieversie is
+    # Booth-wide, want het hoort bij deze fysieke booth en niet bij een event.
+    # Wordt bewust NIET geforceerd in _apply_verhuur_overrides: de operator
+    # kiest dit zelf in Geavanceerd en de keuze moet een herstart overleven.
+    update_channel: str = "production"
+
     # ── Serienummer ────────────────────────────────────────────
     # Uniek nummer van deze fysieke photobooth (alfanumeriek). Booth-wide
     # want het hoort bij de hardware, niet bij een event. Ingesteld in
@@ -215,6 +225,12 @@ class BoothSettings:
         instance.save_photos_locally = True
         # Verhuur-versie is ALTIJD Linked-modus — geen Standalone-flow meer.
         instance.booth_mode = "linked"
+        # update_channel staat hier BEWUST niet tussen: die stelt de operator
+        # zelf in en de keuze moet een herstart overleven. Wel een onbekende
+        # waarde terugzetten naar productie, zodat een typefout in het
+        # json-bestand nooit tot een onbekend updatekanaal leidt.
+        if instance.update_channel not in ("production", "beta"):
+            instance.update_channel = "production"
 
     @classmethod
     def exists(cls) -> bool:

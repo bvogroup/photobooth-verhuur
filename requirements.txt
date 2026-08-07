@@ -8,3 +8,10 @@ pyserial>=3.5
 uiautomation>=2.0
 pyusb>=1.2
 libusb>=1.0
+# Onderstaande stonden er niet in maar zijn wel nodig om de app te draaien en
+# te bouwen. Op de ontwikkelmachine waren ze los geinstalleerd; op een
+# bouwserver moesten ze expliciet vermeld worden.
+boto3>=1.28
+opencv-python>=4.8
+truststore>=0.8
+pywin32>=306; sys_platform == "win32"

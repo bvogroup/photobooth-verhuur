@@ -10,10 +10,22 @@ Output: dist\Bootharoo\Bootharoo.exe  (folder mode, fast startup)
 """
 
 import os
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
 app_dir = os.path.dirname(os.path.abspath(SPEC))
+
+# boto3/botocore hebben datamappen (endpoints.json e.d.) die mee moeten in de
+# build; zonder die bestanden faalt de R2-upload met een cryptische fout.
+# Deze werden hiervoor opgehaald via een hardgecodeerd pad naar
+# ...\Python314\Lib\site-packages\... Dat pad bestaat alleen op de
+# ontwikkelmachine: op een bouwserver (of na een Python-upgrade) is de map er
+# niet en levert de build stilzwijgend een kapotte exe op. collect_data_files
+# vraagt het pad aan de geïnstalleerde pakketten zelf, dus dit werkt op elke
+# machine en bij elke Python-versie. De bestemming binnen de bundel blijft
+# gelijk (boto3/data en botocore/data).
+boto3_datas = collect_data_files('boto3')
+botocore_datas = collect_data_files('botocore')
 
 # Collect ALL cv2 files: datas, binaries, hidden imports
 # This is required because cv2's bootstrap re-imports itself natively
@@ -50,12 +62,10 @@ a = Analysis(
         (os.path.join(app_dir, 'print_worker.py'), '.'),
         # Camera logo (no text version, used in login screen and splash)
         (os.path.join(app_dir, 'bootharoo-camera.png'), '.'),
-        # boto3/botocore data files (required for S3/R2 cloud upload)
-        (os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Programs', 'Python', 'Python314',
-         'Lib', 'site-packages', 'botocore', 'data'), os.path.join('botocore', 'data')),
-        (os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Programs', 'Python', 'Python314',
-         'Lib', 'site-packages', 'boto3', 'data'), os.path.join('boto3', 'data')),
-    ] + cv2_datas + libusb_datas,
+    # boto3/botocore data files (required for S3/R2 cloud upload) — zie de
+    # toelichting bovenaan; opgehaald bij de pakketten zelf i.p.v. via een
+    # hardgecodeerd Python-pad.
+    ] + boto3_datas + botocore_datas + cv2_datas + libusb_datas,
     hiddenimports=[
         # Qt5
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',

@@ -13105,10 +13105,40 @@ class PhotoboothWindow(QMainWindow):
 
         # ── Card: Software-updates ───────────────────────────────────
         card_upd, card_upd_lay = self._settings_card("Software-updates")
-        upd_cur = QLabel(f"Huidige versie: {config.VERSION}")
-        upd_cur.setFont(QFont("DM Sans", 12))
-        upd_cur.setStyleSheet(f"color: {config.COLOR_TEXT};")
-        card_upd_lay.addWidget(upd_cur)
+        # Draaiende versie + actief kanaal in één regel. Iemand die belt met
+        # een storing moet dit kunnen voorlezen zonder ergens te hoeven
+        # doorklikken — daarom staat het kanaal er letterlijk bij.
+        self._update_current_lbl = QLabel(f"Huidige versie: {config.VERSION}")
+        self._update_current_lbl.setFont(QFont("DM Sans", 12))
+        self._update_current_lbl.setStyleSheet(f"color: {config.COLOR_TEXT};")
+        card_upd_lay.addWidget(self._update_current_lbl)
+
+        # Kanaalkeuze: productie of beta.
+        chan_intro = QLabel(
+            "Productie is de normale software. Beta is om nieuwe dingen te "
+            "testen vóórdat ze naar alle booths gaan — zet dit alleen aan op "
+            "een testbooth. De keuze blijft bewaard na een herstart."
+        )
+        chan_intro.setFont(QFont("DM Sans", 11))
+        chan_intro.setWordWrap(True)
+        chan_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_upd_lay.addWidget(chan_intro)
+
+        chan_row = QHBoxLayout()
+        chan_row.setSpacing(14)
+        self._chan_prod_radio = QRadioButton("Productie (standaard)")
+        self._chan_beta_radio = QRadioButton("Beta")
+        for rb in (self._chan_prod_radio, self._chan_beta_radio):
+            rb.setFont(QFont("DM Sans", 13))
+            rb.setStyleSheet(f"color: {config.COLOR_TEXT};")
+            chan_row.addWidget(rb)
+        chan_row.addStretch()
+        card_upd_lay.addLayout(chan_row)
+        self._chan_prod_radio.setChecked(True)
+        self._chan_prod_radio.toggled.connect(
+            lambda on: self._on_update_channel_changed('production') if on else None)
+        self._chan_beta_radio.toggled.connect(
+            lambda on: self._on_update_channel_changed('beta') if on else None)
 
         self._update_status_lbl = QLabel("")
         self._update_status_lbl.setFont(QFont("DM Sans", 12))
@@ -14177,13 +14207,15 @@ class PhotoboothWindow(QMainWindow):
             print(f"[HANDOVER] Wifi-instellingen openen mislukt: {e}")
 
     def _handover_check_updates(self):
-        self._handover_overlay("Controleren op updates…")
+        channel = self.update_channel
+        self._handover_overlay(
+            f"Controleren op updates ({self._channel_label(channel)})…")
         def _work():
             try:
                 import updater
-                res = updater.check_for_update()
+                res = updater.check_for_update(channel)
             except Exception as e:
-                res = {"error": str(e)}
+                res = {"error": str(e), "channel": channel}
             self._handover_update_signal.emit(res)
         threading.Thread(target=_work, daemon=True).start()
 
@@ -14203,17 +14235,37 @@ class PhotoboothWindow(QMainWindow):
                 subtitle=str(res.get("error"))[:180],
                 buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_finish_uncouple)])
             return
-        if res.get("newer") and res.get("url"):
+        kanaal = self._channel_label(res.get("channel", ""))
+        if res.get("available") and res.get("url"):
             self._handover_pending_update = res
+            if res.get("downgrade"):
+                # Terugzetten (bv. van beta terug naar productie). Nooit
+                # stilzwijgend: benoem dat het een oudere versie is.
+                titel = "Andere versie beschikbaar"
+                sub = (f"Kanaal {kanaal}: {res.get('latest','')}. Dat is ouder "
+                       f"dan de {res.get('current','')} die nu draait. "
+                       f"Nu terugzetten?")
+                knop = "Ja, terugzetten"
+            else:
+                titel = "Update beschikbaar"
+                sub = (f"Nieuwe versie op kanaal {kanaal}: "
+                       f"{res.get('latest', '')}. Nu updaten?")
+                knop = "Ja, updaten"
             self._handover_overlay(
-                "Update beschikbaar",
-                subtitle=f"Nieuwe versie: {res.get('latest', '')}. Nu updaten?",
-                buttons=[("Ja, updaten", config.COLOR_SUCCESS, self._handover_do_update),
+                titel,
+                subtitle=sub,
+                buttons=[(knop, config.COLOR_SUCCESS, self._handover_do_update),
                          ("Nee", config.COLOR_SECONDARY, self._handover_finish_uncouple)])
+        elif res.get("empty_channel"):
+            self._handover_overlay(
+                f"Nog geen versie op kanaal {kanaal}",
+                subtitle=f"Je blijft op {res.get('current', config.VERSION)}",
+                buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_finish_uncouple)])
         else:
             self._handover_overlay(
                 "Je bent up-to-date",
-                subtitle=f"Versie {res.get('current', config.VERSION)}",
+                subtitle=(f"Versie {res.get('current', config.VERSION)} "
+                          f"(kanaal {kanaal})"),
                 buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_finish_uncouple)])
 
     def _handover_do_update(self):
@@ -14672,6 +14724,7 @@ class PhotoboothWindow(QMainWindow):
             # Brand-radio's + PIN als EERSTE syncen — vóór alle fragiele
             # widget-aanrakingen, zodat dit nooit meer kan sneuvelen.
             self._sync_brand_radios()
+            self._sync_update_channel_radios()
             self._update_pin_button_text()
             _set(self._cut_checkbox, ev.cut_enabled)
             _set(self._print_enabled_toggle, ev.print_enabled)
@@ -14753,6 +14806,7 @@ class PhotoboothWindow(QMainWindow):
             # booth-wide waarden (anders bleven ze op de bouwtijd-default
             # 'hippe' / "geen webcam" staan).
             self._sync_brand_radios()
+            self._sync_update_channel_radios()
             self._update_webcam_status()
             _set(self._cut_checkbox, True)
             _set(self._print_enabled_toggle, True)
@@ -16077,46 +16131,162 @@ class PhotoboothWindow(QMainWindow):
             print(f"[LOG-UPLOAD] Context-update mislukt: {e}")
 
     # ── Auto-updater ─────────────────────────────────────────────────
+    @property
+    def update_channel(self) -> str:
+        """Actief releasekanaal van deze booth: 'production' of 'beta'.
+
+        Staat booth-wide in booth_settings.json, dus de keuze overleeft een
+        herstart. Bij twijfel altijd productie — nooit per ongeluk beta.
+        """
+        try:
+            from booth_settings import BoothSettings as _BS
+            if _BS.exists():
+                import updater
+                return updater.normalize_channel(_BS.load().update_channel)
+        except Exception as ex:
+            print(f"[UPDATE] Kanaal lezen mislukt ({ex}) — productie aangehouden")
+        return "production"
+
+    def _channel_label(self, channel: str = "") -> str:
+        """Nederlandse naam van een kanaal, voor op het scherm."""
+        return "beta" if (channel or self.update_channel) == "beta" else "productie"
+
+    def _refresh_update_version_label(self):
+        """Zet 'Huidige versie: … (kanaal: …)' opnieuw."""
+        if not hasattr(self, '_update_current_lbl'):
+            return
+        try:
+            self._update_current_lbl.setText(
+                f"Huidige versie: {config.VERSION}   "
+                f"(kanaal: {self._channel_label()})"
+            )
+        except RuntimeError:
+            pass
+
+    def _sync_update_channel_radios(self):
+        """Kanaal-radio's syncen met de opgeslagen waarde.
+
+        blockSignals zodat het syncen zelf geen opslag-lus triggert (zelfde
+        patroon als _sync_brand_radios).
+        """
+        if not hasattr(self, '_chan_prod_radio'):
+            return
+        channel = self.update_channel
+        for rb in (self._chan_prod_radio, self._chan_beta_radio):
+            rb.blockSignals(True)
+        self._chan_beta_radio.setChecked(channel == "beta")
+        self._chan_prod_radio.setChecked(channel != "beta")
+        for rb in (self._chan_prod_radio, self._chan_beta_radio):
+            rb.blockSignals(False)
+        self._refresh_update_version_label()
+
+    def _on_update_channel_changed(self, channel: str):
+        """Operator kiest een ander updatekanaal in Geavanceerd.
+
+        Booth-wide opslaan — ook zonder actief event, want dit hoort bij de
+        hardware. Daarna meteen het scherm bijwerken en een eerder
+        check-resultaat weggooien: dat ging over het oude kanaal en zou
+        anders een verkeerde versie aanbieden.
+        """
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            bs.update_channel = channel
+            bs.save()
+        except Exception as ex:
+            print(f"[UPDATE] Kanaal opslaan mislukt: {ex}")
+        print(f"[UPDATE] Updatekanaal: {channel}")
+        self._pending_update = None
+        if hasattr(self, '_update_install_btn'):
+            self._update_install_btn.setVisible(False)
+        self._refresh_update_version_label()
+        if hasattr(self, '_update_status_lbl'):
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+            self._update_status_lbl.setText(
+                f"Kanaal staat nu op {self._channel_label(channel)}. "
+                f"Druk op 'Controleer op updates'."
+            )
+
     def _on_check_updates(self):
-        """Check GitHub op een nieuwere release (op een bg-thread)."""
+        """Check GitHub op een andere release in het gekozen kanaal (bg-thread)."""
         self._update_check_btn.setEnabled(False)
         self._update_install_btn.setVisible(False)
         self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
-        self._update_status_lbl.setText("Bezig met controleren…")
+        channel = self.update_channel
+        self._update_status_lbl.setText(
+            f"Bezig met controleren ({self._channel_label(channel)})…")
 
         def _bg():
             try:
                 import updater
-                res = updater.check_for_update()
+                res = updater.check_for_update(channel)
             except Exception as e:
-                res = {"error": str(e)}
+                res = {"error": str(e), "channel": channel}
             self._update_check_signal.emit(res)
         threading.Thread(target=_bg, daemon=True).start()
 
     def _on_update_check_result(self, res):
-        """Main thread: toon het check-resultaat."""
+        """Main thread: toon het check-resultaat.
+
+        Vier uitkomsten, en alle vier zijn ze zichtbaar — stilzwijgend niets
+        doen is hier de slechtste uitkomst, want dan denkt de operator dat
+        hij is teruggeschakeld terwijl hij nog op beta draait:
+          - fout bij het ophalen
+          - kanaal is nog leeg (bv. er bestaat nog geen betaversie)
+          - er staat een ANDERE versie klaar (nieuwer = bijwerken,
+            ouder = terugzetten, bv. van beta terug naar productie)
+          - je draait al de versie van dit kanaal
+        """
         self._update_check_btn.setEnabled(True)
         self._pending_update = res
+        self._refresh_update_version_label()
         if not isinstance(res, dict) or res.get("error"):
             err = res.get("error", "onbekend") if isinstance(res, dict) else "onbekend"
             self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
             self._update_status_lbl.setText(f"Controle mislukt: {err}")
             return
-        if res.get("newer") and res.get("url"):
-            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+
+        kanaal = self._channel_label(res.get("channel", ""))
+
+        if res.get("empty_channel"):
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
             self._update_status_lbl.setText(
-                f"Nieuwe versie beschikbaar: {res.get('latest','')}  "
-                f"(je hebt {res.get('current','')})")
-            self._update_install_btn.setText(f"Nu updaten naar {res.get('latest','')}")
-            self._update_install_btn.setVisible(True)
-        elif res.get("newer") and not res.get("url"):
+                f"Er staat nog geen versie klaar op het kanaal {kanaal}. "
+                f"Je blijft op {res.get('current','')}.")
+            return
+
+        if not res.get("available"):
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+            self._update_status_lbl.setText(
+                f"Je draait al de nieuwste versie van het kanaal {kanaal} "
+                f"({res.get('current','')}).")
+            return
+
+        if not res.get("url"):
             self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_DANGER};")
             self._update_status_lbl.setText(
-                f"Versie {res.get('latest','')} gevonden, maar geen installer "
-                f"in die release.")
+                f"Versie {res.get('latest','')} gevonden op het kanaal {kanaal}, "
+                f"maar er zit geen installer in die release.")
+            return
+
+        terug = bool(res.get("downgrade"))
+        if terug:
+            # Van beta terug naar productie: de productieversie is ouder dan
+            # de beta die nu draait. Dat is geen fout maar precies wat er
+            # moet gebeuren — wel duidelijk benoemen dat het terugzetten is.
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT};")
+            self._update_status_lbl.setText(
+                f"Je draait {res.get('current','')}, nieuwer dan de laatste "
+                f"versie op het kanaal {kanaal} ({res.get('latest','')}). "
+                f"Terugzetten installeert die oudere versie.")
+            self._update_install_btn.setText(f"Terugzetten naar {res.get('latest','')}")
         else:
-            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
-            self._update_status_lbl.setText("Je hebt al de nieuwste versie.")
+            self._update_status_lbl.setStyleSheet(f"color: {config.COLOR_SUCCESS};")
+            self._update_status_lbl.setText(
+                f"Nieuwe versie beschikbaar op het kanaal {kanaal}: "
+                f"{res.get('latest','')}  (je hebt {res.get('current','')})")
+            self._update_install_btn.setText(f"Nu updaten naar {res.get('latest','')}")
+        self._update_install_btn.setVisible(True)
 
     def _on_do_update(self):
         """Download de installer + start 'm. De app sluit zichzelf via de
@@ -16126,12 +16296,24 @@ class PhotoboothWindow(QMainWindow):
         if not url:
             return
         from PyQt5.QtWidgets import QMessageBox
+        terug = bool(res.get("downgrade"))
+        kanaal = self._channel_label(res.get("channel", ""))
         confirm = QMessageBox(self)
-        confirm.setWindowTitle("Updaten")
-        confirm.setText(
-            f"De photobooth wordt nu bijgewerkt naar {res.get('latest','')}.\n\n"
-            "De software sluit even af en start daarna automatisch opnieuw op. "
-            "Doorgaan?")
+        confirm.setWindowTitle("Terugzetten" if terug else "Updaten")
+        if terug:
+            confirm.setText(
+                f"De photobooth wordt teruggezet naar {res.get('latest','')} "
+                f"(kanaal {kanaal}).\n\n"
+                f"Dat is een OUDERE versie dan de {res.get('current','')} die "
+                f"nu draait.\n\n"
+                "De software sluit even af en start daarna automatisch opnieuw "
+                "op. Doorgaan?")
+        else:
+            confirm.setText(
+                f"De photobooth wordt nu bijgewerkt naar {res.get('latest','')} "
+                f"(kanaal {kanaal}).\n\n"
+                "De software sluit even af en start daarna automatisch opnieuw op. "
+                "Doorgaan?")
         confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         confirm.setDefaultButton(QMessageBox.Yes)
         if confirm.exec_() != QMessageBox.Yes:

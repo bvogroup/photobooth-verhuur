@@ -2,7 +2,9 @@ import os
 import sys
 
 # === App Version ===
-VERSION = "v1.99.146"
+# updater.py vergelijkt deze waarde met de tag van de release op GitHub. Stijgt
+# hij niet mee met een nieuwe release, dan ziet geen enkele booth de update.
+VERSION = "v1.99.147"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)

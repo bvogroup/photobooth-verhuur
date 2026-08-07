@@ -1,0 +1,143 @@
+name: Installer bouwen
+
+# Bouwt de Windows-installer op een windows-latest machine, zodat er niemand
+# meer een eigen Windows-pc hoeft aan te zetten om uit te rollen.
+#
+# Twee manieren om te starten:
+#   1. Handmatig (workflow_dispatch) — bouwt de installer en hangt hem als
+#      artefact aan de run. Er wordt dan GEEN release gemaakt. Dit is de
+#      veilige manier om te controleren of een tak bouwt.
+#   2. Bij het pushen van een tag v* — bouwt de installer en hangt hem aan de
+#      release die bij die tag hoort, als die al bestaat.
+#
+# BELANGRIJK: deze werkstroom publiceert NOOIT zelf een release. Een release
+# publiceren is de handeling die booths bij de eerstvolgende overdracht laat
+# bijwerken; dat blijft een bewuste menselijke keuze. De werkstroom vult
+# hooguit een bestaande (concept)release aan met de installer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python-versie voor de build"
+        required: false
+        default: "3.12"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Python installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.12' }}
+
+      - name: Versie uit config.py lezen
+        id: versie
+        shell: pwsh
+        run: |
+          # config.py importeren zou de hele app-config uitvoeren (die maakt
+          # mappen aan). We lezen de regel daarom met een reguliere expressie.
+          $regel = Select-String -Path config.py -Pattern '^VERSION\s*=\s*"([^"]+)"'
+          if (-not $regel) { throw "VERSION niet gevonden in config.py" }
+          $tag = $regel.Matches[0].Groups[1].Value          # bv. v1.99.147
+          $kaal = $tag -replace '^v', ''                     # bv. 1.99.147
+          "tag=$tag"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "kaal=$kaal"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Versie uit config.py: $tag"
+
+      - name: Python-pakketten installeren
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Inno Setup installeren
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: EXE bouwen met PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller bootharoo.spec --noconfirm
+          if (-not (Test-Path "dist\Bootharoo\Bootharoo.exe")) {
+            throw "PyInstaller leverde geen dist\Bootharoo\Bootharoo.exe op"
+          }
+          Write-Host "EXE gebouwd:"
+          Get-Item "dist\Bootharoo\Bootharoo.exe" | Format-List Name, Length
+
+      - name: Installer bouwen met Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe niet gevonden op $iscc" }
+          # Versie meegeven zodat de installer-naam en config.VERSION niet uit
+          # de pas kunnen lopen.
+          & $iscc "/DMyAppVersion=${{ steps.versie.outputs.kaal }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup faalde met code $LASTEXITCODE" }
+
+      - name: Controleren dat de installer er echt is
+        id: installer
+        shell: pwsh
+        run: |
+          $pad = "dist\Bootharoo_Setup_v${{ steps.versie.outputs.kaal }}.exe"
+          if (-not (Test-Path $pad)) {
+            Write-Host "Inhoud van dist\:"
+            Get-ChildItem dist | Format-Table Name, Length
+            throw "Installer niet gevonden: $pad"
+          }
+          $mb = [math]::Round((Get-Item $pad).Length / 1MB, 1)
+          Write-Host "Installer gebouwd: $pad ($mb MB)"
+          if ($mb -lt 20) {
+            throw "Installer is maar $mb MB — dat is verdacht klein, build afgekeurd"
+          }
+          "pad=$pad" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "mb=$mb"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Samenvatting
+        shell: pwsh
+        run: |
+          "## Installer gebouwd"                                     | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          ""                                                          | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Versie: ``${{ steps.versie.outputs.tag }}``"              | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Bestand: ``${{ steps.installer.outputs.pad }}``"          | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Grootte: ${{ steps.installer.outputs.mb }} MB"            | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Installer bewaren als artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bootharoo_Setup_${{ steps.versie.outputs.tag }}
+          path: dist/Bootharoo_Setup_*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      # Alleen bij een tag-push: de installer aan de bijbehorende release
+      # hangen. Bestaat die release nog niet, dan doet deze stap niets — hij
+      # maakt er bewust geen aan, want een nieuwe release publiceren is een
+      # menselijke beslissing.
+      - name: Installer aan de bestaande release hangen
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Er bestaat nog geen release $tag — installer alleen als artefact bewaard."
+            exit 0
+          }
+          gh release upload $tag "${{ steps.installer.outputs.pad }}" --clobber
+          Write-Host "Installer toegevoegd aan release $tag"

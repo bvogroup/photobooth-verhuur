@@ -5,9 +5,18 @@
 ;   1. cd C:\Photobooth-verhuur
 ;   2. pyinstaller bootharoo.spec --noconfirm
 ;   3. "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+;
+; Alle paden hieronder zijn RELATIEF aan de map waar dit .iss-bestand staat.
+; Op de ontwikkelmachine is dat C:\Photobooth-verhuur, dus daar verandert er
+; niets; op een bouwserver (GitHub Actions) werkt het daardoor ook.
 
 #define MyAppName "Bootharoo"
-#define MyAppVersion "1.99.146"
+; Het versienummer komt van buiten mee (ISCC /DMyAppVersion=1.99.147) zodat het
+; niet uit de pas kan lopen met config.VERSION. Zonder die vlag geldt de
+; waarde hieronder, en blijft een handmatige build werken zoals hij deed.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.99.146"
+#endif
 #define MyAppPublisher "Bootharoo"
 #define MyAppURL "https://bootharoo.com"
 #define MyAppExeName "Bootharoo.exe"
@@ -25,7 +34,7 @@ AppSupportURL={#MyAppURL}
 DefaultDirName={commonpf32}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=C:\Photobooth-verhuur\dist
+OutputDir=dist
 OutputBaseFilename=Bootharoo_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
@@ -46,9 +55,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Snelkoppeling op bureaublad aanmaken"; GroupDescription: "Extra opties:"
 
 [Files]
-Source: "C:\Photobooth-verhuur\dist\Bootharoo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\Bootharoo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Systeem-tweak-script (eenmalig per booth handmatig als admin draaien)
-Source: "C:\Photobooth-verhuur\optimize_surface.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "optimize_surface.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
