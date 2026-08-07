@@ -4565,7 +4565,7 @@ class PhotoboothWindow(QMainWindow):
         # witte QR-kaart met een statusmelding ernaast en een strookje van niks
         # — de administratie in plaats van het resultaat. Nu staat de strook
         # groot, staat de boemerang bewegend ernaast, en is de QR een klein
-        # kaartje eronder.
+        # kaartje onder de boemerang.
         self._review_photo_container = QWidget()
         self._review_photo_container.setStyleSheet("background: transparent;")
         photo_lay = QHBoxLayout(self._review_photo_container)
@@ -4581,9 +4581,11 @@ class PhotoboothWindow(QMainWindow):
         self.review_strip_label.setStyleSheet("background: transparent;")
         photo_lay.addWidget(self.review_strip_label, stretch=1)
 
-        # De kolom naast de strook. Staat er niets in — geen boemerang en geen
-        # QR, zoals op de twee vraagschermen — dan verdwijnt hij en staat de
-        # strook vanzelf in het midden.
+        # De kolom naast de strook. Op de twee vraagschermen staat hier alleen
+        # de boemerang (de QR hoort daar niet), op het deelscherm allebei. Is er
+        # geen van beide — een Starter-booth zonder boemerang, op de vraag "zijn
+        # de foto's goed gelukt?" — dan verdwijnt de kolom en heeft de strook
+        # het scherm voor zichzelf. Zie _werk_zijkolom_bij().
         self._review_zij = QWidget()
         self._review_zij.setFixedWidth(self._zijkolom_breed())
         self._review_zij.setStyleSheet("background: transparent;")
