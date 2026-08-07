@@ -1,0 +1,347 @@
+name: Installer bouwen
+
+# Bouwt de Windows-installer op een windows-latest machine, zodat er niemand
+# meer een eigen Windows-pc hoeft aan te zetten om uit te rollen.
+#
+# Drie manieren om te starten:
+#   1. Handmatig (workflow_dispatch) — bouwt de installer en hangt hem als
+#      artefact aan de run. Er wordt dan GEEN release gemaakt. Dit is de
+#      veilige manier om te controleren of een tak bouwt.
+#      Let op: GitHub biedt de handmatige knop pas aan zodra dit bestand op
+#      de hoofdtak staat. Op een nieuwe tak gebruik je punt 2.
+#   2. Bij elke push naar een release/** of beta/** tak — zodat een tak
+#      aantoonbaar bouwt vóórdat er iets van uitgerold wordt.
+#   3. Bij het pushen van een tag v* — bouwt de installer en hangt hem aan de
+#      release die bij die tag hoort, als die al bestaat.
+#
+# BELANGRIJK: deze werkstroom publiceert NOOIT zelf een release. Een release
+# publiceren is de handeling die booths bij de eerstvolgende overdracht laat
+# bijwerken; dat blijft een bewuste menselijke keuze. De werkstroom vult
+# hooguit een bestaande (concept)release aan met de installer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bron_ref:
+        description: "Tak of tag in bvogroup/photobooth-broncode om te bouwen"
+        required: true
+        default: "main"
+      python-version:
+        description: "Python-versie voor de build"
+        required: false
+        default: "3.12"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # Vangnet: hangt er iets (een venster dat op invoer wacht, een installer
+    # die niet afsluit), dan faalt de bouw na 45 minuten in plaats van uren
+    # door te draaien.
+    timeout-minutes: 45
+
+    steps:
+      # De broncode staat sinds de splitsing in bvogroup/photobooth-broncode
+      # (privé). Deze repo is nog uitsluitend de plek waar de installers
+      # gepubliceerd worden — dat adres staat op alle 25 booths in het veld en
+      # mag daarom nooit veranderen.
+      #
+      # Ophalen gaat met een alleen-lezen deploy key (geheim BRONCODE_SLEUTEL).
+      # Die kan niet terugschrijven, en er staat geen enkele trigger in dit
+      # bestand die op een binnengekomen pull request draait — anders zou een
+      # vreemde met een PR bij het geheim kunnen.
+      - name: Broncode ophalen (privé-repo)
+        uses: actions/checkout@v4
+        with:
+          repository: bvogroup/photobooth-broncode
+          ref: ${{ inputs.bron_ref || github.ref_name }}
+          ssh-key: ${{ secrets.BRONCODE_SLEUTEL }}
+
+      - name: Python installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.12' }}
+
+      - name: Versie uit config.py lezen
+        id: versie
+        shell: pwsh
+        run: |
+          # config.py importeren zou de hele app-config uitvoeren (die maakt
+          # mappen aan). We lezen de regel daarom met een reguliere expressie.
+          $regel = Select-String -Path config.py -Pattern '^VERSION\s*=\s*"([^"]+)"'
+          if (-not $regel) { throw "VERSION niet gevonden in config.py" }
+          $tag = $regel.Matches[0].Groups[1].Value          # bv. v1.99.147
+          $kaal = $tag -replace '^v', ''                     # bv. 1.99.147
+          "tag=$tag"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "kaal=$kaal"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Versie uit config.py: $tag"
+
+      - name: Python-pakketten installeren
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # ── De merkletters ──────────────────────────────────────────────
+      # Toetst dat Qt DM Sans en Plus Jakarta Sans werkelijk laadt, en dat de
+      # terugval op Segoe UI blijft werken als de map leeg is of een bestand
+      # stuk. Dit mag de bouw wél tegenhouden: een booth die niet opkomt omdat
+      # er iets met een lettertype is, is precies wat we willen uitsluiten.
+      - name: Merkletters controleren
+        timeout-minutes: 5
+        shell: pwsh
+        run: python test_lettertype.py
+
+      # ── Het startscherm ─────────────────────────────────────────────
+      # Dit MAG de bouw tegenhouden, en dat is met opzet.
+      #
+      # Beta.5 kwam hier langs met schermafdrukken die er goed uitzagen en was
+      # op de booth onbruikbaar: alles stond dubbel, de tegels waren een kwart
+      # van de bedoelde maat en de tekst was wazig. Alle drie onzichtbaar op
+      # een plaatje waar niemand naar meet. Deze stap meet wel: de tegel op
+      # 456 x 285 fysieke pixels, de foto's uit raw/ en niet uit strips/, en
+      # de achtergrond zonder ingebakken tekst en logo.
+      #
+      # QT_SCALE_FACTOR bootst de tablet na, die op 200% staat. Zonder dat
+      # draait de toets op schaal 1 en is precies de fout onzichtbaar die de
+      # tekst en het logo wazig maakte.
+      - name: Startscherm controleren
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          QT_SCALE_FACTOR: "2"
+        run: python test_startscherm.py
+
+      # ── De bediening van de gast ────────────────────────────────────
+      # Mag de bouw tegenhouden, en dat is met opzet.
+      #
+      # De booth staat op een luidsprekerstatief. Een tik rechts op het scherm
+      # draait hem weg, en dan staat de volgende foto scheef. Deze stap meet op
+      # de ECHTE schermen uit photobooth.py — niet op een nabootsing — hoe ver
+      # elke gastknop uit het midden staat, in millimeters op het glas, en of
+      # hij groot genoeg is om met een glas in je hand te raken. Hij rekent het
+      # liggend én staand door.
+      #
+      # QT_SCALE_FACTOR bootst de tablet na, die op 200% staat.
+      - name: Bediening controleren
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          QT_SCALE_FACTOR: "2"
+        run: python test_bediening.py
+
+      # ── De QR-code van de gast ──────────────────────────────────────
+      # Mag de bouw tegenhouden. De QR wordt uit de sjabloon-URL en het
+      # sessie-id gebouwd en heeft dus geen internet nodig; deze stap toetst
+      # dat hij naar myboothbox.nl wijst en nooit naar een lokaal adres.
+      - name: QR-code controleren
+        timeout-minutes: 5
+        shell: pwsh
+        run: python test_qr.py
+
+      # ── Kosten van het schuivende startscherm ───────────────────────
+      # De opdrachtgever wil dat de collage doorschuift. Dit meet wat dat kost
+      # met de echte Qt-motor, in plaats van erover te gissen. Het mag de bouw
+      # niet tegenhouden — het is een meting, geen eis.
+      - name: Startscherm doormeten
+        timeout-minutes: 5
+        continue-on-error: true
+        shell: pwsh
+        run: python meet_startscherm.py
+
+      # ── Schermafdrukken van de bediening ────────────────────────────
+      # De opdrachtgever beoordeelt de huisstijl op wat hij ziet, niet op wat
+      # er in de code staat. Dit tekent de merkstijlen met de echte Qt-motor,
+      # zonder beeldscherm, op 2736 x 1824 — de resolutie van de Surface Pro 7.
+      # Ze hangen als artefact aan de run, zodat je bij elke tak kunt kijken
+      # wat er veranderd is.
+      #
+      # Deze stap mag de build niet tegenhouden: het is een plaatje, geen test.
+      - name: Schermafdrukken van de bediening maken
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          python schermafdrukken.py --map schermafdrukken
+          Get-ChildItem schermafdrukken -ErrorAction SilentlyContinue |
+            Format-Table Name, Length
+
+      - name: Schermafdrukken aan de run hangen
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: schermafdrukken-bediening
+          path: schermafdrukken/*.png
+          if-no-files-found: warn
+
+      - name: Inno Setup installeren
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: EXE bouwen met PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller bootharoo.spec --noconfirm
+          if (-not (Test-Path "dist\MyBoothBox\MyBoothBox.exe")) {
+            throw "PyInstaller leverde geen dist\MyBoothBox\MyBoothBox.exe op"
+          }
+          Write-Host "EXE gebouwd:"
+          Get-Item "dist\MyBoothBox\MyBoothBox.exe" | Format-List Name, Length
+
+      - name: Installer bouwen met Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe niet gevonden op $iscc" }
+          # Versie meegeven zodat de installer-naam en config.VERSION niet uit
+          # de pas kunnen lopen.
+          & $iscc "/DMyAppVersion=${{ steps.versie.outputs.kaal }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup faalde met code $LASTEXITCODE" }
+
+      # ── Rookproef 1: draait de zojuist gebouwde map-versie? ──────────
+      # Dit is de stap die v1.99.147 had moeten tegenhouden. Die build kwam
+      # er keurig uit en startte vervolgens op de booth niet op. Alleen
+      # controleren DAT er een bestand uitkomt is dus niet genoeg; hij moet
+      # ook echt overeind komen.
+      - name: Rookproef op de gebouwde map
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $exe = "dist\MyBoothBox\MyBoothBox.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -PassThru -Wait
+          $rapport = Join-Path $env:TEMP "bootharoo_selftest.txt"
+          if (Test-Path $rapport) { Get-Content $rapport | Write-Host }
+          if ($p.ExitCode -ne 0) { throw "Zelftest op de gebouwde map faalde (code $($p.ExitCode))" }
+          Write-Host "Rookproef op de gebouwde map geslaagd."
+
+      - name: Controleren dat de installer er echt is
+        id: installer
+        shell: pwsh
+        run: |
+          $pad = "dist\MyBoothBox_Setup_v${{ steps.versie.outputs.kaal }}.exe"
+          if (-not (Test-Path $pad)) {
+            Write-Host "Inhoud van dist\:"
+            Get-ChildItem dist | Format-Table Name, Length
+            throw "Installer niet gevonden: $pad"
+          }
+          $mb = [math]::Round((Get-Item $pad).Length / 1MB, 1)
+          Write-Host "Installer gebouwd: $pad ($mb MB)"
+          if ($mb -lt 20) {
+            throw "Installer is maar $mb MB — dat is verdacht klein, build afgekeurd"
+          }
+          "pad=$pad" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "mb=$mb"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ── Rookproef 2: de installer echt installeren en starten ────────
+      # Nu het bestand dat de opdrachtgever daadwerkelijk uitrolt. Dit toetst
+      # niet alleen de exe maar ook het Inno-script: komt alles op zijn plek
+      # in Program Files terecht, en start dat wat er is geinstalleerd?
+      - name: Installer stil installeren en starten
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $inst = "${{ steps.installer.outputs.pad }}"
+          Write-Host "Installeren: $inst"
+          # BEWUST GEEN -Wait. De installer start na een stille installatie
+          # zelf de applicatie (Check: WizardSilent in installer.iss), en die
+          # blijft draaien — het is een photobooth, die hoort niet af te
+          # sluiten. Start-Process -Wait wacht op de hele procesboom en bleef
+          # daardoor hangen tot de bouw werd afgekapt. Wait-Process wacht
+          # alleen op de installer zelf, met een harde grens erop.
+          $p = Start-Process -FilePath $inst `
+               -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
+               -PassThru
+          try {
+            Wait-Process -Id $p.Id -Timeout 300 -ErrorAction Stop
+          } catch {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "Installatie liep vast (langer dan 5 minuten)"
+          }
+          if ($p.ExitCode -ne 0) { throw "Installatie faalde met code $($p.ExitCode)" }
+          Write-Host "Installatie klaar (code $($p.ExitCode))."
+
+          # De door de installer gestarte applicatie afsluiten, anders staat
+          # die het bestandsslot op de exe vast te houden tijdens onze test.
+          Start-Sleep -Seconds 8
+          $draaiend = Get-Process MyBoothBox -ErrorAction SilentlyContinue
+          if ($draaiend) {
+            Write-Host "De installer heeft de applicatie gestart — die sluit ik nu af."
+            $draaiend | Stop-Process -Force
+          }
+          Start-Sleep -Seconds 3
+
+          # Deze bouwmachine is elke keer kaal, dus er is geen vorige
+          # installatie en DefaultDirName uit installer.iss geldt: MyBoothBox.
+          # LET OP: een booth in het veld die van Bootharoo komt houdt dankzij
+          # UsePreviousAppDir zijn oude map Program Files (x86)\Bootharoo, met
+          # daarin MyBoothBox.exe. Dit pad toetst dus de nieuwe installatie,
+          # niet het opwaarderingspad — dat moet met de hand op een booth.
+          $geinstalleerd = "C:\Program Files (x86)\MyBoothBox\MyBoothBox.exe"
+          if (-not (Test-Path $geinstalleerd)) {
+            Write-Host "Inhoud van C:\Program Files (x86)\MyBoothBox:"
+            Get-ChildItem "C:\Program Files (x86)\MyBoothBox" -ErrorAction SilentlyContinue |
+              Format-Table Name, Length
+            throw "Geinstalleerde exe niet gevonden op $geinstalleerd"
+          }
+
+          Remove-Item (Join-Path $env:TEMP "bootharoo_selftest.txt") -ErrorAction SilentlyContinue
+          $q = Start-Process -FilePath $geinstalleerd -ArgumentList "--selftest" -PassThru -Wait
+          $rapport = Join-Path $env:TEMP "bootharoo_selftest.txt"
+          if (Test-Path $rapport) {
+            Write-Host "── Zelftest van de geinstalleerde applicatie ──"
+            Get-Content $rapport | Write-Host
+          } else {
+            Write-Host "WAARSCHUWING: geen zelftestrapport gevonden."
+          }
+          if ($q.ExitCode -ne 0) {
+            throw "De geinstalleerde applicatie faalde de zelftest (code $($q.ExitCode))"
+          }
+          Write-Host "Rookproef op de geinstalleerde applicatie geslaagd."
+
+      - name: Samenvatting
+        shell: pwsh
+        run: |
+          "## Installer gebouwd"                                     | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          ""                                                          | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Versie: ``${{ steps.versie.outputs.tag }}``"              | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Bestand: ``${{ steps.installer.outputs.pad }}``"          | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Grootte: ${{ steps.installer.outputs.mb }} MB"            | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Rookproef: gebouwde map en geinstalleerde applicatie zijn beide gestart en geslaagd" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Installer bewaren als artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyBoothBox_Setup_${{ steps.versie.outputs.tag }}
+          path: dist/MyBoothBox_Setup_*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      # Alleen bij een tag-push: de installer aan de bijbehorende release
+      # hangen. Bestaat die release nog niet, dan doet deze stap niets — hij
+      # maakt er bewust geen aan, want een nieuwe release publiceren is een
+      # menselijke beslissing.
+      - name: Installer aan de bestaande release hangen
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Verplicht sinds de splitsing: in de werkmap staat de checkout van
+          # photobooth-broncode, en `gh` leidt de repo af uit de git-remote van
+          # de werkmap. Zonder deze regel zou de installer aan een release in
+          # de privé-repo gehangen worden — waar geen enkele booth kijkt.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Er bestaat nog geen release $tag — installer alleen als artefact bewaard."
+            exit 0
+          }
+          gh release upload $tag "${{ steps.installer.outputs.pad }}" --clobber
+          Write-Host "Installer toegevoegd aan release $tag"
