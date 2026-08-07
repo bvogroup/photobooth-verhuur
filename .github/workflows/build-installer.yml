@@ -22,14 +22,15 @@ name: Installer bouwen
 on:
   workflow_dispatch:
     inputs:
+      bron_ref:
+        description: "Tak of tag in bvogroup/photobooth-broncode om te bouwen"
+        required: true
+        default: "main"
       python-version:
         description: "Python-versie voor de build"
         required: false
         default: "3.12"
   push:
-    branches:
-      - "release/**"
-      - "beta/**"
     tags:
       - "v*"
 
@@ -45,8 +46,21 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Code ophalen
+      # De broncode staat sinds de splitsing in bvogroup/photobooth-broncode
+      # (privé). Deze repo is nog uitsluitend de plek waar de installers
+      # gepubliceerd worden — dat adres staat op alle 25 booths in het veld en
+      # mag daarom nooit veranderen.
+      #
+      # Ophalen gaat met een alleen-lezen deploy key (geheim BRONCODE_SLEUTEL).
+      # Die kan niet terugschrijven, en er staat geen enkele trigger in dit
+      # bestand die op een binnengekomen pull request draait — anders zou een
+      # vreemde met een PR bij het geheim kunnen.
+      - name: Broncode ophalen (privé-repo)
         uses: actions/checkout@v4
+        with:
+          repository: bvogroup/photobooth-broncode
+          ref: ${{ inputs.bron_ref || github.ref_name }}
+          ssh-key: ${{ secrets.BRONCODE_SLEUTEL }}
 
       - name: Python installeren
         uses: actions/setup-python@v5
@@ -317,6 +331,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          # Verplicht sinds de splitsing: in de werkmap staat de checkout van
+          # photobooth-broncode, en `gh` leidt de repo af uit de git-remote van
+          # de werkmap. Zonder deze regel zou de installer aan een release in
+          # de privé-repo gehangen worden — waar geen enkele booth kijkt.
+          GH_REPO: ${{ github.repository }}
         run: |
           $tag = "${{ github.ref_name }}"
           gh release view $tag 2>$null
