@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   Bootharoo Photobooth - EXE Builder
+echo   MyBoothBox Photobooth - EXE Builder
 echo ============================================
 echo.
 
@@ -29,6 +29,6 @@ if errorlevel 1 (
 echo.
 echo [3/3] Klaar!
 echo.
-echo EXE locatie: C:\Photobooth-verhuur\dist\Bootharoo\Bootharoo.exe
+echo EXE locatie: C:\Photobooth-verhuur\dist\MyBoothBox\MyBoothBox.exe
 echo.
 pause

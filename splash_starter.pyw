@@ -1,5 +1,5 @@
 """
-Bootharoo Instant Splash Screen + App Launcher.
+MyBoothBox Instant Splash Screen + App Launcher.
 
 Two-phase startup:
 1. Phase 1: Show tkinter splash INSTANTLY (<100ms) - no heavy imports
@@ -78,7 +78,7 @@ if "--print-worker" in sys.argv:
     sys.exit(0)
 
 # ── Zelftest ────────────────────────────────────────────────────────────
-# `Bootharoo.exe --selftest` importeert alles wat de app bij het opstarten
+# `MyBoothBox.exe --selftest` importeert alles wat de app bij het opstarten
 # nodig heeft, controleert een paar dingen die eerder stuk zijn gegaan, en
 # sluit af met code 0 (goed) of 1 (fout). Geen venster, geen camera, geen
 # printer — puur de vraag: komt deze build overeind?
@@ -192,7 +192,7 @@ if "--selftest" in sys.argv:
         import printer, camera, qr_generator  # noqa: F401
         return "photobooth, main en de rest"
 
-    _log(f"Bootharoo zelftest — frozen={getattr(sys, 'frozen', False)}")
+    _log(f"MyBoothBox zelftest — frozen={getattr(sys, 'frozen', False)}")
     _log(f"Python {sys.version.split()[0]}")
     _log("")
 
@@ -249,7 +249,7 @@ def run():
     """Show instant splash, then load and start the real app."""
     # ── Phase 1: Instant tkinter splash ──
     root = tk.Tk()
-    root.title("Bootharoo")
+    root.title("MyBoothBox")
     root.overrideredirect(True)  # No title bar
 
     sw, sh = 600, 400
@@ -266,15 +266,21 @@ def run():
     frame = tk.Frame(root, bg=bg_color)
     frame.place(relx=0.5, rely=0.5, anchor='center')
 
-    # Camera logo image — no text, just the icon
+    # Het merkteken: de MyBoothBox-camera in groene lijn. Groen omdat de
+    # ondergrond hier donker is (bg_color hieronder); op een lichte ondergrond
+    # is dat groen onleesbaar en hoort de inktkleurige uitvoering — zie het
+    # inlogscherm in photobooth.py.
     _logo_path = os.path.join(
-        getattr(sys, '_MEIPASS', app_dir), "bootharoo-camera.png"
+        getattr(sys, '_MEIPASS', app_dir), "myboothbox-camera.png"
     )
     _logo_shown = False
     if os.path.exists(_logo_path):
         try:
             _img = tk.PhotoImage(file=_logo_path)
-            _img = _img.subsample(2, 2)  # 274px → 137px
+            # Het bestand is precies twee keer zo groot als het hier hoort te
+            # staan, zodat subsample een heel getal is en de lijnen scherp
+            # blijven: 479px → 240px.
+            _img = _img.subsample(2, 2)
             _logo_lbl = tk.Label(frame, image=_img, bg=bg_color)
             _logo_lbl.image = _img  # keep reference
             _logo_lbl.pack(pady=(0, 10))

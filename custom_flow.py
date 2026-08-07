@@ -1,5 +1,5 @@
 """
-Custom flow — verborgen geavanceerde betaalmodus voor Bootharoo Photobooth.
+Custom flow — verborgen geavanceerde betaalmodus voor MyBoothBox Photobooth.
 
 Deze module bevat alleen de unlock-helper. Alle UI en flow-logica zit in
 photobooth.py / event_model.py / voucher.py. Hier slechts één ding centraal:

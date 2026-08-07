@@ -174,11 +174,11 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller bootharoo.spec --noconfirm
-          if (-not (Test-Path "dist\Bootharoo\Bootharoo.exe")) {
-            throw "PyInstaller leverde geen dist\Bootharoo\Bootharoo.exe op"
+          if (-not (Test-Path "dist\MyBoothBox\MyBoothBox.exe")) {
+            throw "PyInstaller leverde geen dist\MyBoothBox\MyBoothBox.exe op"
           }
           Write-Host "EXE gebouwd:"
-          Get-Item "dist\Bootharoo\Bootharoo.exe" | Format-List Name, Length
+          Get-Item "dist\MyBoothBox\MyBoothBox.exe" | Format-List Name, Length
 
       - name: Installer bouwen met Inno Setup
         shell: pwsh
@@ -199,7 +199,7 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: |
-          $exe = "dist\Bootharoo\Bootharoo.exe"
+          $exe = "dist\MyBoothBox\MyBoothBox.exe"
           $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -PassThru -Wait
           $rapport = Join-Path $env:TEMP "bootharoo_selftest.txt"
           if (Test-Path $rapport) { Get-Content $rapport | Write-Host }
@@ -210,7 +210,7 @@ jobs:
         id: installer
         shell: pwsh
         run: |
-          $pad = "dist\Bootharoo_Setup_v${{ steps.versie.outputs.kaal }}.exe"
+          $pad = "dist\MyBoothBox_Setup_v${{ steps.versie.outputs.kaal }}.exe"
           if (-not (Test-Path $pad)) {
             Write-Host "Inhoud van dist\:"
             Get-ChildItem dist | Format-Table Name, Length
@@ -255,17 +255,23 @@ jobs:
           # De door de installer gestarte applicatie afsluiten, anders staat
           # die het bestandsslot op de exe vast te houden tijdens onze test.
           Start-Sleep -Seconds 8
-          $draaiend = Get-Process Bootharoo -ErrorAction SilentlyContinue
+          $draaiend = Get-Process MyBoothBox -ErrorAction SilentlyContinue
           if ($draaiend) {
             Write-Host "De installer heeft de applicatie gestart — die sluit ik nu af."
             $draaiend | Stop-Process -Force
           }
           Start-Sleep -Seconds 3
 
-          $geinstalleerd = "C:\Program Files (x86)\Bootharoo\Bootharoo.exe"
+          # Deze bouwmachine is elke keer kaal, dus er is geen vorige
+          # installatie en DefaultDirName uit installer.iss geldt: MyBoothBox.
+          # LET OP: een booth in het veld die van Bootharoo komt houdt dankzij
+          # UsePreviousAppDir zijn oude map Program Files (x86)\Bootharoo, met
+          # daarin MyBoothBox.exe. Dit pad toetst dus de nieuwe installatie,
+          # niet het opwaarderingspad — dat moet met de hand op een booth.
+          $geinstalleerd = "C:\Program Files (x86)\MyBoothBox\MyBoothBox.exe"
           if (-not (Test-Path $geinstalleerd)) {
-            Write-Host "Inhoud van C:\Program Files (x86)\Bootharoo:"
-            Get-ChildItem "C:\Program Files (x86)\Bootharoo" -ErrorAction SilentlyContinue |
+            Write-Host "Inhoud van C:\Program Files (x86)\MyBoothBox:"
+            Get-ChildItem "C:\Program Files (x86)\MyBoothBox" -ErrorAction SilentlyContinue |
               Format-Table Name, Length
             throw "Geinstalleerde exe niet gevonden op $geinstalleerd"
           }
@@ -297,8 +303,8 @@ jobs:
       - name: Installer bewaren als artefact
         uses: actions/upload-artifact@v4
         with:
-          name: Bootharoo_Setup_${{ steps.versie.outputs.tag }}
-          path: dist/Bootharoo_Setup_*.exe
+          name: MyBoothBox_Setup_${{ steps.versie.outputs.tag }}
+          path: dist/MyBoothBox_Setup_*.exe
           retention-days: 30
           if-no-files-found: error
 

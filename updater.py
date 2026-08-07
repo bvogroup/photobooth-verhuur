@@ -4,7 +4,7 @@ De repo is publiek, dus de GitHub Releases-API en de installer-assets zijn
 zonder token bereikbaar. Flow:
   1. check_for_update()  -> haalt de laatste release van het gekozen kanaal
                             op en vergelijkt de versie
-  2. download_installer() -> downloadt de Bootharoo_Setup_*.exe naar temp
+  2. download_installer() -> downloadt de MyBoothBox_Setup_*.exe naar temp
   3. run_installer()      -> start de installer (stil); die sluit de draaiende
                              app, update en herstart 'm (zie installer.iss)
 
@@ -192,7 +192,7 @@ def check_for_update(channel: str = CHANNEL_PRODUCTION) -> dict:
         r = requests.get(
             GITHUB_API_RELEASES, timeout=15,
             headers={"Accept": "application/vnd.github+json",
-                     "User-Agent": "Bootharoo-Updater"},
+                     "User-Agent": "MyBoothBox-Updater"},
         )
         if r.status_code != 200:
             return {"error": f"GitHub API {r.status_code}", "channel": channel}
@@ -239,12 +239,12 @@ def check_for_update(channel: str = CHANNEL_PRODUCTION) -> dict:
 
 
 def download_installer(url: str, progress_cb=None) -> str:
-    """Download de installer naar %TEMP%\\Bootharoo_Update.exe.
+    """Download de installer naar %TEMP%\\MyBoothBox_Update.exe.
     progress_cb(pct:int) wordt aangeroepen tijdens het downloaden.
     Return: pad naar het bestand, of "" bij fout."""
     if requests is None or not url:
         return ""
-    dest = os.path.join(tempfile.gettempdir(), "Bootharoo_Update.exe")
+    dest = os.path.join(tempfile.gettempdir(), "MyBoothBox_Update.exe")
     try:
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
@@ -273,7 +273,7 @@ def download_installer(url: str, progress_cb=None) -> str:
 
 def run_installer(path: str) -> bool:
     """Start de installer stil en keer terug. De installer sluit de draaiende
-    Bootharoo, voert de update uit en start 'm opnieuw. /SILENT toont een
+    MyBoothBox, voert de update uit en start 'm opnieuw. /SILENT toont een
     voortgangsbalk; /SUPPRESSMSGBOXES onderdrukt vragen.
 
     De booth draait via de Taakplanner als admin (RunLevel Highest), dus de

@@ -1,5 +1,5 @@
 """
-Voucher-systeem voor Bootharoo Photobooth.
+Voucher-systeem voor MyBoothBox Photobooth.
 
 Per-event voucher store in DATA_DIR/vouchers/<event_id>.json:
 

@@ -1,5 +1,5 @@
 """
-Internationalization (i18n) module for Bootharoo Photobooth.
+Internationalization (i18n) module for MyBoothBox Photobooth.
 Supports: Dutch (nl), English (en), German (de), French (fr), Spanish (es), Italian (it).
 """
 
@@ -45,21 +45,24 @@ TRANSLATIONS = {
     # ──────────────────────────────────────────────
     # GENERAL UI
     # ──────────────────────────────────────────────
+    # De programmanaam. Blijft in elke taal hetzelfde: een merknaam vertaal je
+    # niet. Beide sleutels worden op dit moment nergens opgevraagd, maar ze
+    # staan er als de naam van het programma en moeten dus kloppen.
     "app_name": {
-        "nl": "BOOTHAROO",
-        "en": "BOOTHAROO",
-        "de": "BOOTHAROO",
-        "fr": "BOOTHAROO",
-        "es": "BOOTHAROO",
-        "it": "BOOTHAROO",
+        "nl": "MYBOOTHBOX",
+        "en": "MYBOOTHBOX",
+        "de": "MYBOOTHBOX",
+        "fr": "MYBOOTHBOX",
+        "es": "MYBOOTHBOX",
+        "it": "MYBOOTHBOX",
     },
     "version": {
-        "nl": "Bootharoo Photobooth {version}",
-        "en": "Bootharoo Photobooth {version}",
-        "de": "Bootharoo Photobooth {version}",
-        "fr": "Bootharoo Photobooth {version}",
-        "es": "Bootharoo Photobooth {version}",
-        "it": "Bootharoo Photobooth {version}",
+        "nl": "MyBoothBox Photobooth {version}",
+        "en": "MyBoothBox Photobooth {version}",
+        "de": "MyBoothBox Photobooth {version}",
+        "fr": "MyBoothBox Photobooth {version}",
+        "es": "MyBoothBox Photobooth {version}",
+        "it": "MyBoothBox Photobooth {version}",
     },
     "back": {
         "nl": "\u2190 Terug",

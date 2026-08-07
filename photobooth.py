@@ -2574,13 +2574,16 @@ class PhotoboothWindow(QMainWindow):
         card_lay.setSpacing(18)
         card_lay.setAlignment(Qt.AlignCenter)
 
-        # Logo — camera icon (no text, no whitespace)
+        # Het merkteken: de MyBoothBox-camera. De inktkleurige uitvoering, want
+        # deze kaart is wit (config.COLOR_INPUT_BG) en de groene lijn haalt
+        # daarop maar 1,7:1. De groene versie staat op het donkere
+        # opstartscherm — zie splash_starter.pyw.
         logo_label = QLabel()
         logo_label.setAlignment(Qt.AlignCenter)
         logo_label.setStyleSheet("background: transparent;")
-        _logo_path = os.path.join(config.BUNDLE_DIR, "bootharoo-camera.png")
+        _logo_path = os.path.join(config.BUNDLE_DIR, "myboothbox-camera-inkt.png")
         if not os.path.exists(_logo_path):
-            _logo_path = os.path.join(config.BASE_DIR, "bootharoo-camera.png")
+            _logo_path = os.path.join(config.BASE_DIR, "myboothbox-camera-inkt.png")
         _logo_pix = QPixmap(_logo_path)
         if not _logo_pix.isNull():
             logo_label.setPixmap(_logo_pix.scaledToHeight(160, Qt.SmoothTransformation))
@@ -14989,7 +14992,7 @@ class PhotoboothWindow(QMainWindow):
             | Qt.WindowMinMaxButtonsHint
             | Qt.WindowCloseButtonHint
         )
-        self.setWindowTitle("Bootharoo — Instellingen")
+        self.setWindowTitle("MyBoothBox — Instellingen")
         self.show()
         self.showMaximized()
         try:
@@ -15042,7 +15045,7 @@ class PhotoboothWindow(QMainWindow):
             | Qt.WindowMinMaxButtonsHint
             | Qt.WindowCloseButtonHint
         )
-        self.setWindowTitle("Bootharoo — Instellingen")
+        self.setWindowTitle("MyBoothBox — Instellingen")
         self.show()
         self.showMaximized()
         try:
@@ -16664,7 +16667,7 @@ class PhotoboothWindow(QMainWindow):
                            (100 + i, grad_y + grad_h + 40 + grad_h)],
                           fill=(r, 0, 0))
 
-            draw.text((600, 1700), "Bootharoo Photobooth", fill="black",
+            draw.text((600, 1700), "MyBoothBox Photobooth", fill="black",
                       anchor="mm", font=body_font)
 
             img.save(test_path, "PNG")

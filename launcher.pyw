@@ -1,5 +1,5 @@
 """
-Bootharoo Photobooth Launcher.
+MyBoothBox Photobooth Launcher.
 
 .pyw extension = no console window.
 Redirects to splash_starter for instant visual feedback.

@@ -1,5 +1,5 @@
 """
-Bootharoo Photobooth Application
+MyBoothBox Photobooth Application
 =================================
 Photobooth software for Microsoft Surface with:
 - Canon EOS 1200D camera (via digiCamControl)
@@ -39,6 +39,10 @@ def _check_single_instance():
     Returns True if this is the only instance, False if another is already running."""
     import tempfile
     import msvcrt
+    # Deze naam blijft bewust bootharoo_*. Het slot bestaat om te voorkomen dat
+    # er twee photobooths tegelijk draaien; zou de nieuwe versie een ander slot
+    # pakken dan de oude, dan zou juist tijdens de overgang een oude
+    # Bootharoo.exe en een nieuwe MyBoothBox.exe elkaar niet meer zien.
     lock_path = os.path.join(tempfile.gettempdir(), "bootharoo_photobooth.lock")
     try:
         lock_fd = open(lock_path, "w")
@@ -132,6 +136,10 @@ def _ensure_firewall_rule():
     Silently skips if not running as admin or rule already exists.
     """
     import subprocess
+    # Ook deze naam blijft staan. Het is de sleutel waarop de regel in de
+    # Windows Firewall wordt teruggevonden: hernoemen zou op elke bestaande
+    # booth de oude regel laten staan én er een tweede bij zetten. Het is geen
+    # naam die de gebruiker in het programma tegenkomt.
     rule_name = "Bootharoo Photobooth"
     try:
         # Check if rule already exists
@@ -208,13 +216,34 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Bootharoo Photobooth")
+    app.setApplicationName("MyBoothBox Photobooth")
+
+    # Het merkicoon op elk venster van de applicatie.
+    #
+    # Windows pakt voor een venster zónder eigen icoon dat van de exe, en dat
+    # is via bootharoo.spec al icon.ico. Dat werkt alleen zolang de app
+    # bevroren draait; start iemand hem met python main.py, dan is de exe
+    # python.exe en staat er een slangetje in de taakbalk. Hier expliciet
+    # zetten dekt allebei de gevallen af, en zorgt er meteen voor dat ook
+    # losse dialoogvensters het merk dragen in plaats van het Qt-standaardje.
+    #
+    # Cosmetisch, dus in een try: een photobooth op een feest moet opkomen,
+    # ook als dit bestand ontbreekt.
+    try:
+        from PyQt5.QtGui import QIcon
+        _icoon = os.path.join(config.BUNDLE_DIR, "icon.ico")
+        if not os.path.exists(_icoon):
+            _icoon = os.path.join(config.BASE_DIR, "icon.ico")
+        if os.path.exists(_icoon):
+            app.setWindowIcon(QIcon(_icoon))
+    except Exception as _e:
+        print(f"[ICOON] venstericoon niet gezet: {_e}", flush=True)
 
     # Single instance check
     if not _check_single_instance():
         from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(None, "Bootharoo",
-                            "Bootharoo draait al!\n\nEr kan maar één instantie tegelijk draaien.")
+        QMessageBox.warning(None, "MyBoothBox",
+                            "MyBoothBox draait al!\n\nEr kan maar één instantie tegelijk draaien.")
         sys.exit(0)
 
     # Migrate data from old location to Documents/Bootharoo

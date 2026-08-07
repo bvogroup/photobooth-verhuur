@@ -1,5 +1,5 @@
 """
-Authentication module for Bootharoo Photobooth.
+Authentication module for MyBoothBox Photobooth.
 
 Handles subscription-based login against the Bootharoo CRM API.
 Stores session locally in settings.json for offline use.
