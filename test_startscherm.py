@@ -38,6 +38,19 @@ sys.path.insert(0, APP)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Het logboek van de bouwserver is Windows-cp1252, en dat kent lang niet alle
+# tekens die hier gebruikt worden — een pijltje in een boodschap liet de hele
+# toets omvallen met een UnicodeEncodeError, en daarmee de bouw. De uitvoer
+# gaat daarom expliciet in UTF-8, en wat er dan nog niet in kan wordt vervangen
+# in plaats van dat het de boel tegenhoudt. Een toets hoort om te vallen over
+# wat hij toetst, niet over hoe hij dat opschrijft.
+for _stroom in (sys.stdout, sys.stderr):
+    try:
+        _stroom.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 from PyQt5.QtCore import Qt, QRect                             # noqa: E402
 from PyQt5.QtGui import QPixmap, QPainter, QColor              # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QStackedWidget,       # noqa: E402
