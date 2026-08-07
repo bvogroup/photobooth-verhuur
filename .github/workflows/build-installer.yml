@@ -74,6 +74,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # ── De merkletters ──────────────────────────────────────────────
+      # Toetst dat Qt DM Sans en Plus Jakarta Sans werkelijk laadt, en dat de
+      # terugval op Segoe UI blijft werken als de map leeg is of een bestand
+      # stuk. Dit mag de bouw wél tegenhouden: een booth die niet opkomt omdat
+      # er iets met een lettertype is, is precies wat we willen uitsluiten.
+      - name: Merkletters controleren
+        timeout-minutes: 5
+        shell: pwsh
+        run: python test_lettertype.py
+
       # ── Schermafdrukken van de bediening ────────────────────────────
       # De opdrachtgever beoordeelt de huisstijl op wat hij ziet, niet op wat
       # er in de code staat. Dit tekent de merkstijlen met de echte Qt-motor,

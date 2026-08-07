@@ -1,55 +1,76 @@
 # De merkletters
 
-In deze map horen de lettertypebestanden van MyBoothBox. Ze gaan mee in de build
-(zie `bootharoo.spec`) en worden bij het opstarten ingelezen door `lettertype.py`.
-Er wordt niets op Windows geïnstalleerd — geen beheerdersrechten, geen handmatige
-stap per tablet.
+Hier staan de lettertypen van MyBoothBox. Ze gaan mee in de build (zie
+`bootharoo.spec`) en worden bij het opstarten ingelezen door `lettertype.py`. Er wordt
+niets op Windows geïnstalleerd — geen beheerdersrechten, geen handmatige stap per tablet.
 
-**Staat deze map leeg, dan werkt de software gewoon**, maar valt hij terug op Segoe
-UI: de letter van Windows zelf. Dan ziet de bediening er weer generiek uit, en dat
-is precies wat we hiermee oplossen.
+**Staat deze map leeg, dan werkt de software gewoon**, maar valt hij terug op Segoe UI:
+de letter van Windows zelf. Dan ziet de bediening er weer generiek uit. Dat vangnet is er
+met opzet: een photobooth op een feest moet altijd opkomen, ook als er iets mis is met
+een lettertype.
 
-## Welke bestanden hier horen
+## Wat er staat
 
-| Bestand | Waarvoor |
-|---|---|
-| `DMSans-Regular.ttf` | lopende tekst |
-| `DMSans-Medium.ttf` | knoppen en labels |
-| `DMSans-Bold.ttf` | nadruk |
-| `PlusJakartaSans-Bold.ttf` | koppen |
-| `PlusJakartaSans-ExtraBold.ttf` | de grote kop op een gastscherm |
-| `OFL.txt` | de licentie — hoort mee te gaan |
+| Bestand | Familie | Snede |
+|---|---|---|
+| `DMSans-Regular.ttf` | DM Sans | Regular |
+| `DMSans-Bold.ttf` | DM Sans | Bold |
+| `PlusJakartaSans-Regular.ttf` | Plus Jakarta Sans | Regular |
+| `PlusJakartaSans-Bold.ttf` | Plus Jakarta Sans | Bold |
+| `OFL-DMSans.txt` | de licentie | |
+| `OFL-PlusJakartaSans.txt` | de licentie | |
 
-## Twee dingen die misgaan als je ze niet weet
+Samen ruim 400 kB. Opgehaald uit de bronrepositories van de makers:
+`googlefonts/dm-fonts` en `tokotype/PlusJakartaSans`.
 
-**Geen WOFF2.** Qt leest TTF en OTF, en verder niets. De bestanden uit het
-webproject van MyBoothBox (`@fontsource-variable/...`) zijn WOFF2 en dus niet
-bruikbaar. Er moeten echte TTF's in.
+## Drie dingen die misgaan als je ze niet weet
 
-**Geen variabel lettertype.** Van een variabel bestand — één bestand voor alle
-diktes — laadt Qt5 alleen de standaarddikte. Vet wordt dan door de computer
-nagemaakt en dat ziet er slecht uit. Lever daarom de vaste snedes los aan, zoals in
-de tabel hierboven.
+**Geen WOFF2.** Qt leest TTF en OTF, en verder niets. De bestanden uit het webproject van
+MyBoothBox (`@fontsource-variable/...`) zijn WOFF2 en dus niet bruikbaar.
+
+**Geen variabel lettertype.** Van een variabel bestand — één bestand voor alle diktes —
+laadt Qt5 alleen de standaarddikte. Vet wordt dan door de computer nagemaakt en dat ziet
+er slecht uit. Vandaar vaste snedes.
+
+**Alleen Regular en Bold, en dat is geen bezuiniging.** Dit is nagemeten in de
+naamtabellen van de bestanden zelf. Een lettertypebestand draagt twee soorten
+familienaam, en Qt5 kijkt naar de eerste:
+
+| Bestand | Familie volgens Qt (nameID 1) | Snede |
+|---|---|---|
+| `DMSans-Regular.ttf` | `DM Sans` | Regular |
+| `DMSans-Bold.ttf` | `DM Sans` | Bold |
+| ~~`DMSans-Medium.ttf`~~ | **`DM Sans Medium`** | Regular |
+| ~~`PlusJakartaSans-ExtraBold.ttf`~~ | **`Plus Jakarta Sans ExtraBold`** | Regular |
+
+Medium en ExtraBold melden zich dus aan als een **eigen familie**, niet als een dikte
+binnen de familie. `QFont("DM Sans")` komt daar nooit bij uit; je zou letterlijk
+`QFont("DM Sans Medium")` moeten vragen. Ze zijn daarom weggelaten: `merk.letter()` werkt
+met Regular en Bold, en die twee zitten wél netjes in één familie.
+
+Wil je later toch een Medium, vraag hem dan op zijn eigen naam aan — en zet dat hier
+erbij, anders zoekt de volgende persoon zich suf.
 
 ## De licentie
 
-DM Sans en Plus Jakarta Sans staan allebei onder de **SIL Open Font License 1.1**.
-Die staat uitdrukkelijk toe om een lettertype met software mee te leveren, op twee
-voorwaarden: het licentiebestand gaat mee, en het lettertype wordt niet los
-verkocht. Aan allebei is hier vanzelf voldaan.
+DM Sans en Plus Jakarta Sans staan allebei onder de **SIL Open Font License 1.1**. Die
+staat uitdrukkelijk toe om een lettertype met software mee te leveren, op twee
+voorwaarden: het licentiebestand gaat mee, en het lettertype wordt niet los verkocht. Aan
+allebei is hier voldaan — vandaar de twee `OFL-*.txt` in deze map, die ook meegaan in de
+build.
 
-Zet de licentietekst als `OFL.txt` in deze map. Eén bestand volstaat voor allebei
-als je de twee copyrightregels bovenaan zet; anders `OFL-DMSans.txt` en
-`OFL-PlusJakartaSans.txt`.
+## Controleren of het werkt
 
-## Controleren of het gelukt is
+`test_lettertype.py` doet dat, en draait mee in de bouwstraat. Hij toetst drie dingen: de
+twee families worden echt geladen met hun beide snedes, een lege map valt terug op Segoe
+UI, en een stukgemaakt bestand wordt overgeslagen zonder de boel te laten vallen.
 
-Start de software en kijk in het logboek. Er hoort te staan:
+Op de booth zelf kun je het in het logboek zien:
 
 ```
-[LETTER] 5 bestand(en) geladen uit ...\fonts: DM Sans, Plus Jakarta Sans
+[LETTER] 4 bestand(en) geladen uit ...\fonts: DM Sans, Plus Jakarta Sans
 [LETTER] in gebruik — lopend: DM Sans, koppen: Plus Jakarta Sans
 ```
 
-Staat er `LET OP: DM Sans ontbreekt — teruggevallen op Segoe UI`, dan zijn de
-bestanden niet gevonden of niet leesbaar.
+Staat er `LET OP: DM Sans ontbreekt — teruggevallen op Segoe UI`, dan zijn de bestanden
+niet gevonden of niet leesbaar.

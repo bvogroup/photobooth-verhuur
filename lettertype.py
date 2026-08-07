@@ -113,16 +113,29 @@ def _stel_terugval_in(verslag):
     """Zorg dat merk.py alleen namen gebruikt van letters die er echt zijn."""
     from PyQt5.QtGui import QFontDatabase
 
-    beschikbaar = set(verslag["families"]) | set(QFontDatabase().families())
+    db = QFontDatabase()
+    beschikbaar = set(verslag["families"]) | set(db.families())
+
+    # Waar we op terugvallen moet zelf ook bestaan. Segoe UI zit in elke
+    # Windows, maar deze code draait ook op een bouwserver en ooit misschien
+    # ergens anders; een terugval naar een letter die er niet is, is geen
+    # terugval. Bestaat Segoe UI niet, dan pakken we wat Qt zelf als
+    # standaard-schreefloze aanwijst.
+    if TERUGVAL in beschikbaar:
+        terugval = TERUGVAL
+    else:
+        from PyQt5.QtGui import QFont, QFontInfo
+        terugval = QFontInfo(QFont(db.systemFont(QFontDatabase.GeneralFont))).family()
 
     if merk.LOPEND_LETTER not in beschikbaar:
         verslag["gemist"].append(
-            f"{merk.LOPEND_LETTER} ontbreekt — teruggevallen op {TERUGVAL}"
+            f"{merk.LOPEND_LETTER} ontbreekt — teruggevallen op {terugval}"
         )
-        merk.LOPEND_LETTER = TERUGVAL
+        merk.LOPEND_LETTER = terugval
     if merk.KOP_LETTER not in beschikbaar:
         # Koppen vallen liever terug op de lopende merkletter dan op de
-        # systeemletter: dan blijft in elk geval de rest van het scherm kloppen.
+        # systeemletter: staat DM Sans er wel en Plus Jakarta Sans niet, dan is
+        # het scherm nog steeds van het merk.
         vervanger = merk.LOPEND_LETTER
         verslag["gemist"].append(
             f"{merk.KOP_LETTER} ontbreekt — koppen gebruiken {vervanger}"
