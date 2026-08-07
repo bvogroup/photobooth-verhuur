@@ -577,8 +577,15 @@ def toets_tekentijd(page, dpr):
     print(f"        volle collage, schuiven uit: {uit:.2f} ms per beeldje", flush=True)
     eis(aan < 1000.0 / 25,
         f"met schuiven aan past een beeldje in de 40 ms van 25 b/s ({aan:.2f} ms)")
-    eis(uit <= aan + 1.0,
-        f"met schuiven uit is het niet duurder ({uit:.2f} tegen {aan:.2f} ms)")
+    eis(uit < 1000.0 / 25,
+        f"en met schuiven uit ook ({uit:.2f} ms)")
+    # De claim is dat schuiven niets KOST, niet dat stilstaan sneller is. De
+    # ruime marge is er omdat dit op een gedeelde bouwserver gemeten wordt: die
+    # meet zichzelf tot een factor twee uit elkaar, en dat is geen bevinding
+    # over de code. Wat er wél toe doet is de 40 ms hierboven.
+    eis(aan <= uit + 3.0,
+        f"schuiven kost niets meetbaars extra ({aan:.2f} aan tegen {uit:.2f} "
+        f"uit)")
     page.zet_schuiven(True)
 
     # En de lege toestand. Die was in de vooraf gemaakte meting het DUURSTE
