@@ -84,6 +84,16 @@ jobs:
         shell: pwsh
         run: python test_lettertype.py
 
+      # ── Kosten van het schuivende startscherm ───────────────────────
+      # De opdrachtgever wil dat de collage doorschuift. Dit meet wat dat kost
+      # met de echte Qt-motor, in plaats van erover te gissen. Het mag de bouw
+      # niet tegenhouden — het is een meting, geen eis.
+      - name: Startscherm doormeten
+        timeout-minutes: 5
+        continue-on-error: true
+        shell: pwsh
+        run: python meet_startscherm.py
+
       # ── Schermafdrukken van de bediening ────────────────────────────
       # De opdrachtgever beoordeelt de huisstijl op wat hij ziet, niet op wat
       # er in de code staat. Dit tekent de merkstijlen met de echte Qt-motor,
