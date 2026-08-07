@@ -35,6 +35,17 @@ sys.path.insert(0, APP)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# De bouwstraat draait dit op een Windows-console met codepagina 1252. Een
+# teken dat daar niet in past — een pijl, een liggend streepje uit de verkeerde
+# hoek — laat de hele toets omvallen met een UnicodeEncodeError, en dan lijkt
+# het alsof de bediening stuk is terwijl er alleen iets niet te printen viel.
+# Dat is precies één keer gebeurd; vandaar dit.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # Het logboek van de bouwserver is Windows-cp1252, en dat kent lang niet alle
 # tekens die hier gebruikt worden — een pijltje in een boodschap liet de hele
 # toets omvallen met een UnicodeEncodeError, en daarmee de bouw. De uitvoer
@@ -300,7 +311,7 @@ def toets_schermen(pb, breedte, hoogte, dpr):
     zichtbaar = deel._sharing_links_vak.currentWidget().text()
     eis(voor == na and voor_maat == na_maat,
         f"“Klaar” blijft staan waar hij staat als de printknoppen wisselen "
-        f"({voor.x()}x{voor.y()} → {na.x()}x{na.y()})")
+        f"({voor.x()}x{voor.y()} en daarna {na.x()}x{na.y()})")
     eis("nnuleer" in zichtbaar,
         f"links staat nu “{zichtbaar}” in plaats van “Printen”")
     deel._zet_printstand(False)
