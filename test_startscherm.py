@@ -38,9 +38,10 @@ sys.path.insert(0, APP)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt                                    # noqa: E402
+from PyQt5.QtCore import Qt, QRect                             # noqa: E402
 from PyQt5.QtGui import QPixmap, QPainter, QColor              # noqa: E402
-from PyQt5.QtWidgets import QApplication, QStackedWidget       # noqa: E402
+from PyQt5.QtWidgets import (QApplication, QStackedWidget,       # noqa: E402
+                             QWidget)
 
 import startscherm                                             # noqa: E402
 
@@ -134,6 +135,105 @@ def toets_fotokeuze(raw, strips, sessies):
 
 
 # ── 2. de opbouw, precies zoals photobooth.py hem aanroept ─────────────────
+def toets_vult_het_scherm(page, dpr):
+    """Het raster hoort de breedte te vullen, en de tegels de ontwerpmaat.
+
+    Op de booth besloeg het raster maar de halve breedte met een groot leeg
+    vlak ernaast. Let op de rekenregel: de maatvoering schaalt met de KORTE
+    zijde, dus de rasterbreedte volgt uit de HOOGTE — ongeveer 1,31 x de
+    hoogte. Staat het raster op de halve breedte, dan denkt de widget dat hij
+    half zo hoog is, niet half zo breed. Vandaar dat hier op allebei gemeten
+    wordt.
+    """
+    print("\nVult de collage het scherm", flush=True)
+    L = page._layout
+    deel = L.raster_b / float(L.W)
+    print(f"        raster {L.raster_b} van {L.W} punten breed", flush=True)
+    eis(0.80 <= deel <= 0.95,
+        f"het raster vult {deel*100:.0f}% van de breedte (ontwerp: 87%)")
+    eis(abs(L.raster_b - 1.307 * L.H) <= 0.02 * L.raster_b,
+        f"de rasterbreedte klopt met de hoogte ({L.raster_b} tegen "
+        f"{1.307*L.H:.0f} verwacht)")
+    eis(L.raster_x > 0 and L.raster_x + L.raster_b <= L.W,
+        f"het raster past binnen het scherm (marge {L.raster_x})")
+
+    # Een samengestelde rij moet net zo breed zijn als het raster. Zou de rij
+    # op de logische maat gemaakt worden en de tegels op de fysieke, dan liep
+    # dat hier uit elkaar.
+    strook = page._stroken[0]
+    eis(abs(strook.width() / dpr - (L.raster_b + L.gap)) <= 2,
+        f"een samengestelde rij is {strook.width()} px = "
+        f"{strook.width()/dpr:.0f} punten, raster + tussenruimte is "
+        f"{L.raster_b + L.gap}")
+    eis(abs(strook.width() / dpr / L.kolommen - (L.tw + L.gap)) <= 2,
+        "en er passen precies vijf tegels in")
+
+    # En de instructie hoort ONDER de collage te staan, over de volle breedte
+    # gecentreerd — niet ernaast.
+    onder = L.collage_onderkant(3)
+    eis(L.tekst_y(3) >= onder,
+        f"de instructie staat onder de collage (y {L.tekst_y(3):.0f} tegen "
+        f"onderkant {onder})")
+    eis(abs((L.txt_x + L.txt_w / 2) - L.W / 2) <= 2,
+        "de instructie staat horizontaal in het midden")
+    eis(abs((L.raster_x + L.raster_b / 2) - L.W / 2) <= 2,
+        "en de collage ook — ze staan onder elkaar, niet naast elkaar")
+
+
+def toets_maat_van_de_stapel(achtergrond, paden, dpr):
+    """De widget hangt in een QStackedWidget en kan een maat hebben die nergens
+    op slaat.
+
+    QStackedLayout geeft in zijn gewone stand alleen de pagina die vooraan
+    staat een maat. Een pagina die daar nog nooit gestaan heeft houdt dus de
+    maat die hij toevallig had, en de stapel kan bovendien groter uitvallen dan
+    het scherm. In beide gevallen werd de indeling op de verkeerde maat
+    gemaakt — dat is wat er op de booth misging.
+
+    Hier wordt precies dat nagebootst: de pagina wordt in een stapel gehangen
+    ZONDER ooit vooraan te staan, en die stapel is groter dan het scherm.
+    """
+    print("\nEen stapel die groter is dan het scherm", flush=True)
+    from PyQt5.QtWidgets import QApplication
+    sg = QApplication.primaryScreen().geometry()
+    print(f"        scherm is {sg.width()}x{sg.height()} punten", flush=True)
+
+    page = startscherm.Collage(achtergrond)
+    page.zet_fotos(paden)
+    stapel = QStackedWidget()
+    vulling = QWidget()
+    stapel.addWidget(vulling)          # deze staat vooraan
+    stapel.addWidget(page)             # en deze dus niet
+    stapel.setFixedSize(sg.width() * 2, int(sg.height() * 0.6))
+    stapel.move(0, 0)
+    stapel.show()
+    QApplication.processEvents()
+    page.show()
+    QApplication.processEvents()
+
+    L = page._layout
+    eis(L is not None, "er is een indeling")
+    if L is None:
+        return
+    print(f"        widget denkt {page.width()}x{page.height()}, "
+          f"indeling op {L.W}x{L.H}", flush=True)
+    eis(L.W <= sg.width() + 2 and L.H <= sg.height() + 2,
+        f"de indeling blijft binnen het scherm ({L.W}x{L.H} tegen "
+        f"{sg.width()}x{sg.height()})")
+    # Hoeveel procent van de breedte het raster vult hangt van de
+    # beeldverhouding af — op 3:2 is dat 87%, op 4:3 bijna alles. Wat áltijd
+    # moet gelden: het raster volgt de hoogte, en het past binnen de breedte.
+    eis(abs(L.raster_b - 1.307 * L.H) <= 0.02 * L.raster_b,
+        f"het raster volgt de hoogte ({L.raster_b} tegen {1.307*L.H:.0f})")
+    eis(L.raster_x >= 0 and L.raster_x + L.raster_b <= L.W,
+        f"en past binnen de breedte ({L.raster_b} van {L.W}, marge "
+        f"{L.raster_x})")
+    eis(page._vlak.width() > 0 and page._vlak.height() > 0,
+        f"het zichtbare vlak is bepaald ({page._vlak.width()}x"
+        f"{page._vlak.height()} op +{page._vlak.x()}+{page._vlak.y()})")
+    stapel.hide()
+
+
 def bouw_zoals_de_applicatie(achtergrond, paden, logisch_b, logisch_h):
     """De widget wordt aangemaakt en gevuld vóórdat hij zijn maat heeft.
 
@@ -144,6 +244,9 @@ def bouw_zoals_de_applicatie(achtergrond, paden, logisch_b, logisch_h):
     """
     page = startscherm.Collage(achtergrond)
     startmaat = (page.width(), page.height())
+    # Er is hier geen tablet; zonder beeldscherm meldt Qt 800 x 600. De maat
+    # van de Surface wordt daarom opgegeven, net als in schermafdrukken.py.
+    page.zet_zichtbaar_vlak(QRect(0, 0, logisch_b, logisch_h))
     page.zet_fotos(paden)
     stapel = QStackedWidget()
     stapel.addWidget(page)
@@ -232,9 +335,17 @@ def toets_verschuiving(page, dpr):
     eis(per_minuut * dpr < 40,
         f"in een minuut hooguit {per_minuut*dpr:.0f} fysieke pixels — niet te zien")
 
-    # De achtergrond schuift zelfstandig. Bij een LEGE collage is dat het enige
-    # wat er beweegt, en dat is de stand die op een rustige avond het langst
-    # blijft staan. Stond die stil, dan brandde juist die in.
+    # De schuivende achtergrond staat sinds beta.8 UIT. Op de booth liep hij
+    # schokkerig, en een haperende beweging leest als een storing. Het is sfeer
+    # en geen bescherming: een wazig verloop zonder scherpe rand brandt niet in.
+    eis(page._parallax is False, "de schuivende achtergrond staat standaard uit")
+    bg = [page._achtergrond_verschuiving(t) for t in range(0, 1800, 30)]
+    eis(len(set(bg)) == 1, "en de achtergrond staat dus werkelijk stil")
+    eis(not page.beweegt() or page._schuiven,
+        "met alleen de achtergrond uit hoeft er niets extra's getekend te worden")
+
+    # Aanzetten kan wel, en dan hoort hij te schuiven zonder zichtbaar te zijn.
+    page.zet_parallax(True)
     eis(page._achtergrond.width() / dpr > L.W + 8,
         f"het achtergrondveld staat overmaats klaar "
         f"({page._achtergrond.width()}x{page._achtergrond.height()} fysiek voor "
@@ -243,7 +354,7 @@ def toets_verschuiving(page, dpr):
     bg_b = max(x for x, _ in bg) - min(x for x, _ in bg)
     bg_h = max(y for _, y in bg) - min(y for _, y in bg)
     eis(bg_b > 20 and bg_h > 10,
-        f"de achtergrond schuift {bg_b:.0f}x{bg_h:.0f} punten")
+        f"aangezet schuift hij {bg_b:.0f}x{bg_h:.0f} punten")
     bg_per_min = max(abs(page._achtergrond_verschuiving(t + 60)[0]
                          - page._achtergrond_verschuiving(t)[0])
                      for t in range(0, 660, 30))
@@ -251,8 +362,9 @@ def toets_verschuiving(page, dpr):
     # op 4,3 fysieke pixels per seconde, ofwel een schermbreedte per kwartier,
     # en dat is als niet te zien beoordeeld. 258 px per minuut dus.
     eis(bg_per_min * dpr < 258,
-        f"de achtergrond doet hooguit {bg_per_min*dpr:.0f} fysieke pixels per "
-        f"minuut (ontwerp staat 258 toe) — op een wazig verloop niet te zien")
+        f"en hooguit {bg_per_min*dpr:.0f} fysieke pixels per minuut (ontwerp "
+        f"staat 258 toe)")
+    page.zet_parallax(False)
 
     # Het slotje en het serienummer liggen buiten deze widget en moeten het te
     # horen krijgen; zonder dit signaal staan juist zij de hele avond stil.
@@ -323,6 +435,7 @@ def toets_tekentijd(page, dpr):
     # dus dat hoort weg te zijn. Juist deze toestand staat op een rustige avond
     # het langst.
     leeg = startscherm.Collage(page._achtergrond_bron_pad)
+    leeg.zet_zichtbaar_vlak(QRect(0, 0, page.width(), page.height()))
     stapel = QStackedWidget()
     stapel.addWidget(leeg)
     stapel.setFixedSize(page.width(), page.height())
@@ -442,8 +555,11 @@ def main():
         uit = onderdeel("de opbouw", toets_opbouw, achtergrond, paden, dpr)
         if uit is not None:
             page, _stapel = uit
+            onderdeel("het vullen van het scherm", toets_vult_het_scherm, page, dpr)
             onderdeel("de verschuiving", toets_verschuiving, page, dpr)
             onderdeel("de tekentijd", toets_tekentijd, page, dpr)
+        onderdeel("de maat van de stapel", toets_maat_van_de_stapel,
+                  achtergrond, paden, dpr)
     finally:
         shutil.rmtree(werkmap, ignore_errors=True)
 

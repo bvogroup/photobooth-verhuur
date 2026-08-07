@@ -48,7 +48,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # schaal 1 en zie je niet wat er op de booth wazig is.
 os.environ.setdefault("QT_SCALE_FACTOR", "2")
 
-from PyQt5.QtCore import Qt                                    # noqa: E402
+from PyQt5.QtCore import Qt, QRect                             # noqa: E402
 from PyQt5.QtGui import QPixmap, QColor                        # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,    # noqa: E402
                              QPushButton, QLineEdit, QVBoxLayout,
@@ -367,6 +367,10 @@ def main():
                 # situatie die op de booth niet bestaat; dat is de reden dat
                 # de afdrukken van beta.5 goed leken.
                 blad = startscherm.Collage(achtergrond)
+                # Zonder beeldscherm meldt Qt een scherm van 800 x 600, en
+                # daar zou de indeling dan op uitkomen. Hier wordt op de maat
+                # van de tablet getekend, dus die maat wordt opgegeven.
+                blad.zet_zichtbaar_vlak(QRect(0, 0, b, h))
                 blad.zet_fotos(alle[:aantal])
                 stapel = QStackedWidget()
                 stapel.addWidget(blad)

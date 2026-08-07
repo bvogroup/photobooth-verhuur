@@ -5,9 +5,12 @@ originele wordt nooit gemuteerd. 'origineel' geeft een kopie.
 
 De volgorde van FILTERS bepaalt de volgorde op het filterscherm; 'origineel'
 staat altijd vooraan als startkeuze.
+
+Onderaan staat de KLEURSTAAL: het kleine monster waarop het filterscherm laat
+zien wat een filter doet. Zie de uitleg daar waarom dat geen foto meer is.
 """
 
-from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps, ImageFilter
 
 # (id, label) — getoond als knoppen op het filterscherm
 FILTERS = [
@@ -101,3 +104,97 @@ def apply_filter(img, fid):
     if fid == "negatief":
         return ImageOps.invert(img)
     return img.copy()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  DE KLEURSTAAL
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Tot beta.6 kreeg elk filter op het filterscherm een eigen voorbeeldFOTO: de
+# zojuist gemaakte opname, zestien keer verkleind en zestien keer bewerkt. Dat
+# kostte twee dingen.
+#
+#   Ruimte. Zestien fotootjes van 150 x 122 punten passen alleen in twee rijen,
+#   en die twee rijen aten de onderkant van het scherm op — precies de plek
+#   waar de bediening hoort te staan.
+#
+#   Tijd. Het moest per gemaakte foto opnieuw, want de foto is elke keer een
+#   andere. Zestien keer een bewerking plus zestien keer een hoekmasker, op de
+#   Python-thread die de GIL deelt met de bediening, op het moment dat de gast
+#   net op de knop heeft gedrukt.
+#
+# Een kleurstaal is geen foto en verandert dus niet mee. Hij wordt één keer
+# gerekend en daarna hergebruikt: dezelfde foto, dezelfde sessie, de hele
+# avond, elke avond. Wat de gast eraan afleest is precies wat een filter doet
+# — warmer, koeler, valer, harder, omgekeerd — en dat is waar hij op kiest.
+#
+# Waarom er huid in zit: dit is een fotobooth. Het verschil tussen "warm" en
+# "goud" zie je niet op een grijsverloop maar wel op een gezicht. Het monster
+# bevat daarom een huidverloop van licht naar donker (de bovenste twee derde),
+# een grijsramp van zwart naar wit (de onderste derde, waar contrast- en
+# helderheidsfilters op afleesbaar zijn) en één verzadigde rode stip (waar
+# "levendig" en "pastel" uit elkaar lopen).
+
+_STAAL_CACHE = {}
+
+
+def kleurstaal(breedte, hoogte):
+    """Het onbewerkte monster waar de filters overheen gaan.
+
+    Maten in ECHTE pixels, niet in punten: op een tablet op 200% is een tegel
+    van 72 x 48 punten 144 x 96 pixels, en wie hem op 72 x 48 rekent en laat
+    oprekken krijgt hem wazig terug. Dat was een van de drie fouten van
+    beta.5.
+    """
+    breedte = max(8, int(breedte))
+    hoogte = max(8, int(hoogte))
+    im = Image.new("RGB", (breedte, hoogte))
+    px = im.load()
+
+    grens = max(2, int(hoogte * 0.62))
+    for y in range(grens):
+        t = y / max(1, grens - 1)
+        for x in range(breedte):
+            u = x / max(1, breedte - 1)
+            px[x, y] = (int(246 - 96 * u - 40 * t),
+                        int(206 - 96 * u - 44 * t),
+                        int(178 - 92 * u - 42 * t))
+
+    d = ImageDraw.Draw(im)
+    for x in range(breedte):
+        v = int(16 + 223 * (x / max(1, breedte - 1)))
+        d.line([(x, grens), (x, hoogte)], fill=(v, v, v))
+
+    r = max(2, int(min(breedte, hoogte) * 0.20))
+    cx, cy = int(breedte * 0.74), int(grens * 0.42)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(190, 48, 44))
+    return im
+
+
+def _afgerond(im, straal):
+    """Ronde hoeken via een alfamasker; Qt kan een pixmap niet zelf afronden."""
+    im = im.convert("RGBA")
+    b, h = im.size
+    masker = Image.new("L", (b, h), 0)
+    ImageDraw.Draw(masker).rounded_rectangle([0, 0, b - 1, h - 1],
+                                             radius=straal, fill=255)
+    im.putalpha(masker)
+    return im
+
+
+def stalen(breedte, hoogte, straal=11):
+    """Alle filters als kleurstaal — één keer gerekend, daarna uit de kast.
+
+    Geeft [(id, label, PIL-afbeelding in RGBA)] in dezelfde volgorde als
+    FILTERS. De uitkomst wordt op maat bewaard, dus een tweede aanroep met
+    dezelfde maat kost niets meer. Er staan er hoogstens een paar in de kast
+    (één per schermmaat), dus dit groeit niet.
+    """
+    sleutel = (int(breedte), int(hoogte), int(straal))
+    if sleutel in _STAAL_CACHE:
+        return _STAAL_CACHE[sleutel]
+    monster = kleurstaal(breedte, hoogte)
+    uit = [(fid, label, _afgerond(apply_filter(monster, fid), straal))
+           for fid, label in FILTERS]
+    _STAAL_CACHE[sleutel] = uit
+    return uit

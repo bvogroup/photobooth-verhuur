@@ -26,6 +26,8 @@ from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, 
 
 import config
 import merk  # de merkwaarden: kleuren, maten, afrondingen en knopstijlen
+import bediening  # de balk met gastknoppen: onderin, op de hartlijn
+import filters as _filters  # de fotofilters en hun kleurstalen
 import startscherm  # de collage op het startscherm
 from camera import (Camera, CaptureThread, EDSDKWorker,
                      get_search_folders, snapshot_files,
@@ -1158,6 +1160,7 @@ class PhotoboothWindow(QMainWindow):
         self._filter_token = 0
         self._filter_ctx = None
         self._filter_thumb_btns = {}
+        self._filter_staal_maat = None   # (tegel, staal, schaal) van de rij die er staat
         self.countdown_value = 0
         self.session_id = None     # Timestamp ID for this session
         self._settings_template_widgets = {}
@@ -3840,6 +3843,7 @@ class PhotoboothWindow(QMainWindow):
                 # mee met dezelfde beweging als de rest.
                 page.verschoven.connect(self._verschuif_idle_bediening)
                 page.zet_schuiven(self._collage_schuiven_aan())
+                page.zet_parallax(self._collage_parallax_aan())
             except Exception as e:
                 # Het startscherm mag de booth nooit tegenhouden.
                 print(f"[COLLAGE] niet opgebouwd, terug naar het stilstaande "
@@ -8177,11 +8181,21 @@ class PhotoboothWindow(QMainWindow):
         return QPixmap.fromImage(qimg.copy())
 
     def _build_filter_page(self):
-        """Filterscherm: boven foto (links) + knoppen (rechts), onderaan een
-        filterbalk over de volle breedte met 2 rijen van 8 filters.
+        """Filterscherm: foto boven, kleurstalen eronder, bediening onderin.
 
-        Compact gehouden zodat alles op één schermhoogte past; de foto schaalt
-        altijd mee binnen z'n vak (zie _FitLabel)."""
+        Tot beta.6 stond de bediening in een kolom van 340 punten aan de
+        RECHTERkant en namen de filtervoorbeelden twee rijen fotootjes in
+        beslag. Allebei is nu weg:
+
+          - De booth staat op een luidsprekerstatief. Een tik rechts op het
+            scherm draait hem weg. Alles wat een gast aanraakt hoort daarom op
+            de hartlijn en laag; zie bediening.py.
+          - De zestien voorbeeldfoto's zijn zestien kleurstalen geworden. Die
+            passen op één rij, en juist die vrijgekomen hoogte is wat de
+            bediening onderin mogelijk maakt. Zie filters.stalen().
+
+        De foto schaalt altijd mee binnen z'n vak (zie _FitLabel).
+        """
         page = QWidget()
         page.setStyleSheet(merk.pagina(op_donker=True))
         self._filter_page = page
@@ -8189,30 +8203,26 @@ class PhotoboothWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ══ Bovenkant: foto (links) + knoppen (rechts) ══
+        # ══ Bovenkant: kop + de foto, over de volle breedte ══
         top = QWidget()
         top.setStyleSheet("background: transparent;")
-        top_lay = QHBoxLayout(top)
-        top_lay.setContentsMargins(28, 18, 22, 10)
-        top_lay.setSpacing(18)
-
-        # — Links: compacte koptekst + grote foto —
-        left = QWidget()
-        left.setStyleSheet("background: transparent;")
-        left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(2)
+        top_lay = QVBoxLayout(top)
+        top_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE,
+                                   merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP)
+        top_lay.setSpacing(2)
 
         self._filter_title = QLabel("Kies een filter")
+        self._filter_title.setAlignment(Qt.AlignCenter)
         self._filter_title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
         self._filter_title.setStyleSheet(merk.tekst(merk.OP_DONKER))
-        left_lay.addWidget(self._filter_title)
+        top_lay.addWidget(self._filter_title)
 
         self._filter_subtitle = QLabel("Tik onderin op een filter")
+        self._filter_subtitle.setAlignment(Qt.AlignCenter)
         self._filter_subtitle.setFont(merk.letter(merk.TEKST_KLEIN))
         self._filter_subtitle.setStyleSheet(merk.tekst(merk.OP_DONKER_ZACHT))
-        left_lay.addWidget(self._filter_subtitle)
-        left_lay.addSpacing(6)
+        top_lay.addWidget(self._filter_subtitle)
+        top_lay.addSpacing(merk.RUIMTE_KRAP)
 
         # Zelf-schalende foto (past altijd binnen het vak, blaast de layout
         # niet op).
@@ -8223,61 +8233,22 @@ class PhotoboothWindow(QMainWindow):
             f"color: {merk.OP_DONKER_FIJN}; background: {merk.INKT_VLAK};"
             f" border-radius: {merk.RONDING_KAART}px;"
         )
-        left_lay.addWidget(self._filter_preview_label, stretch=1)
-        top_lay.addWidget(left, stretch=1)
-
-        # — Rechts: knoppenpaneel (kaart) —
-        right = QWidget()
-        right.setFixedWidth(340)
-        right.setStyleSheet(f"QWidget {{ {merk.kaart(op_donker=True)} }}")
-        right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(merk.RUIMTE_RUIM, merk.RUIMTE_RUIM,
-                                     merk.RUIMTE_RUIM, merk.RUIMTE_RUIM)
-        right_lay.setSpacing(merk.RUIMTE)
-        right_lay.addStretch()
-
-        # Volgende foto maken — GROEN (2 regels zodat 'ie nooit afkapt)
-        self._filter_next_btn = QPushButton("Volgende\nfoto maken")
-        self._filter_next_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_next_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        self._filter_next_btn.setMinimumHeight(96)
-        self._filter_next_btn.setStyleSheet(merk.knop_hoofd())
-        self._filter_next_btn.clicked.connect(self._filter_next)
-        right_lay.addWidget(self._filter_next_btn)
-
-        # Foto opnieuw nemen — neutraal (2 regels)
-        self._filter_retake_btn = QPushButton("Foto opnieuw\nnemen")
-        self._filter_retake_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_retake_btn.setFont(merk.letter(merk.TEKST_KNOP))
-        self._filter_retake_btn.setMinimumHeight(merk.KNOP_NORMAAL)
-        self._filter_retake_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
-        self._filter_retake_btn.clicked.connect(self._filter_retake)
-        right_lay.addWidget(self._filter_retake_btn)
-
-        # Stoppen — rood
-        self._filter_stop_btn = QPushButton("Stoppen")
-        self._filter_stop_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_stop_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        self._filter_stop_btn.setMinimumHeight(merk.KNOP_MIN)
-        self._filter_stop_btn.setStyleSheet(merk.knop_stil(op_donker=True))
-        self._filter_stop_btn.clicked.connect(self._filter_stop)
-        right_lay.addWidget(self._filter_stop_btn)
-
-        right_lay.addStretch()
-        top_lay.addWidget(right)
+        top_lay.addWidget(self._filter_preview_label, stretch=1)
 
         root.addWidget(top, stretch=1)
 
-        # ══ Onderkant: filterbalk over de volle breedte (2 rijen × 8) ══
+        # ══ Midden: de kleurstalen, één rij over de volle breedte ══
         bar = QWidget()
         bar.setObjectName("filterbar")
         bar.setStyleSheet(
             f"QWidget#filterbar {{ background: {merk.INKT_VLAK};"
             f" border-top: 1px solid {merk.INKT_RAND}; }}"
         )
+        self._filter_bar = bar
         bar_lay = QVBoxLayout(bar)
-        bar_lay.setContentsMargins(24, 8, 24, 12)
-        bar_lay.setSpacing(6)
+        bar_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP,
+                                   merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP)
+        bar_lay.setSpacing(4)
 
         self._filter_bar_header = QLabel("FILTERS")
         self._filter_bar_header.setAlignment(Qt.AlignCenter)
@@ -8292,14 +8263,36 @@ class PhotoboothWindow(QMainWindow):
         grid_holder.setStyleSheet("background: transparent;")
         self._filter_thumbs_layout = QGridLayout(grid_holder)
         self._filter_thumbs_layout.setContentsMargins(0, 0, 0, 0)
-        self._filter_thumbs_layout.setHorizontalSpacing(8)
-        self._filter_thumbs_layout.setVerticalSpacing(6)
-        # Verdeel de 8 kolommen gelijk over de volle breedte (links → rechts).
-        for c in range(8):
+        self._filter_thumbs_layout.setHorizontalSpacing(merk.RUIMTE_KRAP)
+        self._filter_thumbs_layout.setVerticalSpacing(0)
+        for c in range(len(_filters.FILTERS)):
             self._filter_thumbs_layout.setColumnStretch(c, 1)
         bar_lay.addWidget(grid_holder)
 
         root.addWidget(bar)
+
+        # ══ Onderin: de bediening, hoofdknop op de hartlijn ══
+        # De knoppen zelf zijn onveranderd — zelfde tekst, zelfde signaal.
+        # Alleen hun plaats en maat komen nu uit bediening.py.
+        self._filter_next_btn = QPushButton("Volgende foto maken")
+        self._filter_next_btn.clicked.connect(self._filter_next)
+        bediening.zet_hoofdknop(self._filter_next_btn)
+
+        self._filter_retake_btn = QPushButton("Foto opnieuw nemen")
+        self._filter_retake_btn.clicked.connect(self._filter_retake)
+        bediening.zet_zijknop(self._filter_retake_btn)
+
+        self._filter_stop_btn = QPushButton("Stoppen")
+        self._filter_stop_btn.clicked.connect(self._filter_stop)
+        bediening.zet_zijknop(self._filter_stop_btn,
+                              stijl=merk.knop_stil(op_donker=True))
+
+        self._filter_balk = bediening.gastbalk(
+            hoofd=self._filter_next_btn,
+            links=self._filter_retake_btn,
+            rechts=self._filter_stop_btn,
+        )
+        root.addWidget(self._filter_balk)
 
         # BELANGRIJK: voeg de pagina toe aan de stack, anders wijst
         # pages["filter"] naar een niet-bestaande index en negeert Qt de
@@ -8307,8 +8300,14 @@ class PhotoboothWindow(QMainWindow):
         self.stack.addWidget(page)
 
     def _clear_filter_thumbs(self):
-        """Verwijder alle filter-thumbnailknoppen uit de strip."""
+        """Verwijder alle filtertegels uit de strip.
+
+        Wordt alleen nog gebruikt als de tegelmaat verandert (een andere
+        schermmaat of schermschaal). Per foto opnieuw opbouwen hoeft niet
+        meer: de kleurstaal hangt niet aan de foto.
+        """
         self._filter_thumb_btns = {}
+        self._filter_staal_maat = None
         lay = getattr(self, '_filter_thumbs_layout', None)
         if lay is None:
             return
@@ -8341,15 +8340,14 @@ class PhotoboothWindow(QMainWindow):
         self._showing_preview = True
         cur = self._photo_filters.get(photo_idx, 'origineel')
         self._photo_filters[photo_idx] = cur
-        self._filter_ctx = {'path': photo_path, 'idx': photo_idx,
-                            'base': None, 'thumbs': None}
+        self._filter_ctx = {'path': photo_path, 'idx': photo_idx, 'base': None}
         last = (photo_idx >= self.num_photos - 1)
         self._filter_title.setText(f"Foto {photo_idx + 1} van {self.num_photos}")
         self._filter_subtitle.setText("Kies hieronder een filter")
-        self._filter_next_btn.setText("Klaar" if last else "Volgende\nfoto maken")
+        self._filter_next_btn.setText("Klaar" if last else "Volgende foto maken")
         # Toon meteen de zojuist gemaakte foto (hergebruik de al-gespiegelde/
         # gecropte pixmap van _show_captured_preview) zodat het scherm nooit
-        # leeg/'ladend' oogt. De async build verfijnt 'm + voegt filters toe.
+        # leeg/'ladend' oogt. De async build verfijnt 'm daarna.
         shown = False
         try:
             cap_pm = self.countdown_live_label.pixmap()
@@ -8361,12 +8359,15 @@ class PhotoboothWindow(QMainWindow):
         if not shown:
             self._filter_preview_label.clearSource()
             self._filter_preview_label.setText("Foto laden…")
-        self._clear_filter_thumbs()
+        # De kleurstalen staan er meteen — ze hangen niet aan deze foto en
+        # hoeven dus niet op de achtergrondthread gewacht te worden. Vroeger
+        # was de balk hier leeg tot de zestien fotootjes klaar waren.
         self.stack.setCurrentIndex(self.pages["filter"])
+        self._zorg_filterstalen(cur)
         self._build_filter_thumbs_async(photo_path, photo_idx, cur)
 
     def _build_filter_thumbs_async(self, photo_path, photo_idx, current_fid):
-        """Bouw (op een bg-thread) de grote preview + 16 filter-thumbnails."""
+        """Bouw (op een bg-thread) de grote preview van de gemaakte foto."""
         self._filter_token += 1
         token = self._filter_token
         ev = self.active_event
@@ -8383,8 +8384,18 @@ class PhotoboothWindow(QMainWindow):
         def _work():
             try:
                 from PIL import Image, ImageOps
-                import filters as _filters
                 with Image.open(photo_path) as raw:
+                    # draft() laat de JPEG-decoder meteen op een kleinere maat
+                    # uitpakken in plaats van eerst 20 megapixel op te bouwen
+                    # en die daarna weg te gooien. Het scheelt op de booth het
+                    # leeuwendeel van de tijd tussen "foto gemaakt" en "foto
+                    # staat op het scherm". Dit raakt ALLEEN de voorbeeldfoto
+                    # op dit scherm; de strook en de print worden verderop uit
+                    # het originele bestand opgebouwd.
+                    try:
+                        raw.draft("RGB", (1800, 1800))
+                    except Exception:
+                        pass
                     img = ImageOps.exif_transpose(raw)
                     img = img.convert("RGB")
                 if cam_mirror:
@@ -8406,80 +8417,112 @@ class PhotoboothWindow(QMainWindow):
                 base = img
                 base.thumbnail((900, 900), Image.LANCZOS)
                 preview = _filters.apply_filter(base, current_fid)
-
-                def _round(im, rad=14):
-                    from PIL import Image as _I, ImageDraw as _D
-                    im = im.convert("RGBA")
-                    w, h = im.size
-                    mask = _I.new("L", (w, h), 0)
-                    _D.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1],
-                                                    radius=rad, fill=255)
-                    im.putalpha(mask)
-                    return im
-
-                tbox = ImageOps.fit(base, (128, 80), Image.LANCZOS)
-                thumbs = []
-                for fid, label in _filters.FILTERS:
-                    thumbs.append((fid, label, _round(_filters.apply_filter(tbox, fid), 11)))
                 self._filter_ready_signal.emit({
                     'token': token, 'idx': photo_idx,
-                    'base': base, 'preview': preview, 'thumbs': thumbs,
+                    'base': base, 'preview': preview,
                 })
             except Exception as e:
-                print(f"[FILTER] Thumb-build fout: {e}")
+                print(f"[FILTER] Preview-build fout: {e}")
 
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_filter_thumbs_ready(self, payload):
-        """Main-thread: ontvang preview + thumbnails en toon ze."""
+        """Main-thread: ontvang de grote preview en toon hem."""
         try:
             if not payload or payload.get('token') != self._filter_token:
                 return  # verouderd — andere foto of al doorgegaan
             if self._filter_ctx is None:
                 return
             self._filter_ctx['base'] = payload.get('base')
-            self._filter_ctx['thumbs'] = payload.get('thumbs')
-            cur = self._photo_filters.get(payload.get('idx'), 'origineel')
-            self._populate_filter_thumbs(payload.get('thumbs') or [], cur)
             prev = payload.get('preview')
             if prev is not None:
                 self._set_filter_preview(prev)
         except Exception as e:
-            print(f"[FILTER] thumbs_ready fout: {e}")
+            print(f"[FILTER] preview_ready fout: {e}")
 
-    def _populate_filter_thumbs(self, thumbs, current_fid):
-        """Vul de filterbalk met klikbare thumbnails — 2 rijen × 8 kolommen."""
-        self._clear_filter_thumbs()
-        # De gekozen tegel krijgt het merkgroen — dat is precies waar het merk
-        # groen voor bedoelt: een actieve toestand. Hier stond COLOR_PRIMARY, dat
-        # sinds stap 0 de merkinkt is en op dit donkere scherm dus onzichtbaar
-        # zou zijn.
-        style = (
-            f"QToolButton {{ background: {merk.INKT_HOOG}; color: {merk.OP_DONKER_ZACHT};"
-            f" border: 3px solid transparent; border-radius: {merk.RONDING_KAART}px;"
-            f" padding: 4px; }}"
-            f"QToolButton:hover {{ background: {merk.INKT_RAND}; color: {merk.OP_DONKER}; }}"
-            f"QToolButton:checked {{ border: 3px solid {merk.GROEN};"
-            f" color: {merk.OP_DONKER}; background: {merk.INKT_RAND}; font-weight: bold; }}"
-        )
-        cols = 8
-        for i, (fid, label, pil_im) in enumerate(thumbs):
+    # De stijl van één filtertegel. De gekozen tegel krijgt het merkgroen — dat
+    # is precies waar het merk groen voor bedoelt: een actieve toestand. Hier
+    # stond COLOR_PRIMARY, dat sinds stap 0 de merkinkt is en op dit donkere
+    # scherm dus onzichtbaar zou zijn.
+    _FILTER_TEGEL_STIJL = (
+        f"QToolButton {{ background: {merk.INKT_HOOG}; color: {merk.OP_DONKER_ZACHT};"
+        f" border: 3px solid transparent; border-radius: {merk.RONDING_KAART}px;"
+        f" padding: 2px; }}"
+        f"QToolButton:hover {{ background: {merk.INKT_RAND}; color: {merk.OP_DONKER}; }}"
+        f"QToolButton:checked {{ border: 3px solid {merk.GROEN};"
+        f" color: {merk.OP_DONKER}; background: {merk.INKT_RAND}; font-weight: bold; }}"
+    )
+
+    def _filterstaal_maat(self):
+        """De maat van één filtertegel, in punten, uit de werkelijke balk.
+
+        Zestien tegels naast elkaar over de volle breedte. Wat overblijft na de
+        kantlijnen en de tussenruimte wordt gelijk verdeeld. De ondergrens van
+        48 punten is de aanraaknorm: 9 millimeter op dit scherm.
+
+        De balk kan bij het bouwen nog geen maat hebben — dat is precies de
+        fout die beta.5 op de booth onbruikbaar maakte. Daarom wordt hier, als
+        de balk nog leeg is, teruggevallen op de schermbreedte en niet op de
+        640 punten die een leeg QWidget toevallig heeft.
+        """
+        n = len(_filters.FILTERS)
+        balk = getattr(self, '_filter_bar', None)
+        breed = balk.width() if balk is not None else 0
+        if breed < 200:
+            scherm = QApplication.primaryScreen()
+            breed = scherm.geometry().width() if scherm else self.width()
+        vrij = breed - 2 * merk.RUIMTE_KANTLIJN - (n - 1) * merk.RUIMTE_KRAP
+        tegel_b = max(merk.KNOP_MIN, int(vrij / n))
+        # Het monster is 3:2, net als de opnames zelf.
+        staal_b = tegel_b - 8
+        staal_h = max(24, int(staal_b * 2 / 3))
+        return tegel_b, staal_b, staal_h
+
+    def _zorg_filterstalen(self, current_fid):
+        """Zorg dat de rij kleurstalen er staat, en markeer de gekozen.
+
+        De stalen hangen niet aan de foto: ze worden één keer gerekend en
+        blijven daarna staan. Per foto wordt alleen nog het vinkje verzet.
+        Dat scheelt niet alleen tijd — de rij knippert ook niet meer weg en
+        terug tussen twee foto's door, dus een gast die net op een filter
+        richt tikt niet ineast.
+        """
+        tegel_b, staal_b, staal_h = self._filterstaal_maat()
+        maat = (tegel_b, staal_b, staal_h, round(self.devicePixelRatioF(), 3))
+        if getattr(self, '_filter_staal_maat', None) != maat or not self._filter_thumb_btns:
+            self._clear_filter_thumbs()
+            self._bouw_filterstalen(tegel_b, staal_b, staal_h)
+            self._filter_staal_maat = maat
+        for fid, btn in self._filter_thumb_btns.items():
+            btn.setChecked(fid == current_fid)
+
+    def _bouw_filterstalen(self, tegel_b, staal_b, staal_h):
+        """Zet de zestien tegels neer, één rij, over de volle breedte."""
+        # Op de fysieke pixelmaat rasteren en de schaal aan de pixmap hangen.
+        # Zonder dit tekent Qt het staal op de halve maat en laat Windows het
+        # oprekken: wazig. Zelfde fout als bij de miniaturen van beta.5.
+        dpr = float(self.devicePixelRatioF() or 1.0)
+        stalen = _filters.stalen(int(staal_b * dpr), int(staal_h * dpr),
+                                 straal=int(merk.RONDING_KNOP * dpr))
+        hoogte = staal_h + merk.TEKST_FIJN + 18
+        for i, (fid, label, pil_im) in enumerate(stalen):
             pix = self._pil_to_qpixmap(pil_im)
+            pix.setDevicePixelRatio(dpr)
             btn = QToolButton()
             btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             btn.setIcon(QIcon(pix))
-            btn.setIconSize(QSize(pix.width(), pix.height()))
+            btn.setIconSize(QSize(staal_b, staal_h))
             btn.setText(label)
             btn.setCheckable(True)
-            btn.setChecked(fid == current_fid)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFont(merk.letter(merk.TEKST_FIJN))
-            btn.setStyleSheet(style)
-            btn.setFixedSize(150, 122)
+            btn.setStyleSheet(self._FILTER_TEGEL_STIJL)
+            btn.setFixedSize(tegel_b, hoogte)
             btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
-            r, c = divmod(i, cols)
-            self._filter_thumbs_layout.addWidget(btn, r, c, alignment=Qt.AlignCenter)
+            self._filter_thumbs_layout.addWidget(btn, 0, i, alignment=Qt.AlignCenter)
             self._filter_thumb_btns[fid] = btn
+        print(f"[FILTER] {len(stalen)} kleurstalen op {tegel_b}x{hoogte} punten "
+              f"(staal {staal_b}x{staal_h} @ {dpr:g}x)")
 
     def _set_filter_preview(self, pil_img):
         """Toon de grote preview met het huidige filter. Het zelf-schalende
@@ -11850,6 +11893,28 @@ class PhotoboothWindow(QMainWindow):
         _cs_hint.setStyleSheet(dim_label_style)
         _cs_hint.setWordWrap(True)
         card_bg_lay.addWidget(_cs_hint)
+
+        # --- Schuivende achtergrond aan/uit (standaard UIT) ---
+        # Stond in beta.6 aan en liep op de booth niet vloeiend. Sfeer, geen
+        # bescherming: de achtergrond is een wazig verloop zonder scherpe rand.
+        card_bg_lay.addSpacing(6)
+        self._collage_parallax_toggle = ToggleSwitch("Achtergrond laten schuiven")
+        self._collage_parallax_toggle.setFont(QFont("DM Sans", 13))
+        self._collage_parallax_toggle.setStyleSheet(toggle_style)
+        self._collage_parallax_toggle.setChecked(self._collage_parallax_aan())
+        self._collage_parallax_toggle.toggled.connect(
+            self._on_collage_parallax_toggled)
+        card_bg_lay.addWidget(self._collage_parallax_toggle)
+
+        _cp_hint = QLabel(
+            "Staat uit. De achtergrond liep op sommige booths schokkerig, en\n"
+            "een haperende beweging valt meer op dan een stilstaande.\n"
+            "Aanzetten kan; kijk dan even of het bij jou wel vloeiend loopt."
+        )
+        _cp_hint.setFont(QFont("DM Sans", 10))
+        _cp_hint.setStyleSheet(dim_label_style)
+        _cp_hint.setWordWrap(True)
+        card_bg_lay.addWidget(_cp_hint)
 
         # Radio group
         self._idle_mode_group = QButtonGroup(self)
@@ -15737,6 +15802,29 @@ class PhotoboothWindow(QMainWindow):
                 collage.zet_schuiven(aan)
             except Exception as e:
                 print(f"[COLLAGE] schuiven omzetten mislukt: {e}", flush=True)
+
+    def _collage_parallax_aan(self):
+        """Of de achtergrond van het startscherm mag schuiven. Standaard UIT.
+
+        Op de echte booth liep die beweging niet vloeiend: de ene keer wel, de
+        andere keer niet. Haperende beweging leest als een storing; een
+        stilstaande achtergrond leest als niets. Dit is sfeer, geen
+        bescherming — de achtergrond is een wazig verloop zonder scherpe rand
+        en daar brandt niets van in. De trage verschuiving van instructie,
+        logo, slotje en serienummer staat hier los van en blijft altijd aan.
+        """
+        return bool(self._load_app_setting("collage_parallax", False))
+
+    def _on_collage_parallax_toggled(self, checked):
+        """Schakelaar 'Achtergrond laten schuiven' — onthoud en pas meteen toe."""
+        aan = bool(checked)
+        self._save_app_setting("collage_parallax", aan)
+        collage = getattr(self, "_idle_collage", None)
+        if collage is not None:
+            try:
+                collage.zet_parallax(aan)
+            except Exception as e:
+                print(f"[COLLAGE] achtergrond omzetten mislukt: {e}", flush=True)
 
     def _printer_status_enabled(self):
         """Of de printer-statusuitlezing (storingsmeldingen) aan staat.

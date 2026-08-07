@@ -56,6 +56,27 @@ uitrekken — en dat is precies waarom de instructie en het logo op de booth waz
 waren. Elke pixmap hier wordt daarom op logische maat x schermschaal gemaakt,
 met setDevicePixelRatio() erop, zodat Qt hem één op één neerzet. Het tekenen
 zelf blijft in logische punten; alleen het doek is fijner.
+
+En wat er in beta.6 nog niet klopte
+-----------------------------------
+**De maat van de widget is niet de maat van het scherm.** De collage is de
+idle-pagina, en die hangt in een QStackedWidget. QStackedLayout geeft in zijn
+gewone stand ALLEEN de pagina die vooraan staat een maat; een pagina die nog
+nooit vooraan gestaan heeft, houdt de maat die hij toevallig had. Daar komt bij
+dat de stapel groter kan uitvallen dan het scherm. De indeling werd dus gemaakt
+op een maat die nergens op sloeg, en het raster besloeg nog maar de halve
+breedte terwijl de tegels te klein bleven.
+
+De indeling gaat daarom niet meer over self.width()/height() maar over het vlak
+dat werkelijk te zien is: de doorsnede van deze widget met het scherm. Elders in
+photobooth.py stond die omrekening al, voor het slotje (_position_idle_lock), en
+om precies dezelfde reden.
+
+Let op de rekenregel die hierbij hoort: de rasterbreedte volgt uit de HOOGTE,
+niet uit de breedte. De maatvoering schaalt met de korte zijde, dus
+rasterbreedte is ongeveer 1,31 x de hoogte. Zie je het raster op de halve
+breedte staan, dan is de hoogte die de widget denkt te hebben de helft van wat
+hij hoort te zijn — en niet de breedte. Dat staat er ook bij in het logboek.
 """
 
 import math
@@ -63,7 +84,8 @@ import os
 import re
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QTimer, QRect, QElapsedTimer, pyqtSignal
+from PyQt5.QtCore import (Qt, QTimer, QRect, QPoint, QElapsedTimer,
+                          pyqtSignal)
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QPainterPath, QFontMetrics
 from PyQt5.QtWidgets import QWidget
 
@@ -118,6 +140,21 @@ DRIFT_PERIODE_Y = 17 * 60.0
 BG_OVERMAAT = 1.15      # hoeveel groter dan het scherm het veld staat
 BG_PERIODE_X = 10 * 60.0
 BG_PERIODE_Y = 13 * 60.0
+
+# ...maar STANDAARD UIT. Op de echte booth liep die pan niet vloeiend: "de ene
+# keer doet hij het wel, de andere keer niet". Een beweging die hapert leest als
+# een storing; een stilstaande achtergrond leest als niets. Bij twijfel wint dus
+# stilstand.
+#
+# Dat het scherm daarmee onbeschermd zou zijn, klopt niet. De achtergrond is een
+# wazig verloop zonder één scherpe rand — daar brandt niets van in. Het risico
+# zit in de instructie, het logo, het slotje en het serienummer, en die worden
+# beschermd door de verschuiving hierboven. Die kost een verplaatsing van de
+# tekenpositie en verder niets, en blijft dus altijd aan.
+#
+# De pan is aan te zetten met de schakelaar bij de instellingen, voor wie hem op
+# zijn eigen booth wil proberen.
+PARALLAX_STANDAARD = False
 
 
 class Layout:
@@ -261,8 +298,12 @@ class Collage(QWidget):
         self._achtergrond_bron = QPixmap(achtergrond_pad) if achtergrond_pad else QPixmap()
         self._achtergrond = QPixmap()     # op schermmaat, één keer geschaald
         self._layout = None
+        self._vlak = QRect()      # het zichtbare deel van deze widget
+        self._vast_vlak = None    # opgegeven vlak; alleen voor gereedschap
         self._dpr = 1.0           # schermschaal; 2,0 op een tablet die op 200% staat
         self._beeld_verouderd = False
+        self._in_paint = False
+        self._parallax = PARALLAX_STANDAARD
 
         self._paden = []          # de bronbestanden, op volgorde van aankomst
         self._miniaturen = []     # dezelfde volgorde, op tegelmaat
@@ -292,6 +333,7 @@ class Collage(QWidget):
 
     # ── leven ──────────────────────────────────────────────────────────────
     def start(self):
+        self._stel_tempo_in()
         if not self._timer.isActive():
             self._timer.start()
         # Meteen één keer melden, zodat het slotje en het serienummer op hun
@@ -316,12 +358,16 @@ class Collage(QWidget):
         if aan == self._schuiven:
             return
         self._schuiven = aan
-        self._timer.setInterval(int(1000 / (BEELDJES_S if aan else BEELDJES_S_STIL)))
-        print(f"[COLLAGE] schuiven {'AAN' if aan else 'UIT'} — "
-              f"{BEELDJES_S if aan else BEELDJES_S_STIL} beeldjes per seconde; "
-              f"de verschuiving tegen inbranden blijft hoe dan ook aan",
-              flush=True)
+        self._stel_tempo_in()
+        print(f"[COLLAGE] schuiven {'AAN' if aan else 'UIT'} — de verschuiving "
+              f"tegen inbranden blijft hoe dan ook aan", flush=True)
         self.update()
+
+    def _stel_tempo_in(self):
+        """Hoe vaak er getekend moet worden, gegeven wat er beweegt."""
+        b = BEELDJES_S if self.beweegt() else BEELDJES_S_STIL
+        self._timer.setInterval(int(1000 / b))
+        print(f"[COLLAGE] {b} beeldjes per seconde", flush=True)
 
     def _tik(self):
         # Alleen hertekenen wat beweegt: het gebied van de collage, plus de
@@ -343,10 +389,17 @@ class Collage(QWidget):
             return
         self._volgend_verslag = nu + 60_000
         gem = self._teken_som / self._beeldjes
+        L = self._layout
         print(f"[COLLAGE] tekentijd over {self._beeldjes} beeldjes: gemiddeld "
               f"{gem:.2f} ms, duurste {self._teken_ergste:.2f} ms "
-              f"(schuiven {'aan' if self._schuiven else 'uit'}, "
-              f"{self._timer.interval()} ms per beeldje beschikbaar)", flush=True)
+              f"(schuiven {'aan' if self._schuiven else 'uit'}, achtergrond "
+              f"{'aan' if self._parallax else 'uit'}, "
+              f"{self._timer.interval()} ms per beeldje beschikbaar) | "
+              f"zichtbaar {self._vlak.width()}x{self._vlak.height()}, raster "
+              f"{L.raster_b if L else 0} = "
+              f"{100.0 * (L.raster_b if L else 0) / max(1, self._vlak.width()):.0f}%, "
+              f"rij {self._stroken[0].width() if self._stroken else 0} px",
+              flush=True)
         self._beeldjes = 0
         self._teken_som = 0.0
         self._teken_ergste = 0.0
@@ -396,19 +449,49 @@ class Collage(QWidget):
     def _achtergrond_verschuiving(self, t):
         """Waar het achtergrondveld nu staat — een uitsnede, geen hertekening.
 
-        Het veld staat overmaats klaar; hier wordt alleen bepaald welk stuk
-        ervan in beeld komt. De volle slag is ongeveer een zesde schermbreedte
-        in tien minuten: op zijn snelst ruim een punt per seconde, en op een
-        wazig verloop is dat niet te zien.
+        Staat de pan uit (en dat is de standaard), dan wordt het veld netjes
+        gecentreerd neergezet en staat het stil.
         """
         L = self._layout
         if L is None or self._achtergrond.isNull():
             return 0.0, 0.0
         speling_x = max(0.0, self._achtergrond.width() / self._dpr - L.W)
         speling_y = max(0.0, self._achtergrond.height() / self._dpr - L.H)
+        if not self._parallax:
+            return -speling_x / 2.0, -speling_y / 2.0
         fx = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_X)
         fy = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_Y + 1.1)
         return -speling_x * fx, -speling_y * fy
+
+    def zet_parallax(self, aan):
+        """De schuivende achtergrond aan of uit. Standaard uit.
+
+        Op de echte booth liep die pan niet vloeiend — "de ene keer doet hij
+        het wel, de andere keer niet". Een beweging die hapert leest als een
+        storing, een stilstaande achtergrond leest als niets, dus bij twijfel
+        wint stilstand. Het is sfeer, geen bescherming: de achtergrond is een
+        wazig verloop zonder scherpe rand en daar brandt niets van in. Wat wél
+        beschermd moet worden — de instructie, het logo, het slotje, het
+        serienummer — wordt beschermd door de trage verschuiving, en die staat
+        hier los van en blijft altijd aan.
+        """
+        aan = bool(aan)
+        if aan == self._parallax:
+            return
+        self._parallax = aan
+        self._stel_tempo_in()
+        print(f"[COLLAGE] schuivende achtergrond {'AAN' if aan else 'UIT'} — de "
+              f"verschuiving tegen inbranden blijft hoe dan ook aan", flush=True)
+        self.update()
+
+    def beweegt(self):
+        """Beweegt er iets dat per beeldje hertekend moet worden?
+
+        Zo niet, dan hoeft er nog maar twee keer per seconde getekend te
+        worden: de verschuiving tegen inbranden verplaatst hooguit één punt
+        per twee seconden.
+        """
+        return self._schuiven or self._parallax
 
     # ── inhoud ─────────────────────────────────────────────────────────────
     def zet_fotos(self, paden):
@@ -478,44 +561,126 @@ class Collage(QWidget):
         super().resizeEvent(event)
         self._zorg_layout()
 
+    def moveEvent(self, event):
+        """Verschuift de widget, dan verschuift het zichtbare vlak mee."""
+        super().moveEvent(event)
+        self._zorg_layout()
+
+    def zet_zichtbaar_vlak(self, vlak):
+        """Leg het zichtbare vlak vast in plaats van het van het scherm af te
+        leiden.
+
+        Alleen voor gereedschap: de schermafdrukken en de toetsen tekenen op de
+        maat van de tablet terwijl er geen tablet is — zonder beeldscherm meldt
+        Qt een scherm van 800 x 600 en zou de indeling daarop uitkomen. Op de
+        booth wordt dit nooit gezet en blijft het scherm de baas.
+        """
+        self._vast_vlak = QRect(vlak) if vlak is not None else None
+        self._zorg_layout()
+
+    def _zichtbaar_vlak(self):
+        """Het vlak waarop de indeling gemaakt wordt: wat er wérkelijk te zien is.
+
+        Niet zomaar self.width() en self.height(). Deze widget IS de
+        idle-pagina en hangt in een QStackedWidget. QStackedLayout geeft in
+        zijn gewone stand alleen de pagina die vooraan staat een maat, dus een
+        pagina die daar nog niet gestaan heeft houdt de maat die hij toevallig
+        had. En de stapel kan groter uitvallen dan het scherm. In beide
+        gevallen wordt de indeling gemaakt op een maat die niet klopt, en dat
+        is waarom het raster op de booth de halve breedte besloeg.
+
+        Elders in photobooth.py staat deze omrekening al, voor het slotje
+        (_position_idle_lock), en om precies dezelfde reden.
+
+        Geeft een QRect terug in de coördinaten van deze widget.
+        """
+        eigen = QRect(0, 0, max(0, self.width()), max(0, self.height()))
+        if self._vast_vlak is not None:
+            snee = eigen.intersected(self._vast_vlak)
+            return snee if not snee.isEmpty() else eigen
+        try:
+            from PyQt5.QtWidgets import QApplication
+            scherm = self.screen() if hasattr(self, "screen") else None
+            if scherm is None:
+                scherm = QApplication.primaryScreen()
+            if scherm is not None:
+                sg = scherm.geometry()
+                op_scherm = QRect(self.mapFromGlobal(sg.topLeft()), sg.size())
+                snee = eigen.intersected(op_scherm)
+                # Alleen vertrouwen als er werkelijk een scherm gevonden is.
+                # Een doorsnede van niets betekent dat de widget nog nergens
+                # staat; dan is zijn eigen maat de beste gok die er is.
+                if snee.width() >= 320 and snee.height() >= 240:
+                    return snee
+        except Exception:
+            pass
+        return eigen
+
     def _zorg_layout(self):
         """De enige plek waar de maatvoering vandaan komt.
 
-        Verandert de schermmaat of de schermschaal, dan is ALLES wat eraan
-        vastzit ongeldig: de achtergrond, het logo, de instructie, en ook de
-        miniaturen en de rijen. Die laatste twee werden in beta.5 vergeten.
+        Verandert het zichtbare vlak of de schermschaal, dan is ALLES wat
+        eraan vastzit ongeldig: de achtergrond, het logo, de instructie, en
+        ook de miniaturen en de rijen. Die laatste twee werden in beta.5
+        vergeten.
         """
-        if self.width() <= 0 or self.height() <= 0:
+        vlak = self._zichtbaar_vlak()
+        if vlak.width() <= 0 or vlak.height() <= 0:
             return None
         dpr = float(self.devicePixelRatioF() or 1.0)
-        if (self._layout is None or self._layout.W != self.width()
-                or self._layout.H != self.height()
+        if (self._layout is None or vlak != self._vlak
                 or abs(dpr - self._dpr) > 1e-6):
             self._dpr = dpr
-            self._layout = Layout(self.width(), self.height())
+            self._vlak = vlak
+            self._layout = Layout(vlak.width(), vlak.height())
             self._achtergrond = QPixmap()
             self._logo = QPixmap()
             self._tekst = QPixmap()
             self._beeld_verouderd = True
             self._meld_maatvoering()
         if self._beeld_verouderd:
+            if self._in_paint:
+                # Vijftien miniaturen maken kost een paar honderd milliseconde.
+                # Dat middenin een beeldje doen geeft precies het haperen waar
+                # de opdrachtgever over viel. Dus: even later, buiten het
+                # tekenen om.
+                QTimer.singleShot(0, self._herbouw_nu)
+            else:
+                self._beeld_verouderd = False
+                self._herbouw_beeld()
+        return self._layout
+
+    def _herbouw_nu(self):
+        if self._beeld_verouderd and self._layout is not None:
             self._beeld_verouderd = False
             self._herbouw_beeld()
-        return self._layout
+            self.update()
 
     def _meld_maatvoering(self):
         """Eén regel in het logboek: wat er werkelijk gekozen is.
 
         Anders is de enige manier om erachter te komen dat er iets mis is met
-        de maatvoering, een foto van het scherm. Dat is deze keer de dure weg
-        gebleken.
+        de maatvoering, een foto van het scherm. Dat is nu twee keer de dure
+        weg gebleken.
+
+        De verhouding achteraan is de belangrijkste: dat is hoeveel van de
+        breedte het raster vult. Hoort ongeveer 87% te zijn. Staat daar de
+        helft, dan denkt de widget dat hij half zo hoog is als hij is — de
+        rasterbreedte volgt namelijk uit de HOOGTE, niet uit de breedte.
         """
         L = self._layout
         f = lambda v: int(round(v * self._dpr))
-        print(f"[COLLAGE] scherm {L.W}x{L.H} logisch @ {self._dpr:g}x = "
-              f"{f(L.W)}x{f(L.H)} fysiek | raster {L.kolommen}x{L.rijen} "
-              f"({L.n} tegels) | tegel {L.tw}x{L.th} logisch = "
-              f"{f(L.tw)}x{f(L.th)} fysiek | rasterbreedte {L.raster_b}, "
+        eigen = f"{self.width()}x{self.height()}"
+        vlak = f"{self._vlak.width()}x{self._vlak.height()}"
+        plek = f"+{self._vlak.x()}+{self._vlak.y()}"
+        print(f"[COLLAGE] widget {eigen} | zichtbaar {vlak}{plek} logisch @ "
+              f"{self._dpr:g}x = {f(L.W)}x{f(L.H)} fysiek"
+              f"{'  (LET OP: widget wijkt af van zichtbaar vlak)' if eigen != vlak else ''}",
+              flush=True)
+        print(f"[COLLAGE] raster {L.kolommen}x{L.rijen} ({L.n} tegels) | tegel "
+              f"{L.tw}x{L.th} logisch = {f(L.tw)}x{f(L.th)} fysiek | "
+              f"rasterbreedte {L.raster_b} van {L.W} = "
+              f"{100.0 * L.raster_b / max(1, L.W):.0f}% (hoort ~87%) | "
               f"zijmarge {L.raster_x}", flush=True)
 
     def _herbouw_beeld(self):
@@ -708,7 +873,11 @@ class Collage(QWidget):
 
     # ── tekenen ────────────────────────────────────────────────────────────
     def paintEvent(self, event):
-        L = self._zorg_layout()
+        self._in_paint = True
+        try:
+            L = self._zorg_layout()
+        finally:
+            self._in_paint = False
         if L is None:
             return
         self._zorg_achtergrond()
@@ -719,10 +888,15 @@ class Collage(QWidget):
         t = self._klok.elapsed() / 1000.0
         p = QPainter(self)
 
+        # Alles wordt getekend binnen het ZICHTBARE vlak. Is de widget groter
+        # dan het scherm — en dat kan, zie _zichtbaar_vlak — dan ligt dat vlak
+        # niet op (0,0) en moet er dus verschoven worden.
+        if self._vlak.topLeft() != QPoint(0, 0):
+            p.translate(self._vlak.x(), self._vlak.y())
+
         # 1. achtergrond — één blit van een uitsnede uit het overmaatse veld.
         #    Er wordt hier niets geschaald: dat is bij het klaarzetten al
-        #    gebeurd. Het veld schuift langzaam, want bij een lege collage is
-        #    dit het enige wat er staat.
+        #    gebeurd.
         ox, oy = self._achtergrond_verschuiving(t)
         p.drawPixmap(int(round(ox)), int(round(oy)), self._achtergrond)
 
