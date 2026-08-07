@@ -70,6 +70,30 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # ── Schermafdrukken van de bediening ────────────────────────────
+      # De opdrachtgever beoordeelt de huisstijl op wat hij ziet, niet op wat
+      # er in de code staat. Dit tekent de merkstijlen met de echte Qt-motor,
+      # zonder beeldscherm, op 2736 x 1824 — de resolutie van de Surface Pro 7.
+      # Ze hangen als artefact aan de run, zodat je bij elke tak kunt kijken
+      # wat er veranderd is.
+      #
+      # Deze stap mag de build niet tegenhouden: het is een plaatje, geen test.
+      - name: Schermafdrukken van de bediening maken
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          python schermafdrukken.py --map schermafdrukken
+          Get-ChildItem schermafdrukken -ErrorAction SilentlyContinue |
+            Format-Table Name, Length
+
+      - name: Schermafdrukken aan de run hangen
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: schermafdrukken-bediening
+          path: schermafdrukken/*.png
+          if-no-files-found: warn
+
       - name: Inno Setup installeren
         shell: pwsh
         run: |

@@ -43,3 +43,7 @@ desktop.ini
 # Claude
 .claude/
 _tmp_qw410.pdf
+
+# Schermafdrukken van de bediening (schermafdrukken.py) — lokale uitvoer,
+# hoort niet in de repo; in de bouwstraat hangen ze als artefact aan de run.
+schermafdrukken/
