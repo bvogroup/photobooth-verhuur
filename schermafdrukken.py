@@ -363,9 +363,12 @@ def main():
     # onderscheiden?
     def gastschermen():
         pb = proefvenster.leen_photobooth()
+        # Een echte fotostrook en een echte boemerang-GIF op schijf, zodat de
+        # afdrukken laten zien wat de gast werkelijk ziet en niet een leeg vak.
+        sessie = proefvenster.nepsessie(os.path.join(map_naam, "_nepsessie"))
         bewaar = []
         for naam, venster, _widget, hoofd in proefvenster.gastschermen(
-                pb, PUNTEN_BREED, PUNTEN_HOOG):
+                pb, PUNTEN_BREED, PUNTEN_HOOG, sessie=sessie):
             bewaar.append(venster)
             knop = getattr(venster, hoofd)
             midden = knop.mapTo(venster, knop.rect().center())

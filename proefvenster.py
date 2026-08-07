@@ -37,11 +37,17 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow,        # noqa: E402
 
 # Alles wat photobooth.py bij het importeren aan hardware en netwerk optuigt.
 # Er wordt hieronder niets van gebruikt; het gaat om de vensteropbouw.
+#
+# qrcode staat hier BEWUST NIET tussen. Dat is geen hardware en geen netwerk
+# maar een tekenaar, en er staat een QR-code op het startscherm. Werd hij
+# vervangen, dan bleef die code onzichtbaar op de afdrukken terwijl hij op de
+# booth wel stond — precies de soort blinde vlek waar beta.5 op stukliep. Wat
+# een afdruk niet laat zien, wordt niet beoordeeld.
 _VERVANGEN = (
     "edsdk_wrapper", "win32print", "win32ui", "win32con", "win32gui",
     "win32api", "pythoncom", "uiautomation", "serial", "serial.tools",
     "serial.tools.list_ports", "usb", "usb.core", "usb.util", "boto3",
-    "botocore", "cv2", "qrcode", "requests", "truststore",
+    "botocore", "cv2", "requests", "truststore",
 )
 
 
@@ -84,9 +90,13 @@ class Proefvenster(QMainWindow):
         "_build_filter_page", "_build_review_page", "_adapt_review_layout",
         "_pil_to_qpixmap", "_filterstaal_maat", "_zorg_filterstalen",
         "_bouw_filterstalen", "_clear_filter_thumbs",
+        "_werk_zijkolom_bij", "_toon_boemerang", "_stop_boemerang",
+        "_zijkolom_breed",
+        "_zet_printstand", "_display_review_strip",
     )
     OVERGENOMEN = ("_FILTER_TEGEL_STIJL", "_REVIEW_QR_HOOG",
-                   "_REVIEW_QR_KAART_HOOG", "_REVIEW_MELDING_BREED")
+                   "_REVIEW_QR_KAART_HOOG", "_REVIEW_ZIJ_BREED",
+                   "_REVIEW_MELDING_HOOG", "_REVIEW_BAND_TEKST")
 
     def __init__(self, pb, breedte, hoogte):
         super().__init__()
@@ -108,17 +118,73 @@ class Proefvenster(QMainWindow):
     def screen(self):
         return self._nepscherm
 
+    # Wat _display_review_strip van een echte sessie verwacht. Zonder sessie
+    # zijn dit lege waarden; nepsessie() hieronder vult ze met echte bestanden.
+    strip_path = ""
+    display_strip_path = ""
+    display_single_strip_path = ""
+    active_event = None
+    _cached_strip_path = ""
+
     # De handlers waar de knoppen aan hangen. Ze doen hier niets: het gaat om
     # waar de knop staat, niet om wat hij doet.
     def _niets(self, *a, **k):
         pass
 
     _on_review_photos_ok = _on_review_photos_redo = _niets
-    _on_review_print_yes = _on_review_print_no = _niets
+    _on_review_print_yes = _on_review_print_no = _on_review_stop = _niets
     _filter_next = _filter_retake = _filter_stop = _niets
     _go_done = _go_email_input = _sharing_do_print = _sharing_show_qr = _niets
     _on_inline_print_cancel = _on_inline_print_redo = _niets
-    _on_sharing_countdown_tick = _display_review_strip = _niets
+    _on_sharing_countdown_tick = _niets
+
+
+def nepsessie(map_naam):
+    """Een fotostrook en een boemerang op schijf, zoals een sessie ze achterlaat.
+
+    Echte bestanden, want ze gaan door de echte _display_review_strip en de
+    echte QMovie. Wat erin staat is nagemaakt — er is geen camera — maar het
+    formaat, de verhouding en de weg erheen zijn die van de booth: een staande
+    strook van 1200 x 1800 en een bewegende GIF op de maat uit
+    config.BOOMERANG_SIZE.
+    """
+    from PIL import Image, ImageDraw
+    os.makedirs(map_naam, exist_ok=True)
+
+    # De strook: vier liggende opnames onder elkaar met een rand eromheen,
+    # zoals een 2x6-strook eruitziet.
+    strook = Image.new("RGB", (1200, 1800), (250, 248, 244))
+    d = ImageDraw.Draw(strook)
+    tinten = [(198, 156, 130), (122, 148, 168), (176, 140, 168), (150, 170, 128)]
+    marge, tussen = 60, 30
+    vak_b = 1200 - 2 * marge
+    vak_h = (1800 - 2 * marge - 3 * tussen - 150) // 4
+    for i, tint in enumerate(tinten):
+        y = marge + i * (vak_h + tussen)
+        d.rectangle([marge, y, marge + vak_b, y + vak_h], fill=tint)
+        # een gezicht-achtige vorm, zodat de verhouding herkenbaar is
+        r = vak_h // 3
+        cx, cy = marge + vak_b // 2, y + vak_h // 2
+        d.ellipse([cx - r, cy - r, cx + r, cy + r],
+                  fill=tuple(min(255, k + 40) for k in tint))
+    d.text((marge, 1800 - 130), "MyBoothBox", fill=(22, 32, 45))
+    strookpad = os.path.join(map_naam, "strook.jpg")
+    strook.save(strookpad, "JPEG", quality=90)
+
+    # De boemerang: acht beeldjes heen en terug, op 480 x 320.
+    beeldjes = []
+    for k in range(8):
+        f = Image.new("RGB", (480, 320), (30, 40, 55))
+        g = ImageDraw.Draw(f)
+        x = 140 + k * 24
+        g.ellipse([x, 90, x + 200, 290], fill=(214, 168, 138))
+        g.rectangle([0, 300, 480, 320], fill=(148, 214, 10))
+        beeldjes.append(f)
+    heen_en_terug = beeldjes + beeldjes[-2:0:-1]
+    gifpad = os.path.join(map_naam, "boemerang.gif")
+    heen_en_terug[0].save(gifpad, save_all=True, append_images=heen_en_terug[1:],
+                          duration=66, loop=0, optimize=True)
+    return strookpad, gifpad
 
 
 def _afronden(venster, breedte, hoogte):
@@ -127,7 +193,7 @@ def _afronden(venster, breedte, hoogte):
     QApplication.processEvents()
 
 
-def gastschermen(pb, breedte, hoogte):
+def gastschermen(pb, breedte, hoogte, sessie=None):
     """Bouw de schermen die een gast tijdens een sessie aanraakt.
 
     Geeft [(naam, venster, widget, hoofdknop-naam)]. De vensters moeten door de
@@ -157,6 +223,7 @@ def gastschermen(pb, breedte, hoogte):
     _afronden(v, breedte, hoogte)
     uit.append(("filterscherm", v, v._filter_page, "_filter_next_btn"))
 
+    strookpad, gifpad = (sessie or (None, None))
     for naam, index, hoofd in (
             ("zijn-de-fotos-goed-gelukt", 0, "_review_confirm_yes_btn"),
             ("wil-je-ze-geprint", 1, "_review_print_yes_btn"),
@@ -168,6 +235,19 @@ def gastschermen(pb, breedte, hoogte):
         _afronden(v, breedte, hoogte)
         v._review_panel_stack.setCurrentIndex(index)
         v._adapt_review_layout()
+        if strookpad:
+            v.strip_path = v.display_strip_path = strookpad
+            # Op het deelscherm hoort de QR erbij; die groep wordt normaal door
+            # _update_inline_qr aangezet en dat pad hangt aan een echte upload.
+            if index == 2:
+                v._inline_qr_box.show()
+            # De boemerang komt op de booth een paar seconden later binnen, via
+            # het gif_complete-signaal. Hier wordt precies datzelfde pad
+            # gelopen: dezelfde methode, met de GIF van schijf.
+            v._toon_boemerang(gifpad)
+            v._werk_zijkolom_bij()
+            _afronden(v, breedte, hoogte)
+            v._display_review_strip()
         _afronden(v, breedte, hoogte)
         uit.append((naam, v, v.stack.currentWidget(), hoofd))
 

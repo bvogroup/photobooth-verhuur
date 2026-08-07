@@ -20,12 +20,18 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QImage
 
 
-def generate_qr_pixmap(url, size=400):
+def generate_qr_pixmap(url, size=400, smooth=True):
     """Generate a QR code as a QPixmap.
 
     Args:
         url: The URL to encode in the QR code
         size: Desired size in pixels
+        smooth: True vervaagt de randen bij het schalen. Dat staat mooier op
+            een deelscherm dat van dichtbij bekeken wordt, maar het maakt de
+            code slechter leesbaar: een camera moet zwart van wit kunnen
+            scheiden, en een grijze overgang helpt daar niet bij. Zet hem op
+            False waar de code gescand moet worden van een afstand — zoals de
+            QR op het startscherm.
 
     Returns:
         QPixmap with the QR code
@@ -51,6 +57,8 @@ def generate_qr_pixmap(url, size=400):
 
     pixmap = QPixmap.fromImage(qimage)
     if size:
-        pixmap = pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pixmap = pixmap.scaled(
+            size, size, Qt.KeepAspectRatio,
+            Qt.SmoothTransformation if smooth else Qt.FastTransformation)
 
     return pixmap

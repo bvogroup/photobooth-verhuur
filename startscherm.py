@@ -86,7 +86,8 @@ from datetime import datetime
 
 from PyQt5.QtCore import (Qt, QTimer, QRect, QPoint, QElapsedTimer,
                           pyqtSignal)
-from PyQt5.QtGui import QPixmap, QPainter, QColor, QPainterPath, QFontMetrics
+from PyQt5.QtGui import (QPixmap, QPainter, QColor, QPainterPath,
+                         QFontMetrics, QPen)
 from PyQt5.QtWidgets import QWidget
 
 import config
@@ -100,6 +101,25 @@ TILE_W, TILE_H = 456, 285      # tegel 16:10
 TXT_W, TXT_H = 1420, 267       # het instructieblok
 LOGO_W, LOGO_H = 520, 376
 RONDING = 12        # hoekafronding van een tegel
+
+# De verhuurvraag linksonder: een regeltje, een kronkelende pijl, en een QR
+# naar de site. Alle drie in ONTWERPPIXELS, net als de rest hierboven.
+#
+# Over de maat van die QR. Hij moet gescand worden van de afstand waarop iemand
+# geïnteresseerd raakt, en dat is niet de meter waarop je het scherm ziet maar
+# de halve meter waarop je ernaartoe loopt. 300 ontwerppixels is 28 mm op het
+# glas; daar komt een telefoon vanaf een centimeter of veertig doorheen. Groter
+# zou beter scannen en het scherm overnemen — dit is een uitnodiging, geen
+# advertentie.
+#
+# En het adres blijft kort en zonder toevoegingen (config.BOOTH_QR_URL). Elk
+# teken erbij maakt de code dichter en dus slechter leesbaar; de herkomst wordt
+# aan de serverkant vastgelegd.
+QR_MAAT = 300       # het witte vlak waar de code in staat
+QR_RAND = 20        # stille zone binnen dat vlak — hoort erbij, niet weglaten
+QR_TEKST_W = 620    # breed genoeg voor "Ook een photobooth huren?" op twee regels
+QR_TEKST_H = 130
+QR_PIJL_H = 130     # ruimte tussen het regeltje en de code, waar de pijl loopt
 
 # De letter van de instructie. Plus Jakarta Sans ExtraBold meldt zich bij Qt aan
 # als een EIGEN familie en niet als een dikte binnen "Plus Jakarta Sans" — zie
@@ -202,8 +222,17 @@ class Layout:
         nodig = W + 2 * self.overhang_min
         self.kolommen = max(2, int(math.ceil(
             (nodig + self.gap) / float(self.tw + self.gap))))
-        # De rijen volgen de stand van het scherm, zoals in het ontwerp.
-        self.rijen = 3 if self.liggend else 5
+        # TWEE RIJEN LIGGEND, DRIE STAAND.
+        #
+        # Waren er drie en vijf. Met een raster dat van rand tot rand loopt
+        # werd dat te druk, en de hoogte die vrijkomt gaat naar RUST — niet
+        # naar grotere tegels. De tegelmaat blijft dus wat hij was; er komt
+        # alleen lucht tussen de collage en de instructie.
+        #
+        # Staand is met dezelfde verhouding meegegaan (vijf gedeeld door
+        # anderhalf is drie); dat scherm is veel hoger, dus daar valt die
+        # ruimte ook echt als ruimte.
+        self.rijen = 2 if self.liggend else 3
         self.n = self.kolommen * self.rijen
 
         self.raster_b = self.kolommen * self.tw + (self.kolommen - 1) * self.gap
@@ -216,6 +245,17 @@ class Layout:
         self.logo_x = (W - self.logo_w) // 2
         self.logo_y = H - self.mv - self.logo_h
         self.txt_x = (W - self.txt_w) // 2
+
+        # De verhuurvraag met de QR, linksonder. De andere hoek is van het
+        # slotje en het serienummer; het logo staat ertussenin.
+        self.qr_maat = r(QR_MAAT)
+        self.qr_rand = max(2, r(QR_RAND))
+        self.qr_tekst_w = r(QR_TEKST_W)
+        self.qr_tekst_h = r(QR_TEKST_H)
+        self.qr_x = self.mv
+        self.qr_y = H - self.mv - self.qr_maat
+        self.qr_tekst_x = self.mv
+        self.qr_tekst_y = self.qr_y - r(QR_PIJL_H) - self.qr_tekst_h
 
         self.vrij_boven = self.mv
         self.vrij_onder = self.logo_y
@@ -240,6 +280,27 @@ class Layout:
 
 _NAAM = re.compile(r"^(\d{2}-\d{2}-\d{4}_\d{2}\.\d{2}\.\d{2})_(\d+)\.jpe?g$",
                    re.IGNORECASE)
+
+
+# ── miniaturen bewaren over paginawissels heen ──────────────────────────────
+# Een miniatuur maken is de dure bewerking: een foto van zes megapixel inlezen
+# en op tegelmaat brengen. Zonder deze cache gebeurde dat opnieuw bij elke
+# herbouw van de idle-pagina — en die wordt herbouwd bij elke eventwissel en
+# elke keer dat de licentiebanner omgaat.
+#
+# De sleutel is het pad plus de maat plus de schermschaal, want op een andere
+# maat is het een andere miniatuur. De grens is ruim: vijftig tegels van 456 x
+# 285 is ongeveer 26 MB.
+_MINI_CACHE = {}
+_MINI_CACHE_MAX = 50
+
+
+def _cache_zet(sleutel, tegel):
+    if len(_MINI_CACHE) >= _MINI_CACHE_MAX:
+        # de oudste eruit; dit is geen echte LRU en hoeft dat ook niet te zijn
+        for oud in list(_MINI_CACHE)[:len(_MINI_CACHE) - _MINI_CACHE_MAX + 1]:
+            _MINI_CACHE.pop(oud, None)
+    _MINI_CACHE[sleutel] = tegel
 
 
 def _sessies_uit_map(raw_dir):
@@ -367,8 +428,27 @@ class Collage(QWidget):
         self._drift_pad = 0.0
         self._drift_grootste_stap = 0.0
 
+        # Het opbouwen van de miniaturen loopt in stukjes, buiten het tonen om.
+        self._wachtrij = []
+        self._bouw_begonnen = None
+        self._bouwtimer = QTimer(self)
+        self._bouwtimer.setInterval(0)
+        self._bouwtimer.timeout.connect(self._bouw_stukje)
+        # Hoe lang het duurde voordat er iets te zien was, geteld vanaf het
+        # moment dat photobooth.py dit scherm toonde.
+        self._getoond_op = None
+        self._eerste_beeldje_gemeld = False
+
+        self._qr = QPixmap()
+        self._qr_tekst = QPixmap()
+
     # ── leven ──────────────────────────────────────────────────────────────
     def start(self):
+        """Het scherm wordt getoond. Vanaf hier telt de tijd tot het eerste
+        beeldje — dat is wat een gast als traag ervaart."""
+        if self._getoond_op is None:
+            self._getoond_op = self._klok.elapsed()
+            self._eerste_beeldje_gemeld = False
         self._stel_tempo_in()
         if not self._timer.isActive():
             self._timer.start()
@@ -713,6 +793,8 @@ class Collage(QWidget):
             self._achtergrond = QPixmap()
             self._logo = QPixmap()
             self._tekst = QPixmap()
+            self._qr = QPixmap()
+            self._qr_tekst = QPixmap()
             self._beeld_verouderd = True
             self._meld_maatvoering()
         if self._beeld_verouderd:
@@ -764,18 +846,75 @@ class Collage(QWidget):
               f"— {genoeg}", flush=True)
 
     def _herbouw_beeld(self):
-        """Miniaturen en rijen opnieuw maken op de maat die nu geldt."""
+        """Miniaturen en rijen opnieuw maken op de maat die nu geldt.
+
+        NIET IN ÉÉN KEER. Achttien foto's van zes megapixel op tegelmaat
+        brengen kost een halve seconde, en als dat gebeurt op het moment dat
+        het scherm getoond wordt, blijft het scherm die halve seconde weg.
+        Precies dat viel op: "als je naar dat scherm gaat wordt het wel echt
+        wat traag".
+
+        Dus: de achtergrond, de instructie, het logo en de QR staan er meteen,
+        en de tegels komen er in stukjes bij. Een scherm dat direct verschijnt
+        en zich in een halve seconde vult, voelt sneller dan een scherm dat een
+        halve seconde wegblijft — en het is ook echt eerder bruikbaar, want
+        aanraken kan al.
+        """
         L = self._layout
         self._oude_stroken.clear()
-        paden = self._paden[-L.n:]           # bovengrens: het raster
-        self._paden, self._miniaturen = [], []
-        for p in paden:
-            mini = self._maak_miniatuur(p)
-            if mini is not None:
-                self._paden.append(p)
-                self._miniaturen.append(mini)
+        # Alles wat er is: de foto's die al een miniatuur hebben ÉN wat er nog
+        # in de wachtrij stond. Dat tweede is makkelijk te vergeten — er komt
+        # tijdens het opbouwen een tweede herbouw langs, want de widget krijgt
+        # zijn echte maat pas ná het vullen, en dan verdwijnt de halve lijst.
+        alle = (self._paden + self._wachtrij)[-L.n:]
+        self._miniaturen = []
         self._volgende = 0
-        self._bouw_stroken()
+        self._stroken = []
+        self._wachtrij = list(alle)
+        self._paden = []
+        self._bouw_begonnen = self._klok.elapsed()
+        if self._wachtrij:
+            self._bouwtimer.start()
+
+    def _bouw_stukje(self):
+        """Een paar miniaturen per keer, met een klok erop.
+
+        Acht milliseconde per beurt: dat is korter dan een beeldje van
+        vijfentwintig per seconde duurt, dus het tekenen blijft doorlopen
+        terwijl de collage zich vult.
+        """
+        L = self._layout
+        if L is None or not self._wachtrij:
+            self._klaar_met_bouwen()
+            return
+        klok = QElapsedTimer()
+        klok.start()
+        gewijzigd = set()
+        while self._wachtrij and klok.elapsed() < 8:
+            pad = self._wachtrij.pop(0)
+            mini = self._maak_miniatuur(pad)
+            if mini is None:
+                continue
+            gewijzigd.add(len(self._miniaturen) // L.kolommen)
+            self._paden.append(pad)
+            self._miniaturen.append(mini)
+        while len(self._stroken) < L.rijen:
+            self._stroken.append(None)
+        for r in gewijzigd:
+            if 0 <= r < L.rijen:
+                self._stroken[r] = self._maak_strook(r)
+        self.update()
+        if not self._wachtrij:
+            self._klaar_met_bouwen()
+
+    def _klaar_met_bouwen(self):
+        self._bouwtimer.stop()
+        if self._bouw_begonnen is None:
+            return
+        duur = self._klok.elapsed() - self._bouw_begonnen
+        self._bouw_begonnen = None
+        print(f"[COLLAGE] {len(self._miniaturen)} tegels klaar in {duur} ms "
+              f"(in stukjes, het scherm bleef bruikbaar)", flush=True)
 
     def _doek(self, b, h, vulling=None):
         """Een leeg doek op de FYSIEKE maat, met de schermschaal erop gezet.
@@ -794,6 +933,10 @@ class Collage(QWidget):
     def _maak_miniatuur(self, pad):
         """Eén keer op tegelmaat brengen en bewaren. Dit is de dure kant."""
         L = self._layout
+        sleutel = (pad, L.tw, L.th, self._dpr)
+        klaar = _MINI_CACHE.get(sleutel)
+        if klaar is not None:
+            return klaar
         bron = QPixmap(pad)
         if bron.isNull():
             return None
@@ -815,6 +958,7 @@ class Collage(QWidget):
                      int(round(-(geschaald.height() / self._dpr - L.th) / 2.0)),
                      geschaald)
         p.end()
+        _cache_zet(sleutel, tegel)
         return tegel
 
     def _bouw_stroken(self):
@@ -951,6 +1095,137 @@ class Collage(QWidget):
         p.end()
         self._tekst = doek
 
+    # ── de verhuurvraag met de QR ──────────────────────────────────────────
+    def _zorg_qr(self):
+        """De QR naar de site, één keer gemaakt.
+
+        Twee dingen die anders misgaan:
+
+        * HARDE RANDEN. De code wordt op de exacte pixelmaat gemaakt en met
+          FastTransformation opgeschaald, niet met SmoothTransformation. Een
+          vervaagde QR is een slechter leesbare QR — de camera moet zwart van
+          wit kunnen scheiden.
+        * DE STILLE ZONE. Rondom de code hoort wit te blijven, anders leest
+          een telefoon hem niet. Vandaar het witte vlak eromheen; dat is geen
+          versiering.
+
+        Lukt het maken niet, dan blijft de QR gewoon weg. Een startscherm mag
+        nooit omvallen over een reclameregeltje.
+        """
+        L = self._layout
+        if not self._qr.isNull():
+            return
+        url = (getattr(config, "BOOTH_QR_URL", "") or "").strip()
+        if not url:
+            return
+        try:
+            from qr_generator import generate_qr_pixmap
+            binnen = int(round((L.qr_maat - 2 * L.qr_rand) * self._dpr))
+            code = generate_qr_pixmap(url, size=binnen, smooth=False)
+            if code.isNull():
+                return
+        except Exception as e:
+            print(f"[COLLAGE] QR niet gemaakt: {e}", flush=True)
+            return
+
+        doek = self._doek(L.qr_maat, L.qr_maat)
+        p = QPainter(doek)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        vorm = QPainterPath()
+        vorm.addRoundedRect(0, 0, L.qr_maat, L.qr_maat, L.ronding, L.ronding)
+        p.fillPath(vorm, QColor(merk.WIT))
+        code.setDevicePixelRatio(self._dpr)
+        p.drawPixmap(L.qr_rand, L.qr_rand, code)
+        p.end()
+        self._qr = doek
+
+    def _zorg_qr_tekst(self):
+        """Het regeltje boven de QR, met de kronkelende pijl eronder.
+
+        Tekst en pijl zitten in één pixmap: ze horen bij elkaar, verschuiven
+        samen, en zo is het één blit in plaats van drie.
+        """
+        L = self._layout
+        if not self._qr_tekst.isNull():
+            return
+        try:
+            from translations import t
+            regel = t("idle_huur_vraag")
+            if not regel or regel == "idle_huur_vraag":
+                raise KeyError
+        except Exception:
+            regel = "Ook een photobooth huren?"
+
+        hoogte = L.qr_tekst_h + int(round(QR_PIJL_H * L.s))
+        doek = self._doek(L.qr_tekst_w, hoogte)
+        p = QPainter(doek)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        korps = max(10, int(L.qr_tekst_h / 2.0 / 1.2))
+        letter = merk.letter(korps, vet=True)
+        letter.setFamily(KOP_ZWAAR)
+        p.setFont(letter)
+        fm = QFontMetrics(letter)
+        breed = lambda s: (fm.horizontalAdvance(s) if hasattr(fm, "horizontalAdvance")
+                           else fm.width(s))
+
+        # over hooguit twee regels afbreken op een spatie
+        regels, huidig = [], ""
+        for woord in regel.split():
+            proef = (huidig + " " + woord).strip()
+            if huidig and breed(proef) > L.qr_tekst_w:
+                regels.append(huidig)
+                huidig = woord
+            else:
+                huidig = proef
+        if huidig:
+            regels.append(huidig)
+        regels = regels[:2]
+
+        p.setPen(QColor(merk.OP_DONKER))
+        regelhoogte = int(korps * 1.2)
+        for i, r in enumerate(regels):
+            p.drawText(0, i * regelhoogte + fm.ascent(), r)
+        tekst_onder = len(regels) * regelhoogte
+
+        # De kronkelende pijl: van onder het regeltje naar de code, met een
+        # bocht erin zodat hij naar iets wijst in plaats van ergens te staan.
+        dik = max(2.5, 7.0 * L.s)
+        pen = QPen(QColor(merk.GROEN), dik, Qt.SolidLine, Qt.RoundCap,
+                   Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        # Van onder het regeltje, naar rechts uitzwaaien en dan naar links
+        # terug op de code af. Die bocht is waarom het een pijl is en geen
+        # streep: hij wijst ergens naartoe.
+        x0 = L.qr_tekst_w * 0.55
+        y0 = tekst_onder + dik * 2
+        x1 = L.qr_maat * 0.5
+        y1 = hoogte - dik
+        boog = QPainterPath()
+        boog.moveTo(x0, y0)
+        boog.cubicTo(x0 + (L.qr_tekst_w - x0) * 0.75, y0 + (y1 - y0) * 0.15,
+                     x1 + (x0 - x1) * 1.05, y0 + (y1 - y0) * 0.75,
+                     x1, y1)
+        p.drawPath(boog)
+
+        # de punt van de pijl, in de richting waarin de kromme aankomt
+        eind = boog.pointAtPercent(1.0)
+        bijna = boog.pointAtPercent(0.93)
+        hoek = math.atan2(eind.y() - bijna.y(), eind.x() - bijna.x())
+        lengte = max(8.0, 30.0 * L.s)
+        punt = QPainterPath()
+        punt.moveTo(eind)
+        punt.lineTo(eind.x() - lengte * math.cos(hoek - 0.45),
+                    eind.y() - lengte * math.sin(hoek - 0.45))
+        punt.moveTo(eind)
+        punt.lineTo(eind.x() - lengte * math.cos(hoek + 0.45),
+                    eind.y() - lengte * math.sin(hoek + 0.45))
+        p.drawPath(punt)
+        p.end()
+        self._qr_tekst = doek
+
     # ── tekenen ────────────────────────────────────────────────────────────
     def paintEvent(self, event):
         self._in_paint = True
@@ -963,6 +1238,8 @@ class Collage(QWidget):
         self._zorg_achtergrond()
         self._zorg_logo()
         self._zorg_tekst()
+        self._zorg_qr()
+        self._zorg_qr_tekst()
 
         self._teken_klok.start()
         t = self._klok.elapsed() / 1000.0
@@ -993,8 +1270,8 @@ class Collage(QWidget):
         if zichtbaar and self._stroken:
             periode = L.raster_b + L.gap
             for r in range(zichtbaar):
-                if r >= len(self._stroken):
-                    break
+                if r >= len(self._stroken) or self._stroken[r] is None:
+                    continue
                 y = L.rij_y(r)
                 # ALLE RIJEN DEZELFDE KANT OP.
                 #
@@ -1038,7 +1315,25 @@ class Collage(QWidget):
         # 5. het logo — staat onderaan, gecentreerd, in elke toestand
         if not self._logo.isNull():
             p.drawPixmap(self._logo_x, self._logo_y, self._logo)
+
+        # 6. de verhuurvraag met de QR, linksonder. Staat BINNEN de
+        #    verschuiving, dus hij kruipt mee — een QR is een scherp,
+        #    contrastrijk vlak en dat is precies wat inbrandt.
+        if not self._qr_tekst.isNull():
+            p.drawPixmap(L.qr_tekst_x, L.qr_tekst_y, self._qr_tekst)
+        if not self._qr.isNull():
+            p.drawPixmap(L.qr_x, L.qr_y, self._qr)
         p.end()
+
+        # Hoe lang duurde het voordat er iets stond? Dat is wat een gast als
+        # traag ervaart, niet de tijd per beeldje.
+        if self._getoond_op is not None and not self._eerste_beeldje_gemeld:
+            self._eerste_beeldje_gemeld = True
+            wacht = self._klok.elapsed() - self._getoond_op
+            print(f"[COLLAGE] eerste beeldje {wacht} ms na het tonen van het "
+                  f"scherm ({len(self._miniaturen)} van "
+                  f"{len(self._miniaturen) + len(self._wachtrij)} tegels al "
+                  f"klaar)", flush=True)
 
         # Wat kostte dit beeldje. Zie _verslag_tekentijd().
         kosten = self._teken_klok.nsecsElapsed() / 1e6

@@ -4,7 +4,7 @@ import sys
 # === App Version ===
 # updater.py vergelijkt deze waarde met de tag van de release op GitHub. Stijgt
 # hij niet mee met een nieuwe release, dan ziet geen enkele booth de update.
-VERSION = "v1.99.149-beta.9"
+VERSION = "v1.99.149-beta.10"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -98,6 +98,14 @@ CLOUD_PHOTO_EXPIRY_MIN = 30    # Auto-delete after N minutes
 # Let op: de pagina rendert client-side. Een 200 zegt dus niets — deze
 # uitkomsten zijn afgelezen uit de gerenderde pagina, niet uit de statuscode.
 CLOUD_GALLERY_URL_TEMPLATE = "https://myboothbox.nl/fotos/{session_id}"
+
+# Waar de QR linksonder op het startscherm naartoe wijst: de verhuurpagina.
+#
+# KORT HOUDEN, en er niets achteraan plakken. Elk teken erbij maakt de QR
+# dichter, en dichter betekent slechter te scannen op een scherm dat iemand op
+# een halve meter met zijn telefoon fotografeert. Er hoeft dus geen utm_-slee
+# achter: /booth legt de herkomst aan de serverkant vast.
+BOOTH_QR_URL = "https://myboothbox.nl/booth"
 
 # === Google Drive ===
 GDRIVE_ENABLED = False  # Set to True after configuring client_secrets.json

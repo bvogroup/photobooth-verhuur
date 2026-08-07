@@ -119,7 +119,9 @@ def toets_balk(breedte):
 # ── 2. de echte schermen ───────────────────────────────────────────────────
 def toets_schermen(pb, breedte, hoogte, dpr):
     print(f"\nDe gastschermen op {breedte}x{hoogte} punten bij {dpr:g}x", flush=True)
-    schermen = proefvenster.gastschermen(pb, breedte, hoogte)
+    import tempfile
+    sessie = proefvenster.nepsessie(tempfile.mkdtemp(prefix="deelscherm-"))
+    schermen = proefvenster.gastschermen(pb, breedte, hoogte, sessie=sessie)
 
     hoogtes = {}
     for naam, venster, widget, hoofdnaam in schermen:
@@ -149,6 +151,22 @@ def toets_schermen(pb, breedte, hoogte, dpr):
             eis(k.height() >= merk.KNOP_MIN and k.width() >= merk.KNOP_MIN,
                 f"“{k.text()}” is {k.width()}x{k.height()} punten "
                 f"(ondergrens {merk.KNOP_MIN})")
+
+        # Tussen de hoofdknop en zijn buren moet genoeg lucht zitten. Rechts
+        # van "Ja" staat "Sessie stoppen", en dat is de enige gastknop die iets
+        # weggooit wat de gast wilde — de print. Naast een knop die je juist wél
+        # wil raken is dat de gevaarlijke verwisseling.
+        for k in knoppen:
+            if k is hoofd:
+                continue
+            hl = hoofd.mapTo(widget, hoofd.rect().topLeft()).x()
+            hr = hl + hoofd.width()
+            kl = k.mapTo(widget, k.rect().topLeft()).x()
+            kr = kl + k.width()
+            gat = kl - hr if kl > hr else hl - kr
+            eis(gat * bediening.PUNT_MM >= 7.0,
+                f"tussen “{hoofd.text()}” en “{k.text()}” zit "
+                f"{gat * bediening.PUNT_MM:.1f} mm (ondergrens 7,0)")
 
         # En laag. De duim komt van onderen.
         onder = hoofd.mapTo(venster, hoofd.rect().bottomLeft()).y()
@@ -205,14 +223,77 @@ def toets_schermen(pb, breedte, hoogte, dpr):
             f"{min(t.height() for t in tegels)} punten, ondergrens {merk.KNOP_MIN})")
         eis(rijen <= 2, f"het past in hoogstens twee rijen ({rijen})")
 
-    # De fotostrook mag niet verdwijnen onder de band met de bediening.
+    # ── Het deelscherm: het beeld is het onderwerp ─────────────────────────
+    #
+    # De klacht op de echte booth was dat dit scherm de administratie toonde in
+    # plaats van het resultaat: een klein strookje, een grote witte QR-kaart en
+    # een statusmelding. Dat is hier meetbaar gemaakt.
+    print("\n  — het beeld is het onderwerp", flush=True)
     deel = [s for s in schermen if s[0] == "deelscherm"][0][1]
     band = deel._review_panel_stack.height()
     foto = deel._review_photo_container.height()
-    print(f"        de band is {band} punten hoog, de foto houdt er {foto} over",
+    print(f"        de band is {band} punten hoog, het beeld houdt er {foto} over",
           flush=True)
-    eis(foto > band,
-        f"de fotostrook houdt meer ruimte dan de band ({foto} tegen {band})")
+    eis(foto > 2 * band,
+        f"het beeld krijgt meer dan het dubbele van de band ({foto} tegen {band})")
+
+    strook = deel.review_strip_label.pixmap()
+    eis(strook is not None and not strook.isNull(), "de fotostrook staat er")
+    if strook is not None and not strook.isNull():
+        vlak_strook = strook.width() * strook.height()
+        vlak_qr = deel._inline_qr_box.width() * deel._inline_qr_box.height()
+        print(f"        strook {strook.width()}x{strook.height()}, "
+              f"QR-kaartje {deel._inline_qr_box.width()}x"
+              f"{deel._inline_qr_box.height()}", flush=True)
+        vlak_boem = (deel._boomerang_kaart.width()
+                     * deel._boomerang_kaart.height())
+        eis(strook.height() >= hoogte * 0.55,
+            f"de strook vult minstens 55% van de schermhoogte "
+            f"({strook.height() / hoogte * 100:.0f}%)")
+        eis(vlak_strook > 2 * vlak_boem and vlak_strook > 4 * vlak_qr,
+            f"de strook is het grootste ding op het scherm — strook "
+            f"{vlak_strook // 1000}k, boemerang {vlak_boem // 1000}k, "
+            f"QR {vlak_qr // 1000}k punten")
+        eis(strook.width() > deel._boomerang_kaart.width(),
+            f"en breder dan de boemerang ({strook.width()} tegen "
+            f"{deel._boomerang_kaart.width()})")
+
+    # De boemerang beweegt echt, en hij zit in de kolom naast de strook.
+    film = getattr(deel, '_boomerang_movie', None)
+    eis(film is not None and film.state() == film.Running,
+        "de boemerang speelt af" + ("" if film is not None else " (geen QMovie)"))
+    eis(not deel._boomerang_kaart.isHidden(), "de boemerang staat in beeld")
+    if film is not None:
+        eis(film.frameCount() > 2,
+            f"het is een bewegend beeldje en geen stilstaand ({film.frameCount()} beeldjes)")
+
+    # De QR hoort pas op het deelscherm. Op "zijn de foto's goed gelukt?" kan de
+    # gast nog opnieuw beginnen; een code naar foto's die hij misschien weggooit
+    # hoort daar niet.
+    for naam, venster, _w, _h in schermen:
+        if naam in ("zijn-de-fotos-goed-gelukt", "wil-je-ze-geprint"):
+            eis(venster._review_qr_groep.isHidden(),
+                f"de QR staat niet op “{naam}”")
+    eis(not deel._review_qr_groep.isHidden(), "de QR staat wél op het deelscherm")
+
+    # ── De balk verspringt niet als de printer aan het afkoelen is ─────────
+    print("\n  — de balk tijdens het printen", flush=True)
+    voor = deel._sharing_done_btn.mapTo(deel, deel._sharing_done_btn.rect().center())
+    voor_maat = (deel._sharing_done_btn.width(), deel._sharing_done_btn.height())
+    deel._zet_printstand(True)
+    QApplication.processEvents()
+    na = deel._sharing_done_btn.mapTo(deel, deel._sharing_done_btn.rect().center())
+    na_maat = (deel._sharing_done_btn.width(), deel._sharing_done_btn.height())
+    zichtbaar = deel._sharing_links_vak.currentWidget().text()
+    eis(voor == na and voor_maat == na_maat,
+        f"“Klaar” blijft staan waar hij staat als de printknoppen wisselen "
+        f"({voor.x()}x{voor.y()} → {na.x()}x{na.y()})")
+    eis("nnuleer" in zichtbaar,
+        f"links staat nu “{zichtbaar}” in plaats van “Printen”")
+    deel._zet_printstand(False)
+    QApplication.processEvents()
+    eis(deel._sharing_links_vak.currentWidget() is deel._sharing_print_btn,
+        "en daarna weer “Printen”")
     return schermen
 
 

@@ -4015,7 +4015,7 @@ class PhotoboothWindow(QMainWindow):
         bottom_bar.addWidget(_onderruimte, stretch=1)
 
         self.status_label = QLabel("", page)
-        self.status_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.status_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         self.status_label.setFont(QFont("DM Sans", 14))
         self.status_label.setStyleSheet(
             f"color: {config.COLOR_TEXT_DIM}; background: transparent; padding: 10px;")
@@ -4419,13 +4419,23 @@ class PhotoboothWindow(QMainWindow):
     # halve meter te scannen. De kaart eromheen is de code plus de kantlijn aan
     # weerszijden; dat getal bepaalt hoe hoog de band onderin wordt, en dus
     # hoeveel er van de fotostrook overblijft.
-    _REVIEW_QR_HOOG = 200
+    _REVIEW_QR_HOOG = 170
     _REVIEW_QR_KAART_HOOG = _REVIEW_QR_HOOG + 2 * merk.RUIMTE
-    # De kolom met meldingen naast de QR ("Foto wordt geprint...", "nog 8
-    # prints over"). Vaste breedte, met een even breed leeg vak aan de andere
-    # kant, zodat de QR-kaart in het midden blijft of er nu een melding staat
-    # of niet.
-    _REVIEW_MELDING_BREED = 300
+
+    # De kolom naast de fotostrook: de boemerang erboven, de QR eronder. 480
+    # punten is precies de breedte waarop de boemerang gemaakt wordt
+    # (config.BOOMERANG_SIZE), dus hij wordt niet opgerekt.
+    _REVIEW_ZIJ_BREED = 480
+
+    # De regel meldingen in de band ("de foto's worden geprint", "nog 2 extra
+    # prints"). Eén regel, en niet meer dan dat: het is niet iets waar je op
+    # let, en zo hoort het er ook uit te zien.
+    _REVIEW_MELDING_HOOG = 40
+
+    # De regel bóven de knopbalk in de band. Op het deelscherm is dat de
+    # printmelding, op de twee vraagschermen de vraag zelf — en die is met
+    # TEKST_KOP het hoogst, dus die bepaalt de maat.
+    _REVIEW_BAND_TEKST = merk.TEKST_KOP + 14
 
     def _build_review_confirm_panel(self) -> "QWidget":
         """Paneel 1 van de band onderin: 'Zijn de foto's goed gelukt?'
@@ -4465,7 +4475,13 @@ class PhotoboothWindow(QMainWindow):
         bediening.zet_zijknop(no_btn)
         self._review_confirm_no_btn = no_btn
 
-        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn))
+        stop_btn = QPushButton("Sessie stoppen")
+        stop_btn.clicked.connect(self._on_review_stop)
+        bediening.zet_zijknop(stop_btn, stijl=merk.knop_stil(op_donker=True))
+        self._review_confirm_stop_btn = stop_btn
+
+        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn,
+                                         rechts=stop_btn))
         return panel
 
     def _build_review_print_question_panel(self) -> "QWidget":
@@ -4501,7 +4517,13 @@ class PhotoboothWindow(QMainWindow):
         bediening.zet_zijknop(no_btn)
         self._review_print_no_btn = no_btn
 
-        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn))
+        stop_btn = QPushButton("Sessie stoppen")
+        stop_btn.clicked.connect(self._on_review_stop)
+        bediening.zet_zijknop(stop_btn, stijl=merk.knop_stil(op_donker=True))
+        self._review_print_stop_btn = stop_btn
+
+        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn,
+                                         rechts=stop_btn))
         return panel
 
     def _build_review_page(self):
@@ -4536,26 +4558,87 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_countdown_total_ms = 30000  # 30 seconds
         self._sharing_countdown_elapsed_ms = 0
 
-        # === Photo strip container ===
+        # === Het resultaat: de strook groot, de boemerang ernaast ===
+        #
+        # Dit is het moment waarop de gast het meest enthousiast is: hij heeft
+        # net foto's gemaakt en wil ze zien. Tot beta.9 kreeg hij een grote
+        # witte QR-kaart met een statusmelding ernaast en een strookje van niks
+        # — de administratie in plaats van het resultaat. Nu staat de strook
+        # groot, staat de boemerang bewegend ernaast, en is de QR een klein
+        # kaartje eronder.
         self._review_photo_container = QWidget()
         self._review_photo_container.setStyleSheet("background: transparent;")
-        photo_lay = QVBoxLayout(self._review_photo_container)
-        photo_lay.setContentsMargins(20, 20, 20, 10)
-        photo_lay.setSpacing(0)
+        photo_lay = QHBoxLayout(self._review_photo_container)
+        photo_lay.setContentsMargins(merk.RUIMTE, merk.RUIMTE,
+                                     merk.RUIMTE, merk.RUIMTE_KRAP)
+        photo_lay.setSpacing(merk.RUIMTE_RUIM)
+        photo_lay.addStretch()
 
         self.review_strip_label = QLabel()
         self.review_strip_label.setAlignment(Qt.AlignCenter)
-        self.review_strip_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.review_strip_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.review_strip_label.setMinimumSize(1, 1)
         self.review_strip_label.setStyleSheet("background: transparent;")
-        photo_lay.addWidget(self.review_strip_label)
+        photo_lay.addWidget(self.review_strip_label, stretch=1)
 
-        # === Action panel (buttons) ===
+        # De kolom naast de strook. Staat er niets in — geen boemerang en geen
+        # QR, zoals op de twee vraagschermen — dan verdwijnt hij en staat de
+        # strook vanzelf in het midden.
+        self._review_zij = QWidget()
+        self._review_zij.setFixedWidth(self._zijkolom_breed())
+        self._review_zij.setStyleSheet("background: transparent;")
+        zij_lay = QVBoxLayout(self._review_zij)
+        zij_lay.setContentsMargins(0, 0, 0, 0)
+        zij_lay.setSpacing(merk.RUIMTE)
+        zij_lay.addStretch()
+
+        # ── De boemerang ──────────────────────────────────────────────
+        # Een bewegend beeldje van jezelf, direct na het maken. Dat is het
+        # ding dat mensen aan elkaar laten zien.
+        #
+        # Hij is er nog NIET als dit scherm verschijnt: _create_boomerang()
+        # wordt in _create_and_show_strip() gestart, vlak voordat de pagina
+        # getoond wordt, en het maken van de GIF loopt op een eigen thread.
+        # Daarom wachten we er niet op — het kaartje is verborgen tot
+        # _on_boomerang_complete het aanzet.
+        self._boomerang_kaart = QLabel()
+        self._boomerang_kaart.setAlignment(Qt.AlignCenter)
+        _bk = self._zijkolom_breed()
+        self._boomerang_kaart.setFixedSize(_bk, _bk * 2 // 3)
+        self._boomerang_kaart.setStyleSheet(
+            f"background: {merk.INKT_VLAK};"
+            f" border-radius: {merk.RONDING_VLAK}px;")
+        self._boomerang_kaart.hide()
+        self._boomerang_movie = None
+        zij_lay.addWidget(self._boomerang_kaart)
+
+        # ── De QR en zijn twee vervangers ─────────────────────────────
+        # Ze staan in één groep zodat ze samen aan of uit kunnen: de QR hoort
+        # pas op het deelscherm, niet al bij "zijn de foto's goed gelukt?" —
+        # daar kan de gast nog opnieuw beginnen. Welke van de drie er binnen de
+        # groep staat, blijft _update_inline_qr bepalen.
+        self._review_qr_groep = QWidget()
+        self._review_qr_groep.setStyleSheet("background: transparent;")
+        qr_groep_lay = QVBoxLayout(self._review_qr_groep)
+        qr_groep_lay.setContentsMargins(0, 0, 0, 0)
+        qr_groep_lay.setSpacing(0)
+        self._review_qr_groep.hide()
+        zij_lay.addWidget(self._review_qr_groep)
+        zij_lay.addStretch()
+
+        photo_lay.addWidget(self._review_zij, alignment=Qt.AlignVCenter)
+        photo_lay.addStretch()
+
+        # === De band onderin: één regel melding, daaronder de knoppen ===
         #
         # Dit paneel stond tot beta.6 als kolom van 35% aan de RECHTERkant van
-        # het scherm. Dat is precies de plek waar een tik de booth van zijn
-        # statief draait. Het is nu een band onderin: bovenin de band de dingen
-        # die de gast alleen leest of scant (de QR, de printmelding), onderin de
-        # knoppen, met de belangrijkste op de hartlijn — zie bediening.py.
+        # het scherm — precies de plek waar een tik de booth van zijn statief
+        # draait. In beta.9 werd het een band onderin, maar met de QR-kaart
+        # erin, en die kaart was daarmee het grootste ding op het scherm.
+        #
+        # De QR is naar de kolom naast de strook verhuisd. Wat hier overblijft
+        # is één regel: "de foto's worden geprint", "nog 2 extra prints". Dat is
+        # niet iets waar je op let, en zo hoort het er ook uit te zien.
         self._review_action_panel = QWidget()
         self._review_action_panel.setStyleSheet(
             f"QWidget {{ background: {merk.INKT_VLAK}; }}"
@@ -4565,33 +4648,17 @@ class PhotoboothWindow(QMainWindow):
                                       merk.RUIMTE_KANTLIJN, 0)
         paneel_lay.setSpacing(merk.RUIMTE_KRAP)
 
-        # De leesbare helft van de band: QR links, meldingen rechts, samen
-        # gecentreerd. meldingen_lay bestaat nog onder deze naam omdat er verderop
-        # in dit blok nog naar verwezen wordt.
         self._review_info = QWidget()
+        self._review_info.setFixedHeight(self._REVIEW_MELDING_HOOG)
         self._review_info.setStyleSheet("background: transparent;")
         info_lay = QHBoxLayout(self._review_info)
         info_lay.setContentsMargins(0, 0, 0, 0)
         info_lay.setSpacing(merk.RUIMTE)
         info_lay.addStretch()
-        # Een leeg vak links, even breed als de meldingenkolom rechts. Zonder
-        # dit staat de QR-kaart uit het midden zodra er een melding naast komt
-        # — en de kaart hoort recht boven de knop te staan waar de gast naar
-        # kijkt.
-        _tegenwicht = QWidget()
-        _tegenwicht.setFixedWidth(self._REVIEW_MELDING_BREED)
-        _tegenwicht.setStyleSheet("background: transparent;")
-        info_lay.addWidget(_tegenwicht)
 
-        # De meldingenkolom rechts naast de QR.
-        _tekstkolom = QWidget()
-        _tekstkolom.setFixedWidth(self._REVIEW_MELDING_BREED)
-        _tekstkolom.setStyleSheet("background: transparent;")
-        meldingen_lay = QVBoxLayout(_tekstkolom)
+        meldingen_lay = QHBoxLayout()
         meldingen_lay.setContentsMargins(0, 0, 0, 0)
-        meldingen_lay.setSpacing(merk.RUIMTE_KRAP)
-
-        meldingen_lay.addStretch()
+        meldingen_lay.setSpacing(merk.RUIMTE)
 
         # Print status label (shows when printing)
         self._sharing_print_status = QLabel("")
@@ -4650,18 +4717,14 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_redo_print_btn.hide()
 
         # De twee knoppen die alleen tijdens de afkoelperiode van de printer
-        # verschijnen, staan bewust NIET in de balk onderin. Zouden ze dat wel
-        # doen, dan werd de balk hoger op het moment dat ze opkomen en
-        # verspringt "Klaar" onder de vinger van de gast. Ze horen ook
-        # inhoudelijk bij de melding ernaast ("Foto wordt geprint...").
-        _printrij = QHBoxLayout()
-        _printrij.setContentsMargins(0, 0, 0, 0)
-        _printrij.setSpacing(merk.RUIMTE_KRAP)
-        for _k in (self._sharing_redo_print_btn, self._sharing_cancel_print_btn):
-            _k.setMinimumHeight(merk.KNOP_MIN)
-            _k.setMaximumHeight(merk.KNOP_NORMAAL)
-            _printrij.addWidget(_k)
-        meldingen_lay.addLayout(_printrij)
+        # verschijnen, DELEN een vak met "Printen" en "E-mail" in plaats van er
+        # een rij bij te krijgen. Zouden ze een eigen rij krijgen, dan werd de
+        # band hoger op het moment dat ze opkomen en verspringt "Klaar" onder de
+        # vinger van de gast. Nu wisselt alleen de inhoud van de twee
+        # zijvakken; de balk houdt exact dezelfde maat.
+        bediening.zet_zijknop(self._sharing_cancel_print_btn,
+                              stijl=merk.knop_gevaar())
+        bediening.zet_zijknop(self._sharing_redo_print_btn)
 
         # Print remaining indicator
         self._sharing_prints_remaining = QLabel("")
@@ -4671,7 +4734,6 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_prints_remaining.setFixedHeight(26)
         meldingen_lay.addWidget(self._sharing_prints_remaining)
 
-        meldingen_lay.addSpacing(8)
 
         # ── Inline QR-block: direct zichtbaar op sharing-screen ─────
         # (Vervangt de oude '📱 QR-code' knop die een fullscreen overlay
@@ -4682,14 +4744,14 @@ class PhotoboothWindow(QMainWindow):
             f"QWidget {{ background: {merk.WIT};"
             f" border-radius: {merk.RONDING_VLAK}px; }}"
         )
-        # De kaart is breed geworden in plaats van hoog: de code links, de
-        # tekst rechts ernaast. In een band onderin het scherm is hoogte het
-        # schaarse goed — elke punt die deze kaart hoger is, gaat van de
-        # fotostrook af. De code zelf blijft ruim genoeg om te scannen: 200
-        # punten is op dit scherm 38 millimeter.
-        qr_box_lay = QHBoxLayout(self._inline_qr_box)
+        # Het kaartje is precies de code plus zijn kantlijn, en niets meer.
+        # De code blijft ruim genoeg om te scannen: 170 punten is op dit scherm
+        # 32 millimeter, en dat leest een telefoon vanaf een halve meter.
+        self._inline_qr_box.setFixedSize(self._REVIEW_QR_KAART_HOOG,
+                                         self._REVIEW_QR_KAART_HOOG)
+        qr_box_lay = QVBoxLayout(self._inline_qr_box)
         qr_box_lay.setContentsMargins(merk.RUIMTE, merk.RUIMTE, merk.RUIMTE, merk.RUIMTE)
-        qr_box_lay.setSpacing(merk.RUIMTE)
+        qr_box_lay.setSpacing(0)
 
         self._inline_qr_label = QLabel()
         self._inline_qr_label.setAlignment(Qt.AlignCenter)
@@ -4699,30 +4761,27 @@ class PhotoboothWindow(QMainWindow):
         self._inline_qr_label.setStyleSheet(f"background: {merk.WIT};")
         qr_box_lay.addWidget(self._inline_qr_label, alignment=Qt.AlignCenter)
 
-        _qr_tekst = QVBoxLayout()
-        _qr_tekst.setContentsMargins(0, 0, 0, 0)
-        _qr_tekst.setSpacing(merk.RUIMTE_KRAP)
-        _qr_tekst.addStretch()
-
         # Animated 'uploading...' fallback (zichtbaar tot QR-pixmap er is)
         self._inline_qr_loading = QLabel(t("uploading"))
         self._inline_qr_loading.setAlignment(Qt.AlignCenter)
         self._inline_qr_loading.setFont(merk.letter(merk.TEKST_KLEIN))
         self._inline_qr_loading.setStyleSheet(merk.tekst(merk.TEKST_GEDEMPT))
         self._inline_qr_loading.hide()
-        _qr_tekst.addWidget(self._inline_qr_loading)
+        qr_box_lay.addWidget(self._inline_qr_loading)
 
-        # "Download op telefoon" prompt onder de QR
+        qr_groep_lay.addWidget(self._inline_qr_box, alignment=Qt.AlignCenter)
+
+        # De uitleg staat BUITEN het witte kaartje, in de tekstkleur van het
+        # scherm. Stond hij erin, dan moest het kaartje twee keer zo breed
+        # worden en werd een stukje uitleg het grootste witte vlak van het
+        # scherm — terwijl het enige dat wit hoeft te zijn de code zelf is,
+        # omdat een telefoon anders niet scant.
         self._inline_qr_prompt = QLabel("Download je foto's op je telefoon")
         self._inline_qr_prompt.setAlignment(Qt.AlignCenter)
         self._inline_qr_prompt.setFont(merk.letter(merk.TEKST_KLEIN, vet=True))
-        self._inline_qr_prompt.setStyleSheet(merk.tekst(merk.INKT))
+        self._inline_qr_prompt.setStyleSheet(merk.tekst(merk.OP_DONKER_ZACHT))
         self._inline_qr_prompt.setWordWrap(True)
-        self._inline_qr_prompt.setMaximumWidth(280)
-        _qr_tekst.addWidget(self._inline_qr_prompt)
-        _qr_tekst.addStretch()
-        qr_box_lay.addLayout(_qr_tekst)
-        info_lay.addWidget(self._inline_qr_box)
+        qr_groep_lay.addWidget(self._inline_qr_prompt)
 
         # Alternatieve TIP-box voor wanneer er geen wifi is. Tonen we
         # ipv de QR-box. Compact paneel met de instructie.
@@ -4737,9 +4796,8 @@ class PhotoboothWindow(QMainWindow):
             f"QLabel {{ {merk.kaart(op_donker=True, ronding=merk.RONDING_VLAK)}"
             f" color: {merk.OP_DONKER_ZACHT}; padding: 22px 18px; }}"
         )
-        self._inline_no_wifi_tip.setMaximumWidth(560)
         self._inline_no_wifi_tip.hide()
-        info_lay.addWidget(self._inline_no_wifi_tip)
+        qr_groep_lay.addWidget(self._inline_no_wifi_tip)
 
         # Derde stand: delen is niet gelukt. Tonen we in plaats van de QR-box.
         #
@@ -4762,9 +4820,8 @@ class PhotoboothWindow(QMainWindow):
             f"QLabel {{ {merk.kaart(op_donker=True, ronding=merk.RONDING_VLAK)}"
             f" color: {merk.OP_DONKER_ZACHT}; padding: 22px 18px; }}"
         )
-        self._inline_deel_mislukt.setMaximumWidth(560)
         self._inline_deel_mislukt.hide()
-        info_lay.addWidget(self._inline_deel_mislukt)
+        qr_groep_lay.addWidget(self._inline_deel_mislukt)
 
         # Oude '📱 QR-code'-knop is volledig vervangen door de inline QR-box
         # hierboven. We houden de attribute voor backwards-compat van legacy
@@ -4779,7 +4836,6 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_qr_btn.show = lambda: None  # no-op show — kan nooit verschijnen
         self._sharing_qr_btn.setVisible = lambda _v=False: None
 
-        meldingen_lay.addSpacing(8)
 
         # --- EMAIL button ---
         self._sharing_email_btn = QPushButton(t("btn_email"))
@@ -4820,14 +4876,35 @@ class PhotoboothWindow(QMainWindow):
         # geprint, dan is dat op de vorige vraag al beslist en loopt de printer
         # allang. Wat de gast hier nog doet is afronden zodat de volgende groep
         # kan. Printen en e-mail zijn de uitzonderingen, en die staan ernaast.
-        meldingen_lay.addStretch()
-        info_lay.addWidget(_tekstkolom)
+        info_lay.addLayout(meldingen_lay)
         info_lay.addStretch()
-        paneel_lay.addWidget(self._review_info, stretch=1)
+
+        # De twee zijvakken. Stand 0 is de normale toestand, stand 1 die tijdens
+        # de afkoelperiode van de printer. Een QStackedWidget is precies zo groot
+        # als zijn grootste kind, dus de balk verandert niet van maat als er
+        # gewisseld wordt.
+        from PyQt5.QtWidgets import QStackedWidget as _QSW
+        self._sharing_links_vak = _QSW()
+        self._sharing_links_vak.addWidget(self._sharing_print_btn)          # 0
+        self._sharing_links_vak.addWidget(self._sharing_cancel_print_btn)   # 1
+        self._sharing_rechts_vak = _QSW()
+        self._sharing_rechts_vak.addWidget(self._sharing_email_btn)         # 0
+        self._sharing_rechts_vak.addWidget(self._sharing_redo_print_btn)    # 1
+        for _vak in (self._sharing_links_vak, self._sharing_rechts_vak):
+            _vak.setFixedHeight(merk.KNOP_NORMAAL)
+            _vak.setStyleSheet("background: transparent;")
+            _vak.setCurrentIndex(0)
+
+        # De rek zit TUSSEN de melding en de knoppen, net als op de twee
+        # vraagschermen tussen de vraag en de knoppen. Zo staat de balk op alle
+        # drie de panelen op exact dezelfde hoogte en verspringt "Klaar" niet
+        # als de gast van het ene naar het andere gaat.
+        paneel_lay.addWidget(self._review_info)
+        paneel_lay.addStretch()
         paneel_lay.addWidget(bediening.gastbalk(
             hoofd=self._sharing_done_btn,
-            links=self._sharing_print_btn,
-            rechts=self._sharing_email_btn,
+            links=self._sharing_links_vak,
+            rechts=self._sharing_rechts_vak,
         ))
 
         # ── Tussen-scherm 1: "Zijn de foto's goed gelukt?" ──
@@ -4844,6 +4921,8 @@ class PhotoboothWindow(QMainWindow):
         self._review_panel_stack.addWidget(self._review_print_question_panel)  # idx 1
         self._review_panel_stack.addWidget(self._review_action_panel)          # idx 2
         self._review_panel_stack.setCurrentIndex(0)
+        self._review_panel_stack.currentChanged.connect(
+            lambda _i: self._werk_zijkolom_bij())
 
         # Build the layout directly — no dynamic wrapper reparenting
         # to avoid Windows fullscreen geometry corruption
@@ -6548,6 +6627,14 @@ class PhotoboothWindow(QMainWindow):
         self._capture_existing_files = None
         self._boomerang_path = None
         self._boomerang_frames = None
+        self._boomerang_sessie = None
+        # Het bewegende beeldje stilzetten en weghalen. Zonder dit blijft een
+        # QMovie doortekenen op een scherm dat niemand meer ziet, en zou de
+        # volgende groep het beeldje van de vorige aantreffen.
+        try:
+            self._stop_boemerang()
+        except Exception:
+            pass
         self._session_prints_used = 0
         self._qr_ready = False
         if hasattr(self, '_qr_overlay'):
@@ -8919,13 +9006,22 @@ class PhotoboothWindow(QMainWindow):
 
         # Boomerang naar photos/<event>/gif/
         gif_dir = self._get_gif_dir()
-        self._boomerang_path = os.path.join(
-            gif_dir, self._timestamp_filename(ext=".gif")
-        )
+        # BEWUST niet self._boomerang_path zetten: het bestand bestaat nog
+        # niet. Stond dat er wel, dan was het attribuut waar terwijl er niets
+        # was — dan probeert de e-mail een bijlage mee te sturen die er niet is,
+        # en zou de boemerang op het deelscherm een leeg vak worden.
+        # _on_boomerang_complete zet het pad zodra de GIF er werkelijk staat.
+        doelpad = os.path.join(gif_dir, self._timestamp_filename(ext=".gif"))
+        # Bij welke sessie deze boemerang hoort. Doet de gast een "begin
+        # opnieuw" terwijl de thread nog draait, dan komt hij daarna alsnog
+        # binnen — en zonder deze controle zou de vorige groep zijn bewegende
+        # beeldje op het scherm van de volgende groep zien staan, en onder hun
+        # sessie-id in de cloud belanden.
+        self._boomerang_sessie = self.session_id
 
         self._boomerang_thread = BoomerangThread(
             frames=self._boomerang_frames,
-            output_path=self._boomerang_path,
+            output_path=doelpad,
             target_size=getattr(config, 'BOOMERANG_SIZE', (480, 320)),
             frame_duration_ms=getattr(config, 'BOOMERANG_FRAME_DURATION_MS', 66),
         )
@@ -8936,7 +9032,15 @@ class PhotoboothWindow(QMainWindow):
 
     def _on_boomerang_complete(self, gif_path):
         print(f"[BOOMERANG] GIF klaar: {gif_path}")
+        # Hoort hij nog bij de sessie die nu op het scherm staat? Zo niet, dan
+        # is de gast intussen opnieuw begonnen en is dit het beeldje van de
+        # vorige groep. Dat mag niet getoond worden en niet onder het nieuwe
+        # sessie-id geüpload worden.
+        if getattr(self, '_boomerang_sessie', None) != self.session_id:
+            print("[BOOMERANG] Van een afgebroken sessie — genegeerd")
+            return
         self._boomerang_path = gif_path
+        self._toon_boemerang(gif_path)
         # Upload boomerang to cloud separately (cloud upload started before boomerang was ready)
         self._upload_boomerang_to_cloud(gif_path)
         # Linked-modus: gif ook naar het digitale album in het klantenportaal
@@ -8967,6 +9071,102 @@ class PhotoboothWindow(QMainWindow):
                     print(f"[CLOUD] Boomerang upload mislukt: {e}")
             threading.Thread(target=_upload, daemon=True).start()
         except ImportError:
+            pass
+
+    def _zijkolom_breed(self):
+        """Hoe breed de kolom naast de fotostrook mag zijn.
+
+        480 punten is de maat waarop de boemerang gemaakt wordt, dus breder
+        heeft geen zin — dan wordt hij opgerekt. Maar er is ook een bovengrens
+        in verhouding: bij 36% van de breedte werd de boemerang bréder dan de
+        fotostrook, en dan is niet meer de strook het onderwerp van het scherm
+        maar het beeldje ernaast. Op 30% blijft de strook het grootste ding op
+        het scherm, en op een smal scherm houdt hij genoeg over.
+        """
+        scherm = self.screen() or QApplication.primaryScreen()
+        breed = scherm.geometry().width() if scherm else self.width()
+        return max(240, min(self._REVIEW_ZIJ_BREED, int(breed * 0.30)))
+
+    def _werk_zijkolom_bij(self):
+        """Bepaal of de kolom naast de fotostrook er staat, en hoe breed.
+
+        Er staat iets in als de boemerang klaar is, of als de gast op het
+        deelscherm is en daar de QR (of een van zijn vervangers) hoort. Staat
+        er niets in, dan verdwijnt de kolom en heeft de strook het scherm voor
+        zichzelf — dat is precies wat er hoort te gebeuren op "zijn de foto's
+        goed gelukt?", want daar is de foto het enige waar het over gaat.
+        """
+        stapel = getattr(self, '_review_panel_stack', None)
+        groep = getattr(self, '_review_qr_groep', None)
+        kolom = getattr(self, '_review_zij', None)
+        if kolom is None:
+            return
+        deelscherm = stapel is not None and stapel.currentIndex() == 2
+        if groep is not None:
+            groep.setVisible(deelscherm)
+        kaart = getattr(self, '_boomerang_kaart', None)
+        iets = deelscherm or (kaart is not None and not kaart.isHidden())
+        kolom.setVisible(bool(iets))
+        # De strook krijgt nu een andere breedte tot zijn beschikking.
+        QTimer.singleShot(0, self._display_review_strip)
+
+    def _toon_boemerang(self, gif_path):
+        """Zet de boemerang bewegend naast de fotostrook.
+
+        Dit is het ding dat mensen aan elkaar laten zien: een bewegend beeldje
+        van jezelf, een paar seconden nadat je het gemaakt hebt. Hij komt later
+        binnen dan het scherm zelf — het maken loopt op een eigen thread die
+        pas start als de strook af is — dus het vak staat er tot dat moment
+        niet, en verschijnt zodra de GIF er is. Er wordt nergens op gewacht.
+        """
+        kaart = getattr(self, '_boomerang_kaart', None)
+        if kaart is None or not gif_path or not os.path.isfile(gif_path):
+            return
+        try:
+            from PyQt5.QtGui import QMovie
+            self._stop_boemerang()
+            film = QMovie(gif_path)
+            if not film.isValid():
+                print(f"[BOOMERANG] Kan de GIF niet afspelen: {gif_path}")
+                return
+            # Op de maat van het vak zetten, niet het vak op de maat van de
+            # GIF: dan blijft de indeling staan wat er ook binnenkomt.
+            film.setScaledSize(kaart.size())
+            film.setCacheMode(QMovie.CacheAll)
+            kaart.setMovie(film)
+            self._boomerang_movie = film
+            kaart.show()
+            film.start()
+            self._werk_zijkolom_bij()
+            print(f"[BOOMERANG] Speelt op {kaart.width()}x{kaart.height()} punten")
+        except Exception as e:
+            print(f"[BOOMERANG] Tonen mislukt: {e}")
+
+    def _stop_boemerang(self):
+        """Zet het beeldje stil en haal het weg.
+
+        Een QMovie blijft doortekenen zolang hij loopt, ook als het scherm er
+        niet meer is. Op een fanless tablet naast een camera is dat zonde, en
+        het beeldje van de vorige groep hoort sowieso niet te blijven staan.
+        """
+        film = getattr(self, '_boomerang_movie', None)
+        if film is not None:
+            try:
+                film.stop()
+            except Exception:
+                pass
+        self._boomerang_movie = None
+        kaart = getattr(self, '_boomerang_kaart', None)
+        if kaart is not None:
+            try:
+                kaart.setMovie(None)
+                kaart.clear()
+                kaart.hide()
+            except Exception:
+                pass
+        try:
+            self._werk_zijkolom_bij()
+        except Exception:
             pass
 
     def _on_boomerang_failed(self, error_msg):
@@ -9743,6 +9943,21 @@ class PhotoboothWindow(QMainWindow):
         if hasattr(self, '_review_panel_stack'):
             self._review_panel_stack.setCurrentIndex(1)
 
+    def _on_review_stop(self):
+        """De gast wil er gewoon mee ophouden: sessie afronden, terug naar idle.
+
+        Dit doet precies wat "Klaar" op het deelscherm doet — niet meer en niet
+        minder. De foto's zijn op dit moment al gemaakt, al opgeslagen en al
+        onderweg naar de galerij; wat er overblijft is de vraag of er nog
+        geprint moet worden, en die wordt hiermee overgeslagen.
+
+        Bewust NIET _cancel_session(): dat is de harde afbreker van halverwege
+        het fotograferen, die de opnames weggooit. Wie hier op stoppen tikt
+        heeft zijn foto's al.
+        """
+        print("[REVIEW] Gast koos 'Sessie stoppen'")
+        self._go_done()
+
     def _on_review_photos_redo(self):
         """User klikt 'Nee, begin opnieuw' → reset sessie + auto-start nieuwe.
 
@@ -9752,6 +9967,10 @@ class PhotoboothWindow(QMainWindow):
         bijgewerkt omdat _go_direct_capture geen session-increment doet.
         """
         print("[REVIEW] User koos 'Nee, opnieuw' — sessie reset")
+        try:
+            self._stop_boemerang()
+        except Exception:
+            pass
         # Stop pending timers
         try:
             if hasattr(self, 'review_timer'):
@@ -9843,27 +10062,34 @@ class PhotoboothWindow(QMainWindow):
         self._review_wrapper.setMaximumWidth(sw)
         self._review_photo_container.setMaximumWidth(sw)
         self._review_action_panel.setMaximumWidth(sw)
-        # Calculate available space for the strip preview.
-        # Count visible buttons to determine how much space they need.
-        # Scale strip to fit the photo container area.
-        # Use the actual container size if available, otherwise calculate from screen.
-        container_w = self._review_photo_container.width()
-        container_h = self._review_photo_container.height()
-        if container_w < 100 or container_h < 100:
-            # Container not laid out yet — estimate from screen
-            visible_btns = sum(1 for b in [self._sharing_print_btn, self._sharing_qr_btn,
-                                            self._sharing_email_btn, self._sharing_done_btn]
-                               if b.isVisible())
-            btn_height = visible_btns * 56 + 80
-            container_w = sw
-            container_h = max(200, sh - btn_height)
-        # Use 95% of container to leave some padding
-        target = QSize(int(container_w * 0.95), int(container_h * 0.95))
+        # De ruimte voor de strook, GEREKEND UIT HET SCHERM en niet uit de maat
+        # van de widget. Dat laatste stond hier eerst, met een terugval die de
+        # zichtbare knoppen ging tellen — en die maat klopt niet zolang de
+        # indeling nog niet is uitgerekend. Het is dezelfde fout die de
+        # miniaturen van beta.5 en de collage van beta.8 de mist in stuurde. Het
+        # scherm is de enige maat die altijd klopt: de booth draait
+        # schermvullend.
+        band = self._review_panel_stack.height() if getattr(
+            self, '_review_panel_stack', None) else 0
+        if band < 50:
+            band = (merk.RUIMTE_KRAP + self._REVIEW_BAND_TEKST
+                    + merk.RUIMTE_KRAP + bediening.BALK_HOOG)
+        kolom = 0
+        zij = getattr(self, '_review_zij', None)
+        if zij is not None and not zij.isHidden():
+            kolom = self._zijkolom_breed() + merk.RUIMTE_RUIM
+        beschikbaar_b = sw - 2 * merk.RUIMTE - kolom
+        beschikbaar_h = sh - band - merk.RUIMTE - merk.RUIMTE_KRAP
+
+        target = QSize(max(80, beschikbaar_b), max(80, beschikbaar_h))
         scaled = pixmap.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         # Reset any fixed size from previous calls
         self.review_strip_label.setMinimumSize(0, 0)
         self.review_strip_label.setMaximumSize(16777215, 16777215)
         self.review_strip_label.setPixmap(scaled)
+        print(f"[REVIEW] strook {scaled.width()}x{scaled.height()} punten "
+              f"(vak {target.width()}x{target.height()}, band {band}, "
+              f"zijkolom {kolom})")
 
     def _update_print_remaining(self):
         """Update the prints remaining indicator."""
@@ -10307,9 +10533,11 @@ class PhotoboothWindow(QMainWindow):
         Speelt tegelijk een printer-busy geluid af (delay + 3s marge) zodat
         de echte printer naadloos het geluid overneemt — gast hoort
         continu een 'er gebeurt iets' indicator."""
-        # Verberg print-knop + remaining-indicator
-        if hasattr(self, '_sharing_print_btn'):
-            self._sharing_print_btn.hide()
+        # De twee zijvakken naar hun printstand: links "Annuleer print" in
+        # plaats van "Printen", rechts "Foto's opnieuw maken" in plaats van
+        # "E-mail". De balk houdt dezelfde maat en "Klaar" blijft staan waar
+        # hij staat.
+        self._zet_printstand(True)
         if hasattr(self, '_sharing_prints_remaining'):
             self._sharing_prints_remaining.hide()
         # Status-tekst tonen
@@ -10319,11 +10547,6 @@ class PhotoboothWindow(QMainWindow):
                 f"color: white; background: transparent; font-weight: bold;"
             )
             self._sharing_print_status.show()
-        # Annuleer + Opnieuw knoppen tonen
-        if hasattr(self, '_sharing_cancel_print_btn'):
-            self._sharing_cancel_print_btn.show()
-        if hasattr(self, '_sharing_redo_print_btn'):
-            self._sharing_redo_print_btn.show()
         # Pauzeer ook de auto-print-na-timeout countdown — anders zou de
         # review_timer alsnog _sharing_do_print kunnen retriggeren.
         try:
@@ -10396,12 +10619,29 @@ class PhotoboothWindow(QMainWindow):
             except Exception:
                 pass
             self._inline_print_delay_timer = None
-        if hasattr(self, '_sharing_cancel_print_btn') and self._sharing_cancel_print_btn is not None:
-            try: self._sharing_cancel_print_btn.hide()
-            except Exception: pass
-        if hasattr(self, '_sharing_redo_print_btn') and self._sharing_redo_print_btn is not None:
-            try: self._sharing_redo_print_btn.hide()
-            except Exception: pass
+        self._zet_printstand(False)
+
+    def _zet_printstand(self, aan):
+        """Wissel de twee zijvakken van de balk tussen normaal en printend.
+
+        Aan  = "Annuleer print" en "Foto's opnieuw maken" tijdens de
+               afkoelperiode van de printer.
+        Uit  = "Printen" en "E-mail", de normale toestand.
+
+        "E-mail" is er tijdens die paar seconden dus even niet. Dat is bewust:
+        de alternatieven waren de balk hoger maken (dan verspringt "Klaar"
+        onder de vinger) of de twee knoppen ergens aan de rand parkeren (dan
+        staan ze op de plek die de booth van zijn statief draait). E-mailen kan
+        zodra de print onderweg is.
+        """
+        stand = 1 if aan else 0
+        for vak in (getattr(self, '_sharing_links_vak', None),
+                    getattr(self, '_sharing_rechts_vak', None)):
+            if vak is not None:
+                try:
+                    vak.setCurrentIndex(stand)
+                except Exception:
+                    pass
 
     def _actually_send_print(self, copies):
         """Stuur de print naar de driver (gebeurt na de pakket-delay)."""
@@ -10842,10 +11082,14 @@ class PhotoboothWindow(QMainWindow):
         max_w = scherm.geometry().width() if scherm else self.width()
         max_h = scherm.geometry().height() if scherm else self.height()
 
-        # De band: bovenin de QR-kaart (of de melding die ervoor in de plaats
-        # komt), onderin de knopbalk. De hoogte staat vast zodat er niets
-        # springt; op een ongebruikelijk laag scherm wint de bovengrens.
-        band = (merk.RUIMTE_KRAP + self._REVIEW_QR_KAART_HOOG
+        # De band: één regel erboven — de vraag op de twee vraagschermen, de
+        # printmelding op het deelscherm — en daaronder de knopbalk. De hoogte
+        # staat vast zodat er niets springt als er van paneel gewisseld wordt.
+        #
+        # Tot beta.9 zat de QR-kaart hier ook in en was de band 376 punten. Die
+        # kaart staat nu naast de fotostrook, en die 180 punten zijn naar de
+        # strook gegaan — want dat is waar de gast naar kijkt.
+        band = (merk.RUIMTE_KRAP + self._REVIEW_BAND_TEKST
                 + merk.RUIMTE_KRAP + bediening.BALK_HOOG)
         band = min(band, int(max_h * 0.45))
 
@@ -11503,7 +11747,13 @@ class PhotoboothWindow(QMainWindow):
         self._position_idle_lock()
 
     def _position_idle_lock(self):
-        """Zet het slotje rechts-onder en het serienummer links-onder neer.
+        """Zet het slotje en het serienummer samen rechts-onder neer.
+
+        Het serienummer stond links-onder en staat nu ONDER het slotje: dat
+        zijn allebei dingen voor de verhuurder, en samen vormen ze één hoekje
+        in plaats van twee losse dingen aan weerszijden. Links-onder is
+        daarmee vrijgekomen voor de verhuurvraag met de QR, die de collage
+        zelf tekent.
 
         Allebei met de verschuiving tegen inbranden erin verwerkt. De rustplek
         ligt één uitslag naar binnen, zodat ze de hele slag kunnen maken en er
@@ -11537,16 +11787,25 @@ class PhotoboothWindow(QMainWindow):
         ax, ay = collage.verschuiving_bereik() if collage is not None else (0, 0)
 
         marge = 10
-        self._idle_lock_btn.move(pw - ls - marge - ax + dx,
-                                 ph - ls - marge - ay + dy)
-        self._idle_lock_btn.raise_()
-        self._idle_lock_btn.show()
+        # Rechterrand en onderrand van het hoekje, met de verschuiving erin.
+        rechts = pw - marge - ax + dx
+        onder = ph - marge - ay + dy
 
         label = getattr(self, 'status_label', None)
+        label_h = 0
         if label is not None and label.parent() is page:
             label.adjustSize()
-            label.move(marge + ax + dx, ph - label.height() - marge - ay + dy)
+            label_h = label.height()
+            # Rechts uitgelijnd, zodat de rechterkant van het serienummer op
+            # één lijn staat met de rechterkant van het slotje.
+            label.move(rechts - label.width(), onder - label_h)
             label.raise_()
+
+        # Het slotje erboven; het serienummer hangt eronder.
+        self._idle_lock_btn.move(rechts - ls,
+                                 onder - label_h - (6 if label_h else 0) - ls)
+        self._idle_lock_btn.raise_()
+        self._idle_lock_btn.show()
 
     def keyPressEvent(self, event):
         key = event.key()

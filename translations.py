@@ -32,6 +32,16 @@ TRANSLATIONS = {
         "es": "para hacer una foto",
         "it": "per fare una foto",
     },
+    # Het regeltje boven de QR linksonder, met de kronkelende pijl ernaar toe.
+    # Kort houden: het staat naast de collage en mag die niet overstemmen.
+    "idle_huur_vraag": {
+        "nl": "Ook een photobooth huren?",
+        "en": "Want to rent a photobooth?",
+        "de": "Auch eine Fotobox mieten?",
+        "fr": "Envie de louer un photobooth\u00a0?",
+        "es": "\u00bfQuieres alquilar un fotomat\u00f3n?",
+        "it": "Vuoi noleggiare un photobooth?",
+    },
     # ──────────────────────────────────────────────
     # GENERAL UI
     # ──────────────────────────────────────────────

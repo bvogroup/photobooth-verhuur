@@ -135,6 +135,101 @@ def toets_fotokeuze(raw, strips, sessies):
 
 
 # ── 2. de opbouw, precies zoals photobooth.py hem aanroept ─────────────────
+def toets_openen(achtergrond, paden, dpr):
+    """Hoe lang duurt het voordat het scherm er staat.
+
+    Dit is wat een gast als traag ervaart — niet de tijd per beeldje. Met
+    achttien foto's van zes megapixel op tegelmaat brengen was dat een halve
+    seconde waarin het scherm wegbleef: "als je naar dat scherm gaat wordt het
+    wel echt wat traag".
+
+    De eis is dus niet dat het opbouwen snel is, maar dat het scherm er staat
+    voordat het opbouwen klaar is. De achtergrond, de instructie, het logo en
+    de QR staan er meteen; de tegels komen erin.
+    """
+    print("\nHet openen van het scherm", flush=True)
+    from PyQt5.QtCore import QElapsedTimer
+    startscherm._MINI_CACHE.clear()      # koude start, zoals bij het opstarten
+
+    page = startscherm.Collage(achtergrond)
+    page.zet_zichtbaar_vlak(QRect(0, 0, int(FYSIEK_B / dpr), int(FYSIEK_H / dpr)))
+    page.zet_fotos(paden)
+    stapel = QStackedWidget()
+    stapel.addWidget(page)
+    stapel.setFixedSize(int(FYSIEK_B / dpr), int(FYSIEK_H / dpr))
+    stapel.show()
+    QApplication.processEvents()
+
+    klok = QElapsedTimer()
+    klok.start()
+    page.start()
+    doek = QPixmap(FYSIEK_B, FYSIEK_H)
+    doek.setDevicePixelRatio(dpr)
+    page.render(doek)
+    eerste = klok.elapsed()
+    klaar_na = eerste + wacht_tot_klaar(page)
+
+    print(f"        eerste beeldje na {eerste} ms, alle {len(page._miniaturen)} "
+          f"tegels na {klaar_na} ms", flush=True)
+    eis(eerste < 150,
+        f"het scherm staat er binnen 150 ms ({eerste} ms)")
+    eis(eerste < klaar_na,
+        f"en dus vóórdat alle tegels klaar zijn ({eerste} tegen {klaar_na} ms)")
+    eis(len(page._miniaturen) > 0, "de tegels zijn er uiteindelijk wel")
+
+    # En een tweede keer moet hij de miniaturen hergebruiken. De idle-pagina
+    # wordt herbouwd bij elke eventwissel; dat mag niet elke keer opnieuw
+    # achttien foto's kosten.
+    twee = startscherm.Collage(achtergrond)
+    twee.zet_zichtbaar_vlak(QRect(0, 0, int(FYSIEK_B / dpr), int(FYSIEK_H / dpr)))
+    twee.zet_fotos(paden)
+    stapel2 = QStackedWidget()
+    stapel2.addWidget(twee)
+    stapel2.setFixedSize(int(FYSIEK_B / dpr), int(FYSIEK_H / dpr))
+    stapel2.show()
+    QApplication.processEvents()
+    klok.restart()
+    twee.start()
+    tweede_keer = wacht_tot_klaar(twee)
+    print(f"        tweede keer opbouwen: {tweede_keer} ms", flush=True)
+    eis(tweede_keer <= max(20, klaar_na),
+        f"de tweede keer hergebruikt de miniaturen ({tweede_keer} tegen "
+        f"{klaar_na} ms koud)")
+    stapel.hide()
+    stapel2.hide()
+
+
+def toets_qr(page, dpr):
+    """De verhuurvraag met de QR, linksonder."""
+    print("\nDe QR naar de verhuurpagina", flush=True)
+    import config
+    L = page._layout
+    url = getattr(config, "BOOTH_QR_URL", "")
+    print(f"        {url}", flush=True)
+
+    eis(url.startswith("https://myboothbox.nl/"),
+        f"de QR wijst naar MyBoothBox ({url})")
+    eis("?" not in url and "utm" not in url.lower(),
+        "zonder parameters erachter — elk teken maakt de code dichter")
+    eis(len(url) <= 40, f"en kort ({len(url)} tekens)")
+
+    eis(not page._qr.isNull(), "er staat een QR-plaatje klaar")
+    eis(not page._qr_tekst.isNull(), "met het regeltje en de pijl erboven")
+    eis(abs(page._qr.width() - int(round(L.qr_maat * dpr))) <= 2,
+        f"de QR is {page._qr.width()} fysieke pixels — 28 mm op dit scherm")
+    eis(L.qr_rand > 0, f"met een stille zone van {L.qr_rand} punten eromheen")
+
+    # Linksonder, en niet in de weg van het logo of de instructie.
+    eis(L.qr_x >= 0 and L.qr_y + L.qr_maat <= L.H,
+        f"hij staat linksonder binnen het scherm ({L.qr_x}, {L.qr_y})")
+    eis(L.qr_x + L.qr_tekst_w <= L.logo_x,
+        f"de vraag botst niet met het logo ({L.qr_x + L.qr_tekst_w} tegen "
+        f"{L.logo_x})")
+    eis(L.qr_tekst_y > L.tekst_y(L.rijen) + L.txt_h,
+        f"en staat onder de instructie ({L.qr_tekst_y} tegen "
+        f"{L.tekst_y(L.rijen) + L.txt_h:.0f})")
+
+
 def toets_vult_het_scherm(page, dpr):
     """Het raster hoort de breedte te vullen, en de tegels de ontwerpmaat.
 
@@ -188,10 +283,15 @@ def toets_vult_het_scherm(page, dpr):
 
     # En de instructie hoort ONDER de collage te staan, over de volle breedte
     # gecentreerd — niet ernaast.
-    onder = L.collage_onderkant(3)
-    eis(L.tekst_y(3) >= onder,
-        f"de instructie staat onder de collage (y {L.tekst_y(3):.0f} tegen "
-        f"onderkant {onder})")
+    onder = L.collage_onderkant(L.rijen)
+    eis(L.tekst_y(L.rijen) >= onder,
+        f"de instructie staat onder de collage (y {L.tekst_y(L.rijen):.0f} "
+        f"tegen onderkant {onder})")
+    # En er hoort lucht tussen te zitten; daar was de derde rij voor
+    # ingeleverd. Minstens een halve tegelhoogte.
+    lucht = L.tekst_y(L.rijen) - onder
+    eis(lucht >= L.th * 0.5,
+        f"met {lucht:.0f} punten lucht ertussen (minstens {L.th*0.5:.0f})")
     eis(abs((L.txt_x + L.txt_w / 2) - L.W / 2) <= 2,
         "de instructie staat horizontaal in het midden")
     eis(abs((L.raster_x + L.raster_b / 2) - L.W / 2) <= 2,
@@ -228,6 +328,8 @@ def toets_maat_van_de_stapel(achtergrond, paden, dpr):
     QApplication.processEvents()
     page.show()
     QApplication.processEvents()
+    page.start()
+    wacht_tot_klaar(page)
 
     L = page._layout
     eis(L is not None, "er is een indeling")
@@ -249,6 +351,21 @@ def toets_maat_van_de_stapel(achtergrond, paden, dpr):
     stapel.hide()
 
 
+def wacht_tot_klaar(page, max_ms=8000):
+    """De miniaturen worden in stukjes gemaakt, buiten het tonen om.
+
+    Dat is precies de bedoeling — het scherm mag niet wachten op achttien
+    foto's van zes megapixel. Voor het meten moet er hier dus wel even op
+    gewacht worden.
+    """
+    from PyQt5.QtCore import QElapsedTimer
+    klok = QElapsedTimer()
+    klok.start()
+    while page._wachtrij and klok.elapsed() < max_ms:
+        QApplication.processEvents()
+    return klok.elapsed()
+
+
 def bouw_zoals_de_applicatie(achtergrond, paden, logisch_b, logisch_h):
     """De widget wordt aangemaakt en gevuld vóórdat hij zijn maat heeft.
 
@@ -268,6 +385,8 @@ def bouw_zoals_de_applicatie(achtergrond, paden, logisch_b, logisch_h):
     stapel.setFixedSize(logisch_b, logisch_h)
     stapel.show()
     QApplication.processEvents()
+    page.start()
+    wacht_tot_klaar(page)
     return page, stapel, startmaat
 
 
@@ -288,13 +407,13 @@ def toets_opbouw(achtergrond, paden, dpr):
     eis(abs(page._dpr - dpr) < 1e-6,
         f"de schermschaal is overgenomen ({page._dpr:g}x)")
 
-    # Drie rijen liggend, en zoveel kolommen als er nodig zijn om van rand
-    # tot rand te lopen. Dat zijn er meer dan de vijf uit het ontwerp: de
-    # zijmarge is vervallen, de tegelmaat niet.
-    eis(L.rijen == 3, f"drie rijen ({L.rijen})")
+    # Twee rijen liggend — was drie; met een raster dat van rand tot rand
+    # loopt werd dat te druk. En zoveel kolommen als er nodig zijn om de
+    # breedte te dekken.
+    eis(L.rijen == 2, f"twee rijen ({L.rijen})")
     eis(L.kolommen >= 6, f"{L.kolommen} kolommen — meer dan het scherm breed is")
     eis(L.n == L.kolommen * L.rijen, f"{L.n} tegels")
-    eis(page.rijen_zichtbaar() == 3, "drie rijen vol")
+    eis(page.rijen_zichtbaar() == L.rijen, f"{L.rijen} rijen vol")
 
     # De tegel hoort 456 x 285 FYSIEKE pixels te zijn, ongeacht de schaal.
     # Dat is de maat waarop het ontwerp is doorgerekend (43 mm op het glas).
@@ -577,10 +696,12 @@ def main():
         if uit is not None:
             page, _stapel = uit
             onderdeel("het vullen van het scherm", toets_vult_het_scherm, page, dpr)
+            onderdeel("de QR", toets_qr, page, dpr)
             onderdeel("de verschuiving", toets_verschuiving, page, dpr)
             onderdeel("de tekentijd", toets_tekentijd, page, dpr)
         onderdeel("de maat van de stapel", toets_maat_van_de_stapel,
                   achtergrond, paden, dpr)
+        onderdeel("het openen", toets_openen, achtergrond, paden, dpr)
     finally:
         shutil.rmtree(werkmap, ignore_errors=True)
 

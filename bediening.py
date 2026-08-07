@@ -61,7 +61,15 @@ MARGE_BOVEN = merk.RUIMTE             # 16
 MARGE_ONDER = merk.RUIMTE_RUIM        # 24 — niet tegen de onderrand aan: die
                                       # rand is met een duim juist lastig, en
                                       # er kan een Windows-balk opduiken
-TUSSEN = merk.RUIMTE_RUIM             # 24 — tussen de knoppen
+TUSSEN = 40                           # tussen de knoppen
+# Waarom 40 en niet de gebruikelijke 24: rechts van de hoofdknop staat op de
+# vraagschermen "Sessie stoppen", en dat is de enige knop op een gastscherm die
+# iets weggooit wat de gast wilde — de print. Naast "Ja" is dat precies de
+# verwisseling die je niet wil. 40 punten is op dit scherm 7,6 millimeter tussen
+# de randen; bij 24 was het 4,6. Een bevestigingsvraag is bewust niet toegevoegd:
+# op het filterscherm stopt "Stoppen" de sessie ook meteen, en een extra vraag
+# midden op een feest kost meer dan hij oplevert. De afstand plus de stilste
+# knopstijl moeten het doen.
 
 HOOFD_MIN_BREED = 320                 # de hoofdknop is ook zonder lange tekst
                                       # een groot doel
