@@ -78,7 +78,7 @@ if "--print-worker" in sys.argv:
     sys.exit(0)
 
 # ── Zelftest ────────────────────────────────────────────────────────────
-# `MyBoothBox.exe --selftest` importeert alles wat de app bij het opstarten
+# `Bootharoo.exe --selftest` importeert alles wat de app bij het opstarten
 # nodig heeft, controleert een paar dingen die eerder stuk zijn gegaan, en
 # sluit af met code 0 (goed) of 1 (fout). Geen venster, geen camera, geen
 # printer — puur de vraag: komt deze build overeind?

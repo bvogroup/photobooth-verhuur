@@ -6,13 +6,13 @@ Build with:
     cd C:\\Photobooth-verhuur
     pyinstaller bootharoo.spec --noconfirm
 
-Output: dist\MyBoothBox\MyBoothBox.exe  (folder mode, fast startup)
+Output: dist\Bootharoo\Bootharoo.exe  (folder mode, fast startup)
 
-De naam van DIT bestand blijft bootharoo.spec. Het is een bouwbestand dat
-geen gebruiker ooit ziet; hernoemen zou alleen build.bat, de bouwstraat en een
-handvol verwijzingen in commentaar raken zonder dat er iets beter van wordt.
-Wat de gebruiker wél ziet — de exe, de map eromheen, het icoon — heet
-MyBoothBox.
+Het product heet MyBoothBox, de exe heet Bootharoo.exe. Dat is met opzet: wat
+de gast en de verhuurder zien — het opstartscherm, het startscherm, het icoon,
+de teksten — draagt het merk, maar alles waar Windows mee werkt houdt de naam
+waaronder de 25 booths in het veld al draaien. Zie de toelichting bovenin
+installer.iss.
 """
 
 import os
@@ -161,10 +161,11 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,   # Binaries go in the COLLECT folder
-    # De naam van de exe. Deze komt terug in de taakbalk, in Taakbeheer, in de
-    # Taakplanner-taak en in installer.iss (MyAppExeName) — die drie moeten
-    # gelijk blijven lopen.
-    name='MyBoothBox',
+    # De naam van de exe. Deze komt terug in Taakbeheer, in de Taakplanner-taak
+    # en in installer.iss (MyAppExeName) — die drie moeten gelijk blijven
+    # lopen, en ze staan zo op elke booth in het veld. Hernoemen betekent daar
+    # een nieuwe autostart-taak, dus dat gebeurt niet voor de sier.
+    name='Bootharoo',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -188,6 +189,7 @@ coll = COLLECT(
     upx=False,
     upx_exclude=[],
     # De mapnaam onder dist\. installer.iss haalt de bestanden op uit
-    # dist\MyBoothBox\ — verandert deze naam, dan moet die regel mee.
-    name='MyBoothBox',
+    # dist\Bootharoo\ — verandert deze naam, dan moet die regel mee, en de
+    # controle in .github/workflows/build-installer.yml erbij.
+    name='Bootharoo',
 )

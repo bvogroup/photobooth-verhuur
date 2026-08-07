@@ -4,7 +4,7 @@ De repo is publiek, dus de GitHub Releases-API en de installer-assets zijn
 zonder token bereikbaar. Flow:
   1. check_for_update()  -> haalt de laatste release van het gekozen kanaal
                             op en vergelijkt de versie
-  2. download_installer() -> downloadt de MyBoothBox_Setup_*.exe naar temp
+  2. download_installer() -> downloadt de Bootharoo_Setup_*.exe naar temp
   3. run_installer()      -> start de installer (stil); die sluit de draaiende
                              app, update en herstart 'm (zie installer.iss)
 

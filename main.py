@@ -40,9 +40,10 @@ def _check_single_instance():
     import tempfile
     import msvcrt
     # Deze naam blijft bewust bootharoo_*. Het slot bestaat om te voorkomen dat
-    # er twee photobooths tegelijk draaien; zou de nieuwe versie een ander slot
-    # pakken dan de oude, dan zou juist tijdens de overgang een oude
-    # Bootharoo.exe en een nieuwe MyBoothBox.exe elkaar niet meer zien.
+    # er twee photobooths tegelijk draaien, en het is een sleutel waarop een
+    # draaiende versie wordt teruggevonden — geen naam die iemand ziet. Zou een
+    # nieuwe versie een ander slot pakken dan de oude, dan zouden die twee
+    # elkaar niet meer zien en samen kunnen opkomen.
     lock_path = os.path.join(tempfile.gettempdir(), "bootharoo_photobooth.lock")
     try:
         lock_fd = open(lock_path, "w")

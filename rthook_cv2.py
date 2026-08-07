@@ -43,7 +43,7 @@ sys.path en bevat de map cv2/, dus `import cv2` komt daar via de gewone
 FileFinder terecht — precies wat deze hook wilde bereiken. cv2 regelt zijn
 eigen zoekpaden voor de native extensie verder zelf.
 
-De zelftest (`MyBoothBox.exe --selftest`) controleert allebei de gevallen
+De zelftest (`Bootharoo.exe --selftest`) controleert allebei de gevallen
 expliciet: dat cv2 laadt, én dat `typing` en `config` van de juiste plek
 komen. De bouwstraat draait die test op de geinstalleerde applicatie, dus
 een terugval hierin houdt de bouw tegen.
