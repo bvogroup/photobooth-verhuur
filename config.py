@@ -134,25 +134,53 @@ TEST_PRINT_LIMIT = 10
 # 0 = niet aanraken.
 DISPLAY_BRIGHTNESS = 90
 
-# === Colors (Clixibo Design System) ===
-# Warm beige/gold palette matching the Clixibo website
-COLOR_BG = "#F7F5F1"              # Warm off-white background
-COLOR_PRIMARY = "#D6C29B"         # Warm gold primary
-COLOR_PRIMARY_HOVER = "#C7A878"   # Darker gold for hover
-COLOR_PRIMARY_PRESSED = "#B89A6A" # Even darker for pressed
-COLOR_SECONDARY = "#53565A"       # Dark gray secondary
-COLOR_SECONDARY_HOVER = "#6B6E72" # Lighter gray hover
-COLOR_TEXT = "#53565A"            # Dark gray text
-COLOR_TEXT_DIM = "#A8A9AC"        # Medium gray for subtle text
-COLOR_TEXT_ON_PRIMARY = "#FFFFFF" # White text on primary buttons
-COLOR_SUCCESS = "#4A9B6E"         # Muted green (matching warm palette)
-COLOR_SUCCESS_HOVER = "#5BAF7F"   # Lighter green hover
-COLOR_DANGER = "#C0392B"          # Muted red for danger
-COLOR_CARD_BG = "#EFEDE8"         # Slightly darker card background
-COLOR_INPUT_BG = "#FFFFFF"        # White input background
-COLOR_BORDER = "#D4D1CA"          # Warm gray border
-COLOR_BORDER_FOCUS = "#D6C29B"    # Gold border on focus
-COLOR_ACCENT = "#E8E4DC"          # Accent background for hover
+# === Kleuren (MyBoothBox) ===
+#
+# Hier stond tot 7 augustus 2026 het "Clixibo Design System": achttien kleuren in
+# warm beige en goud, overgenomen van de Clixibo-website. Dat was niet een beetje
+# naast MyBoothBox, dat was de huisstijl van een ander merk. Vervangen op verzoek
+# van de opdrachtgever: "het moet de MBB branding worden."
+#
+# De echte waarden staan nu in merk.py, dat rechtstreeks docs/MERK.md volgt. De
+# namen hieronder blijven bestaan omdat er 716 plekken in de software naar
+# verwijzen; ze wijzen nu alleen naar de goede kleur. Nieuwe schermen gebruiken
+# merk.py rechtstreeks — daar staan ook de kant-en-klare knopstijlen.
+#
+# Twee dingen zijn onderweg rechtgezet, want ze waren onleesbaar:
+#   COLOR_TEXT_DIM  stond op #A8A9AC = 2,16:1 op de achtergrond. Nu 4,80:1.
+#   COLOR_PRIMARY   was goud met witte letters erop = 1,74:1. Nu de merkinkt met
+#                   witte letters = 16,42:1.
+#
+# Waarom COLOR_PRIMARY de inkt wordt en niet het merkgroen: deze constante wordt
+# 39x als vlak gebruikt én 35x als tekstkleur. Groen als tekst op een lichte
+# achtergrond haalt 1,67:1 en is dan onzichtbaar. De inkt werkt allebei. Het
+# merkgroen is de kleur van de hoofdknop en die komt per scherm uit
+# merk.knop_hoofd(), bewust en één keer per scherm — niet via een kleur die overal
+# tegelijk omslaat.
+
+import merk
+
+COLOR_BG = merk.PAPIER                  # #FAF8F4 warm gebroken wit
+COLOR_PRIMARY = merk.INKT               # #16202D de inkt van het merk
+COLOR_PRIMARY_HOVER = merk.INKT_AAN     # onder de vinger
+COLOR_PRIMARY_PRESSED = merk.INKT_IN    # ingedrukt
+COLOR_SECONDARY = merk.LEI              # neutrale tweede knop — wit erop 7,78:1
+COLOR_SECONDARY_HOVER = "#5C6570"       # idem, lichter
+COLOR_TEXT = merk.TEKST                 # lopende tekst — 7,53:1
+COLOR_TEXT_DIM = merk.TEKST_GEDEMPT     # bijschriften — 4,80:1
+COLOR_TEXT_ON_PRIMARY = merk.WIT        # wit op de inktknop — 16,42:1
+COLOR_SUCCESS = merk.GOED               # werkt als tekst (4,95:1) en als vlak (5,25:1)
+COLOR_SUCCESS_HOVER = "#5E8F00"         # idem, lichter
+COLOR_DANGER = merk.FOUT                # 5,13:1 als tekst, 5,44:1 als vlak
+COLOR_CARD_BG = merk.PAPIER_DIEPER      # kaart, een trapje dieper
+COLOR_INPUT_BG = merk.WIT               # invoerveld
+COLOR_BORDER = merk.RAND                # scheidingen
+COLOR_BORDER_FOCUS = merk.GROEN_INKT    # focus is groen; op licht de donkere groentint,
+                                        # want merk.GROEN haalt daar maar 1,67:1
+COLOR_ACCENT = merk.HOVER_VLAK          # waar de vinger overheen gaat
+
+# Het merkgroen zelf, voor schermen die de hoofdknop rechtstreeks zetten.
+COLOR_BRAND_GREEN = merk.GROEN          # #94D60A — een VLAK met donkere letters erop
 
 # Ensure photo directory exists
 os.makedirs(PHOTO_DIR, exist_ok=True)
