@@ -1418,6 +1418,10 @@ class PhotoboothWindow(QMainWindow):
         except Exception as _lu_ex:
             print(f"[LOG-UPLOAD] Start mislukt: {_lu_ex}")
 
+        # Klokafwijking meten. Eerst de bewaarde waarde toepassen (dan is de
+        # eerste upload al gedekt), daarna op de achtergrond opnieuw meten.
+        self._start_klokcontrole()
+
         # Status-heartbeat: elke 20s een rijke snapshot (scherm, prints,
         # verbindingen camera/COB/printer, internet, uploads, ...) naar de
         # uploader pushen. Op de main thread (veilig Qt-state lezen).
@@ -3164,6 +3168,23 @@ class PhotoboothWindow(QMainWindow):
         )
         self._welcome_serial_label.show()
 
+        # ── Klokwaarschuwing boven-in ────────────────────────────────
+        # Alleen zichtbaar als de klok van deze machine er echt naast zit.
+        # Dit is het scherm waar de verhuurder de booth opbouwt; de gast ziet
+        # het nooit. Een scheve klok zet ook de tijden in het logboek, de
+        # bestandsnamen en de eventadministratie scheef, dus dit hoort gezien
+        # te worden ook al vangen we het delen zelf op.
+        self._welcome_klok_label = QLabel("", page)
+        self._welcome_klok_label.setFont(QFont("DM Sans", 13, QFont.Bold))
+        self._welcome_klok_label.setWordWrap(True)
+        self._welcome_klok_label.setAlignment(Qt.AlignCenter)
+        self._welcome_klok_label.setStyleSheet(
+            "QLabel { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #c0392b, stop:1 #e74c3c); color: white; "
+            "border-radius: 10px; padding: 10px 16px; }"
+        )
+        self._welcome_klok_label.hide()
+
         # ── Periodic wifi/internet check ─────────────────────────────
         # Interval 1.5 sec — 3 pings in ~5 sec, snelle commit naar juiste card.
         self._welcome_wifi_timer = QTimer(self)
@@ -3185,6 +3206,32 @@ class PhotoboothWindow(QMainWindow):
             self._welcome_lock_btn.move(page.width() - 80, page.height() - 80)
             self._welcome_lock_btn.raise_()
         self._refresh_welcome_serial()
+        self._positioneer_klokwaarschuwing()
+
+    def _positioneer_klokwaarschuwing(self):
+        """Houd de klokwaarschuwing boven-in gecentreerd."""
+        label = getattr(self, '_welcome_klok_label', None)
+        if label is None or not label.isVisible():
+            return
+        page = self._welcome_page
+        breedte = min(760, max(320, page.width() - 80))
+        label.setFixedWidth(breedte)
+        label.adjustSize()
+        label.setFixedWidth(breedte)
+        label.move((page.width() - breedte) // 2, 20)
+        label.raise_()
+
+    def _toon_klokwaarschuwing(self, tekst: str):
+        """Toon (of verberg) de klokwaarschuwing op het opbouwscherm."""
+        label = getattr(self, '_welcome_klok_label', None)
+        if label is None:
+            return
+        if not tekst:
+            label.hide()
+            return
+        label.setText("⚠️  " + tekst)
+        label.show()
+        self._positioneer_klokwaarschuwing()
 
     def _refresh_welcome_serial(self):
         """Zet het serienummer (uit Geavanceerd) links-onder op de welcome-
@@ -7571,6 +7618,11 @@ class PhotoboothWindow(QMainWindow):
         # First photo: show intro screen, then countdown
         # Subsequent photos: skip intro, go straight to countdown
         if self.current_photo_num == 0:
+            # Belichtingskalibratie bij de eerste foto van de sessie. Het
+            # introscherm duurt een paar seconden; die tijd gebruiken we om te
+            # meten en zo nodig bij te regelen. Draait op een achtergrondraad,
+            # dus het scherm wacht nergens op.
+            self._kalibreer_belichting()
             self._countdown_phase = "intro"
             self.countdown_ring.hide()
             # Show custom intro image or default text
@@ -7725,6 +7777,9 @@ class PhotoboothWindow(QMainWindow):
                 with open(filepath, 'wb') as f:
                     f.write(frame_data)
                 print(f"[WEBCAM] Foto opgeslagen: {filepath} ({len(frame_data)//1024}KB)")
+                # Eén logregel per foto: wat staat er daadwerkelijk op de
+                # plaat? Achtergrondraad, dus de sessie wacht hier niet op.
+                self._log_belichting_foto(filepath, self.current_photo_num + 1)
                 self._on_capture_complete(filepath)
             else:
                 print("[WEBCAM] Geen frame beschikbaar!")
@@ -13096,6 +13151,61 @@ class PhotoboothWindow(QMainWindow):
         card_serial_lay.addLayout(serial_row)
         tab5_lay.addWidget(card_serial)
 
+        # ── Card: Belichtingskalibratie ──────────────────────────────
+        card_bel, card_bel_lay = self._settings_card("Belichting")
+        bel_intro = QLabel(
+            "Meet bij de eerste foto van een sessie hoe licht het onderwerp "
+            "is en kan de camera bijregelen. Gaat er iets mis op een feest, "
+            "zet dit dan op Uit en druk op 'Terug naar standaard' — de camera "
+            "staat dan weer zoals hij uit de fabriek kwam."
+        )
+        bel_intro.setFont(QFont("DM Sans", 11))
+        bel_intro.setWordWrap(True)
+        bel_intro.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_bel_lay.addWidget(bel_intro)
+
+        bel_row = QHBoxLayout()
+        bel_row.setSpacing(14)
+        self._bel_uit_radio = QRadioButton("Uit")
+        self._bel_meten_radio = QRadioButton("Alleen meten (standaard)")
+        self._bel_corr_radio = QRadioButton("Meten en bijregelen")
+        for rb in (self._bel_uit_radio, self._bel_meten_radio, self._bel_corr_radio):
+            rb.setFont(QFont("DM Sans", 13))
+            rb.setStyleSheet(f"color: {config.COLOR_TEXT};")
+            bel_row.addWidget(rb)
+        bel_row.addStretch()
+        card_bel_lay.addLayout(bel_row)
+        self._bel_meten_radio.setChecked(True)
+        self._bel_uit_radio.toggled.connect(
+            lambda on: self._on_belichting_modus_changed('uit') if on else None)
+        self._bel_meten_radio.toggled.connect(
+            lambda on: self._on_belichting_modus_changed('meten') if on else None)
+        self._bel_corr_radio.toggled.connect(
+            lambda on: self._on_belichting_modus_changed('corrigeren') if on else None)
+
+        self._bel_status_lbl = QLabel("")
+        self._bel_status_lbl.setFont(QFont("DM Sans", 11))
+        self._bel_status_lbl.setWordWrap(True)
+        self._bel_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
+        card_bel_lay.addWidget(self._bel_status_lbl)
+
+        bel_reset_btn = QPushButton("Terug naar standaard")
+        bel_reset_btn.setCursor(Qt.PointingHandCursor)
+        bel_reset_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        bel_reset_btn.setFixedHeight(40)
+        bel_reset_btn.setStyleSheet(
+            f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
+            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
+            f"border-radius: 8px; padding: 8px 18px; font-size: 12px; }}"
+            f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
+        )
+        bel_reset_btn.clicked.connect(self._on_belichting_reset)
+        bel_btn_row = QHBoxLayout()
+        bel_btn_row.addWidget(bel_reset_btn)
+        bel_btn_row.addStretch()
+        card_bel_lay.addLayout(bel_btn_row)
+        tab5_lay.addWidget(card_bel)
+
         # ── Card: Software-updates ───────────────────────────────────
         card_upd, card_upd_lay = self._settings_card("Software-updates")
         # Draaiende versie + actief kanaal in één regel. Iemand die belt met
@@ -14718,6 +14828,7 @@ class PhotoboothWindow(QMainWindow):
             # widget-aanrakingen, zodat dit nooit meer kan sneuvelen.
             self._sync_brand_radios()
             self._sync_update_channel_radios()
+            self._sync_belichting_radios()
             self._update_pin_button_text()
             _set(self._cut_checkbox, ev.cut_enabled)
             _set(self._print_enabled_toggle, ev.print_enabled)
@@ -14800,6 +14911,7 @@ class PhotoboothWindow(QMainWindow):
             # 'hippe' / "geen webcam" staan).
             self._sync_brand_radios()
             self._sync_update_channel_radios()
+            self._sync_belichting_radios()
             self._update_webcam_status()
             _set(self._cut_checkbox, True)
             _set(self._print_enabled_toggle, True)
@@ -16122,6 +16234,262 @@ class PhotoboothWindow(QMainWindow):
             )
         except Exception as e:
             print(f"[LOG-UPLOAD] Context-update mislukt: {e}")
+
+    # ── Klokafwijking ────────────────────────────────────────────────
+
+    def _start_klokcontrole(self):
+        """Meet de klokafwijking bij het opstarten. Nooit blokkerend.
+
+        De bewaarde afwijking wordt meteen toegepast, zodat de eerste upload
+        van de avond niet eerst hoeft te mislukken. De verse meting loopt op
+        de achtergrond en werkt de waarde daarna bij.
+        """
+        try:
+            import clock_sync
+            bewaard = clock_sync.laad_bewaarde_afwijking()
+            if bewaard:
+                print(f"[KLOK] Laatst bekende afwijking: {bewaard:+.0f}s")
+        except Exception as e:
+            print(f"[KLOK] Bewaarde afwijking toepassen mislukt: {e}")
+
+        def _werk():
+            try:
+                import clock_sync
+                verslag = clock_sync.synchroniseer()
+            except Exception as e:
+                print(f"[KLOK] Meting mislukt: {e}")
+                return
+            if not verslag.get("gemeten"):
+                print(f"[KLOK] {verslag.get('tekst', '')}")
+                return
+            print(f"[KLOK] {verslag['tekst']}")
+            # Melden op het opbouwscherm moet op de main thread gebeuren.
+            tekst = verslag["tekst"] if verslag.get("melden") else ""
+            QTimer.singleShot(0, lambda: self._toon_klokwaarschuwing(tekst))
+
+        threading.Thread(target=_werk, daemon=True).start()
+
+    # ── Belichtingskalibratie ────────────────────────────────────────
+    #
+    # Twee momenten:
+    #   1. bij de eerste foto van een sessie wordt er gekalibreerd
+    #      (meten, en in de modus "corrigeren" ook bijregelen)
+    #   2. na ELKE foto gaat er één regel naar het logboek met wat er
+    #      gemeten is en wat er besloten is
+    #
+    # Dat tweede is het belangrijkste. Zonder die regels kunnen we straks
+    # alleen naar de foto's kijken en gissen; mét die regels is te zien of
+    # het oordeel klopte. Ze reizen mee via app_logger → log_uploader →
+    # photobooth_logs.
+
+    @property
+    def belichting_modus(self) -> str:
+        """"uit", "meten" of "corrigeren". Bij twijfel "meten"."""
+        try:
+            from booth_settings import BoothSettings as _BS
+            if _BS.exists():
+                modus = _BS.load().exposure_mode
+                if modus in ("uit", "meten", "corrigeren"):
+                    return modus
+        except Exception:
+            pass
+        return "meten"
+
+    def _belichting_camera(self):
+        """De webcam-backend, of None als er iets anders draait.
+
+        De Canon-route loopt via camera.py en die is vergrendeld; daar blijven
+        we vanaf. Kalibratie geldt alleen voor de webcam-opstelling.
+        """
+        cam = getattr(self, 'camera', None)
+        if cam is None or type(cam).__name__ != "WebcamCamera":
+            return None
+        return cam
+
+    def _kalibreer_belichting(self):
+        """Kalibreer bij de eerste foto van een sessie. Nooit blokkerend.
+
+        Draait op een achtergronddraad: de meting kost tientallen
+        milliseconden en het introscherm mag daar niet op wachten.
+        """
+        modus = self.belichting_modus
+        if modus == "uit":
+            return
+        cam = self._belichting_camera()
+        if cam is None:
+            return
+
+        sessie = getattr(self, 'session_id', '') or ''
+
+        def _werk():
+            try:
+                import exposure
+                from booth_settings import BoothSettings as _BS
+                bs = _BS.load() if _BS.exists() else _BS()
+
+                oordeel = cam.beoordeel_beeld()
+                if not oordeel or oordeel.get("onderwerp") is None:
+                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
+                                            modus, besluit="geen-beeld"))
+                    return
+
+                # In de modus "meten" leggen we alleen vast wat we zouden
+                # doen. Zo verzamelen we echte cijfers zonder risico.
+                if modus == "meten":
+                    _n, besluit = exposure.bereken_correctie(
+                        oordeel["onderwerp"], bs.exposure_value,
+                        bs.exposure_sensitivity, doel=oordeel["doel"],
+                        standaard_waarde=bs.exposure_default)
+                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
+                                            modus, besluit=f"zou:{besluit}"))
+                    return
+
+                # modus == "corrigeren"
+                if not bs.exposure_probed:
+                    # Eenmalig uitzoeken waar dit apparaat op reageert. Dit
+                    # laat het beeld even schommelen, dus alleen hier — bij
+                    # het opbouwen, niet midden in een sessie.
+                    proef = cam.probeer_belichtingsinstellingen()
+                    bs.exposure_probed = True
+                    bs.exposure_control = proef["instelling"]
+                    bs.exposure_sensitivity = proef["gevoeligheid"]
+                    bs.exposure_default = proef["basis"]
+                    bs.exposure_value = proef["basis"]
+                    bs.save()
+                    print(f"[BELICHTING] Apparaatproef: instelling="
+                          f"{proef['instelling']} gevoeligheid="
+                          f"{proef['gevoeligheid']:+.2f} standaard="
+                          f"{proef['basis']:g}")
+
+                if bs.exposure_control in ("", "none"):
+                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
+                                            modus,
+                                            besluit="apparaat-reageert-nergens-op"))
+                    return
+
+                nieuw, besluit = exposure.bereken_correctie(
+                    oordeel["onderwerp"], bs.exposure_value,
+                    bs.exposure_sensitivity, doel=oordeel["doel"],
+                    standaard_waarde=bs.exposure_default)
+
+                gezet = None
+                if abs(nieuw - bs.exposure_value) > 1e-6:
+                    gezet, _gelezen = cam.zet_belichtingswaarde(
+                        bs.exposure_control, nieuw)
+                    if gezet:
+                        bs.exposure_value = nieuw
+                        bs.save()
+                print(exposure.logregel(
+                    sessie, 0, "kalibratie", oordeel, modus, besluit=besluit,
+                    instelling=bs.exposure_control,
+                    van=bs.exposure_value if gezet else bs.exposure_value,
+                    naar=nieuw, gezet=gezet))
+            except Exception as e:
+                print(f"[BELICHTING] Kalibratie mislukt: {e}")
+
+        threading.Thread(target=_werk, daemon=True).start()
+
+    def _sync_belichting_radios(self):
+        """Radio's + statusregel syncen met de opgeslagen waarden."""
+        if not hasattr(self, '_bel_uit_radio'):
+            return
+        modus = self.belichting_modus
+        radios = (self._bel_uit_radio, self._bel_meten_radio, self._bel_corr_radio)
+        for rb in radios:
+            rb.blockSignals(True)
+        self._bel_uit_radio.setChecked(modus == "uit")
+        self._bel_meten_radio.setChecked(modus == "meten")
+        self._bel_corr_radio.setChecked(modus == "corrigeren")
+        for rb in radios:
+            rb.blockSignals(False)
+        self._refresh_belichting_status()
+
+    def _refresh_belichting_status(self):
+        """Toon wat de proef op dit apparaat heeft opgeleverd."""
+        if not hasattr(self, '_bel_status_lbl'):
+            return
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            if not bs.exposure_probed:
+                tekst = "Dit apparaat is nog niet uitgeprobeerd."
+            elif bs.exposure_control in ("", "none"):
+                tekst = ("Deze camera reageert op geen enkele "
+                         "belichtingsinstelling — er wordt alleen gemeten.")
+            else:
+                tekst = (f"Werkende instelling: {bs.exposure_control}. "
+                         f"Standaard {bs.exposure_default:g}, nu "
+                         f"{bs.exposure_value:g}.")
+            self._bel_status_lbl.setText(tekst)
+        except Exception:
+            pass
+
+    def _on_belichting_modus_changed(self, modus: str):
+        """Operator kiest een andere belichtingsmodus."""
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            bs.exposure_mode = modus
+            bs.save()
+        except Exception as ex:
+            print(f"[BELICHTING] Modus opslaan mislukt: {ex}")
+        print(f"[BELICHTING] Modus: {modus}")
+        self._refresh_belichting_status()
+
+    def _on_belichting_reset(self):
+        """Zet de camera terug op de fabriekswaarde en vergeet de proef.
+
+        Dit is de knop voor als het op een echt feest misgaat. Hij moet altijd
+        werken, ook als de kalibratie zelf in de war is — daarom wordt er niets
+        gemeten en niets berekend, alleen teruggezet.
+        """
+        try:
+            from booth_settings import BoothSettings as _BS
+            bs = _BS.load() if _BS.exists() else _BS()
+            cam = self._belichting_camera()
+            hersteld = False
+            if cam is not None and bs.exposure_control not in ("", "none"):
+                hersteld, _g = cam.zet_belichtingswaarde(
+                    bs.exposure_control, bs.exposure_default)
+            bs.exposure_value = bs.exposure_default
+            bs.exposure_probed = False
+            bs.save()
+            print(f"[BELICHTING] Teruggezet naar standaard "
+                  f"({bs.exposure_default:g}); camera hersteld: "
+                  f"{'ja' if hersteld else 'nee'}")
+            if hasattr(self, '_bel_status_lbl'):
+                self._bel_status_lbl.setText(
+                    "Teruggezet naar de standaardinstelling."
+                    if hersteld else
+                    "Opgeslagen waarden gewist. De camera kon niet worden "
+                    "aangepast (of is niet verbonden).")
+        except Exception as ex:
+            print(f"[BELICHTING] Terugzetten mislukt: {ex}")
+
+    def _log_belichting_foto(self, bestandspad, volgnummer):
+        """Schrijf één regel per foto met wat er op de plaat staat.
+
+        Draait op een achtergronddraad zodat de sessie er niet op wacht.
+        """
+        if self.belichting_modus == "uit":
+            return
+        cam = self._belichting_camera()
+        if cam is None or not bestandspad:
+            return
+        sessie = getattr(self, 'session_id', '') or ''
+        modus = self.belichting_modus
+
+        def _werk():
+            try:
+                import exposure
+                oordeel = cam.beoordeel_bestand(bestandspad)
+                print(exposure.logregel(
+                    sessie, volgnummer, os.path.basename(bestandspad),
+                    oordeel, modus))
+            except Exception as e:
+                print(f"[BELICHTING] Foto beoordelen mislukt: {e}")
+
+        threading.Thread(target=_werk, daemon=True).start()
 
     # ── Auto-updater ─────────────────────────────────────────────────
     @property

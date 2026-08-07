@@ -74,6 +74,23 @@ DEMPING = 0.5
 # de meting iets extreems oplevert, verschuift het beeld nooit meer dan dit.
 MAX_STAP = 2.0
 
+# Harde begrenzing ten opzichte van de fabrieksinstelling van het apparaat.
+# Wat de metingen ook zeggen en hoeveel sessies er ook overheen gaan: verder
+# dan dit komt de camera nooit van zijn standaard af. Een kalibratie die op
+# hol slaat is erger dan geen kalibratie — dan staat er 's avonds een booth
+# die alleen nog zwart of wit maakt en niemand weet waarom.
+MARGE_VAN_STANDAARD = 3.0
+
+# Vanaf welk aandeel uitgebeten beeld we het doel omlaag trekken. Uitgebeten
+# wit is onherstelbaar: daar is geen informatie meer om terug te halen. Iets
+# te donker is dat wel. Bij twijfel dus naar onder.
+GRENS_UITGEBETEN = 0.02      # 2% van het onderwerp
+DOELVERLAGING_BIJ_UITGEBETEN = 20.0
+
+# Pixelwaarden waarboven/waaronder we een pixel als verloren beschouwen.
+DREMPEL_UITGEBETEN = 250
+DREMPEL_DICHTGELOPEN = 5
+
 # Volgorde waarin we instellingen proberen. Belichting eerst: die verandert de
 # sluitertijd en geeft de schoonste correctie. Gain verhoogt de ruis en komt
 # daarom als laatste.
@@ -136,6 +153,58 @@ def _luma(frame):
     return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 
+def beoordeel(frame):
+    """Volledig oordeel over één beeld. Levert een dict met alles wat we
+    later willen kunnen nakijken:
+
+        onderwerp        gezichtsgewogen helderheid (0-255) of None
+        bron             'gezicht' / 'midden' / 'leeg'
+        gezichten        aantal gevonden gezichten
+        uitgebeten       aandeel van het onderwerp boven de witdrempel
+        dichtgelopen     aandeel van het onderwerp onder de zwartdrempel
+        beeldgemiddelde  het gewone gemiddelde, puur ter vergelijking
+        doel             de streefwaarde die voor DIT beeld geldt
+
+    Het beeldgemiddelde gaat mee omdat dat precies de maat is die we NIET
+    gebruiken. Met een flitser in een donkere zaal ligt dat gemiddelde altijd
+    laag terwijl het gezicht perfect kan zijn. Door beide weg te schrijven is
+    achteraf te zien of de weging deed wat hij moest doen.
+    """
+    leeg = {"onderwerp": None, "bron": "leeg", "gezichten": 0,
+            "uitgebeten": 0.0, "dichtgelopen": 0.0,
+            "beeldgemiddelde": None, "doel": DOELWAARDE}
+    if not _CV2 or frame is None or getattr(frame, "size", 0) == 0:
+        return leeg
+    try:
+        onderwerp, bron, gewichten, grijs, aantal = _meet_intern(frame)
+        if onderwerp is None:
+            return leeg
+
+        # Alleen de pixels van het onderwerp tellen mee voor uitgebeten en
+        # dichtgelopen. Een felle lamp in de achtergrond is geen reden om het
+        # gezicht donkerder te maken.
+        masker = gewichten >= 0.99
+        if not masker.any():
+            masker = np.ones_like(gewichten, dtype=bool)
+        onderwerp_pixels = grijs[masker]
+        uitgebeten = float((onderwerp_pixels >= DREMPEL_UITGEBETEN).mean())
+        dichtgelopen = float((onderwerp_pixels <= DREMPEL_DICHTGELOPEN).mean())
+
+        doel = DOELWAARDE
+        if uitgebeten > GRENS_UITGEBETEN:
+            # Er gaat al wit verloren. Streef lager, ook al zegt het
+            # gemiddelde dat het donker genoeg is.
+            doel = DOELWAARDE - DOELVERLAGING_BIJ_UITGEBETEN
+
+        return {"onderwerp": float(onderwerp), "bron": bron,
+                "gezichten": int(aantal),
+                "uitgebeten": uitgebeten, "dichtgelopen": dichtgelopen,
+                "beeldgemiddelde": float(grijs.mean()), "doel": float(doel)}
+    except Exception as e:
+        print(f"[BELICHTING] Beoordelen mislukt: {e}")
+        return leeg
+
+
 def meet_gezichtsgewogen(frame):
     """Gemiddelde helderheid, met de gezichten zwaar meegewogen.
 
@@ -150,6 +219,21 @@ def meet_gezichtsgewogen(frame):
     if not _CV2 or frame is None or getattr(frame, "size", 0) == 0:
         return None, "leeg"
     try:
+        waarde, bron, _gewichten, _grijs, _aantal = _meet_intern(frame)
+        return waarde, bron
+    except Exception as e:
+        print(f"[BELICHTING] Meten mislukt: {e}")
+        return None, "leeg"
+
+
+def _meet_intern(frame):
+    """Kern van de meting. Levert (waarde, bron, gewichten, grijs, aantal).
+
+    Apart zodat beoordeel() de gewichten en het grijsbeeld kan hergebruiken
+    voor het tellen van uitgebeten en dichtgelopen pixels, zonder alles twee
+    keer te berekenen.
+    """
+    if True:
         grijs = _luma(frame)
         h, b = grijs.shape[:2]
 
@@ -194,12 +278,9 @@ def meet_gezichtsgewogen(frame):
 
         totaal = float(gewichten.sum())
         if totaal <= 0:
-            return float(grijs.mean()), bron
+            return float(grijs.mean()), bron, gewichten, grijs, len(vakjes)
         waarde = float((grijs.astype(np.float32) * gewichten).sum() / totaal)
-        return waarde, bron
-    except Exception as e:
-        print(f"[BELICHTING] Meten mislukt: {e}")
-        return None, "leeg"
+        return waarde, bron, gewichten, grijs, len(vakjes)
 
 
 # ── Reageert dit apparaat ergens op? ─────────────────────────────────────
@@ -273,26 +354,84 @@ def probeer_instellingen(lees_frame, zet_prop, lees_prop):
 
 # ── Corrigeren ───────────────────────────────────────────────────────────
 
-def bereken_correctie(gemeten, huidige_waarde, gevoeligheid):
-    """Bereken de nieuwe instelwaarde, gedempt en begrensd.
+def bereken_correctie(gemeten, huidige_waarde, gevoeligheid,
+                      doel=None, standaard_waarde=None):
+    """Bereken de nieuwe instelwaarde, gedempt en dubbel begrensd.
 
-    Levert (nieuwe_waarde, reden). Is er niets te doen, dan is nieuwe_waarde
-    gelijk aan huidige_waarde en legt reden uit waarom.
+    Levert (nieuwe_waarde, besluit). Is er niets te doen, dan is
+    nieuwe_waarde gelijk aan huidige_waarde en legt besluit uit waarom.
+
+    Twee begrenzingen, en die doen verschillend werk:
+      - MAX_STAP begrenst één stap, zodat één misgelopen meting — iemand die
+        vlak voor de lens langsloopt — de camera niet in één klap dichtdraait.
+      - MARGE_VAN_STANDAARD begrenst waar hij over meerdere sessies heen kan
+        uitkomen. Zonder die tweede rem kan een reeks kleine stappen in
+        dezelfde richting hem alsnog helemaal van de standaard af voeren.
     """
+    doel = DOELWAARDE if doel is None else float(doel)
     if gemeten is None:
-        return huidige_waarde, "niets gemeten"
-    afwijking = DOELWAARDE - gemeten
+        return huidige_waarde, "niets-gemeten"
+    afwijking = doel - gemeten
     if abs(afwijking) <= DODE_ZONE:
-        return huidige_waarde, (f"binnen de dode zone "
-                                f"(gemeten {gemeten:.0f}, doel {DOELWAARDE:.0f})")
+        return huidige_waarde, f"binnen-dode-zone(afwijking={afwijking:+.0f})"
     if not gevoeligheid:
-        return huidige_waarde, "geen werkende instelling bekend"
+        return huidige_waarde, "geen-werkende-instelling"
 
     ruwe_stap = afwijking / gevoeligheid
     stap = ruwe_stap * DEMPING
-    # Begrenzen. Zonder deze rem zou één misgelopen meting — iemand die vlak
-    # voor de lens langsloopt — de camera in één keer helemaal dichtdraaien.
     stap = max(-MAX_STAP, min(MAX_STAP, stap))
     nieuw = huidige_waarde + stap
-    return nieuw, (f"gemeten {gemeten:.0f}, doel {DOELWAARDE:.0f} → "
-                   f"{stap:+.2f} (ongedempt {ruwe_stap:+.2f})")
+
+    begrensd = ""
+    if standaard_waarde is not None:
+        onder = standaard_waarde - MARGE_VAN_STANDAARD
+        boven = standaard_waarde + MARGE_VAN_STANDAARD
+        if nieuw < onder or nieuw > boven:
+            nieuw = max(onder, min(boven, nieuw))
+            begrensd = ",geraakt-marge"
+
+    return nieuw, (f"corrigeren(afwijking={afwijking:+.0f},"
+                   f"stap={nieuw - huidige_waarde:+.2f},"
+                   f"ongedempt={ruwe_stap:+.2f}{begrensd})")
+
+
+def logregel(sessie_id, volgnummer, bestandsnaam, oordeel, modus,
+             besluit="", instelling="", van=None, naar=None, gezet=None):
+    """Bouw één regel per foto voor het logboek dat de booth doorstuurt.
+
+    Bewust één regel met naam=waarde-paren: makkelijk te lezen, makkelijk te
+    filteren op '[BELICHTING]' en makkelijk te ontleden als we straks de
+    testsessies naast de foto's willen leggen.
+
+    Er staat een VOLGNUMMER en een sessie-id in en geen tijdstip. Op de booth
+    uit het veld liep de klok acht uur achter; tijdstempels in dit logboek
+    kunnen dus scheef staan. Volgnummer plus sessie-id houden de volgorde
+    hoe dan ook overeind.
+    """
+    def g(sleutel, standaard=None):
+        return oordeel.get(sleutel, standaard) if oordeel else standaard
+
+    onderwerp = g("onderwerp")
+    beeldgem = g("beeldgemiddelde")
+    delen = [
+        f"sessie={sessie_id or '-'}",
+        f"nr={volgnummer}",
+        f"bestand={bestandsnaam or '-'}",
+        f"onderwerp={onderwerp:.0f}" if onderwerp is not None else "onderwerp=-",
+        f"beeldgemiddelde={beeldgem:.0f}" if beeldgem is not None else "beeldgemiddelde=-",
+        f"bron={g('bron', '-')}",
+        f"gezichten={g('gezichten', 0)}",
+        f"uitgebeten={g('uitgebeten', 0.0) * 100:.1f}%",
+        f"dichtgelopen={g('dichtgelopen', 0.0) * 100:.1f}%",
+        f"doel={g('doel', DOELWAARDE):.0f}",
+        f"modus={modus}",
+    ]
+    if besluit:
+        delen.append(f"besluit={besluit}")
+    if instelling:
+        delen.append(f"instelling={instelling}")
+    if van is not None and naar is not None:
+        delen.append(f"waarde={van:.2f}->{naar:.2f}")
+    if gezet is not None:
+        delen.append(f"gezet={'ja' if gezet else 'nee'}")
+    return "[BELICHTING] " + " ".join(delen)

@@ -39,6 +39,12 @@ class WebcamWorker(QThread):
         self._running = False
         self._last_raw_frame = None  # Full resolution BGR frame for capture
         self._frame_lock = threading.Lock()
+        # Camera-instellingen worden NIET rechtstreeks vanaf een andere draad
+        # gezet. cv2.VideoCapture is niet draadveilig, en deze draad zit
+        # vrijwel continu in cap.read(). Verzoeken komen in deze wachtrij en
+        # worden hier tussen twee frames door afgehandeld.
+        self._wachtrij = []
+        self._wachtrij_slot = threading.Lock()
 
     # Live-view = schermpreview, geen eindproduct. Daarom bewust zuinig:
     #   - encode-breedte beperkt tot 1280 (schermpreview is nooit groter en
@@ -52,9 +58,52 @@ class WebcamWorker(QThread):
     _LV_JPEG_Q = 80
     _LV_SLEEP_MS = 40  # ~25 fps
 
+    def zet_prop_async(self, prop_id, waarde, klaar=None):
+        """Vraag om een camera-instelling. Wordt door de leesdraad uitgevoerd.
+
+        `klaar` is een optionele functie die de teruggelezen waarde krijgt,
+        zodat de aanvrager kan zien of de driver de instelling écht overnam.
+        """
+        with self._wachtrij_slot:
+            self._wachtrij.append((prop_id, waarde, klaar))
+
+    def lees_prop(self, prop_id):
+        """Lees een camera-instelling. Alleen lezen is onschuldig genoeg om
+        rechtstreeks te doen."""
+        try:
+            return float(self.cap.get(prop_id))
+        except Exception:
+            return 0.0
+
+    def snapshot(self):
+        """Kopie van het laatste volledige frame, of None."""
+        with self._frame_lock:
+            if self._last_raw_frame is None:
+                return None
+            return self._last_raw_frame.copy()
+
+    def _verwerk_wachtrij(self):
+        with self._wachtrij_slot:
+            taken = self._wachtrij
+            self._wachtrij = []
+        for prop_id, waarde, klaar in taken:
+            gelezen = None
+            try:
+                self.cap.set(prop_id, waarde)
+                gelezen = float(self.cap.get(prop_id))
+            except Exception as e:
+                print(f"[BELICHTING] Instelling {prop_id} zetten mislukt: {e}")
+            if klaar:
+                try:
+                    klaar(gelezen)
+                except Exception:
+                    pass
+
     def run(self):
         self._running = True
         while self._running and self.cap and self.cap.isOpened():
+            if self._wachtrij:
+                self._verwerk_wachtrij()
             ret, frame = self.cap.read()
             if ret:
                 # Store full-res frame for capture (ongewijzigd, volle kwaliteit)
@@ -252,6 +301,97 @@ class WebcamCamera:
                 return data
         # Fallback to last live view frame
         return self._last_frame
+
+    # ── Belichtingskalibratie ────────────────────────────────────────
+    #
+    # Zie exposure.py voor het waarom. Hier staat alleen de koppeling met de
+    # camera: meten op het laatste live-frame, en een instelling zetten via
+    # de wachtrij van de leesdraad.
+    #
+    # Alles hieronder is faalveilig. Lukt er iets niet, dan blijft de camera
+    # gewoon staan zoals hij stond en gaat de sessie door. Een booth die geen
+    # foto meer maakt is oneindig veel erger dan een foto die een tik te
+    # donker is.
+
+    def beoordeel_beeld(self):
+        """Oordeel over het laatste live-frame. Zie exposure.beoordeel()."""
+        try:
+            import exposure
+            if not self._worker:
+                return None
+            return exposure.beoordeel(self._worker.snapshot())
+        except Exception as e:
+            print(f"[BELICHTING] Beoordelen mislukt: {e}")
+            return None
+
+    def beoordeel_bestand(self, pad):
+        """Oordeel over een opgeslagen foto. Gebruikt om per foto vast te
+        leggen wat er daadwerkelijk op de plaat staat."""
+        try:
+            import exposure
+            if not _CV2_AVAILABLE:
+                return None
+            beeld = cv2.imread(pad)
+            return exposure.beoordeel(beeld)
+        except Exception as e:
+            print(f"[BELICHTING] Beoordelen van {pad} mislukt: {e}")
+            return None
+
+    def probeer_belichtingsinstellingen(self):
+        """Zoek uit welke camera-instelling op dit apparaat echt werkt.
+
+        Duurt even (er worden waarden gezet en teruggelezen) en laat het beeld
+        zichtbaar schommelen. Daarom nooit tijdens een sessie aanroepen —
+        alleen bij het opbouwen van de booth.
+        """
+        try:
+            import exposure, time as _t
+            if not self._worker:
+                return {"instelling": "none", "gevoeligheid": 0.0, "basis": 0.0}
+
+            def lees_frame():
+                # Even wachten zodat de camera de nieuwe instelling echt in
+                # het beeld heeft doorgevoerd. Webcams lopen een paar frames
+                # achter op een cap.set().
+                _t.sleep(0.35)
+                return self._worker.snapshot()
+
+            def zet(pid, waarde):
+                klaar = threading.Event()
+                self._worker.zet_prop_async(pid, waarde, lambda _g: klaar.set())
+                klaar.wait(timeout=2.0)
+
+            return exposure.probeer_instellingen(
+                lees_frame, zet, self._worker.lees_prop)
+        except Exception as e:
+            print(f"[BELICHTING] Instellingen uitproberen mislukt: {e}")
+            return {"instelling": "none", "gevoeligheid": 0.0, "basis": 0.0}
+
+    def zet_belichtingswaarde(self, instelling_naam, waarde):
+        """Zet een belichtingsinstelling. Levert (gelukt, teruggelezen)."""
+        try:
+            import exposure
+            pid = exposure._prop_id(instelling_naam)
+            if pid is None or not self._worker:
+                return False, None
+            resultaat = {}
+            klaar = threading.Event()
+
+            def af(gelezen):
+                resultaat["gelezen"] = gelezen
+                klaar.set()
+
+            self._worker.zet_prop_async(pid, waarde, af)
+            if not klaar.wait(timeout=2.0):
+                return False, None
+            gelezen = resultaat.get("gelezen")
+            if gelezen is None:
+                return False, None
+            # Alleen 'gelukt' als de driver de waarde ook echt overnam.
+            return abs(float(gelezen) - float(waarde)) < 0.51, gelezen
+        except Exception as e:
+            print(f"[BELICHTING] Waarde zetten mislukt: {e}")
+            return False, None
 
     def is_connected(self):
         return self._connected
