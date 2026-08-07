@@ -3,11 +3,15 @@ name: Installer bouwen
 # Bouwt de Windows-installer op een windows-latest machine, zodat er niemand
 # meer een eigen Windows-pc hoeft aan te zetten om uit te rollen.
 #
-# Twee manieren om te starten:
+# Drie manieren om te starten:
 #   1. Handmatig (workflow_dispatch) — bouwt de installer en hangt hem als
 #      artefact aan de run. Er wordt dan GEEN release gemaakt. Dit is de
 #      veilige manier om te controleren of een tak bouwt.
-#   2. Bij het pushen van een tag v* — bouwt de installer en hangt hem aan de
+#      Let op: GitHub biedt de handmatige knop pas aan zodra dit bestand op
+#      de hoofdtak staat. Op een nieuwe tak gebruik je punt 2.
+#   2. Bij elke push naar een release/** of beta/** tak — zodat een tak
+#      aantoonbaar bouwt vóórdat er iets van uitgerold wordt.
+#   3. Bij het pushen van een tag v* — bouwt de installer en hangt hem aan de
 #      release die bij die tag hoort, als die al bestaat.
 #
 # BELANGRIJK: deze werkstroom publiceert NOOIT zelf een release. Een release
@@ -23,6 +27,9 @@ on:
         required: false
         default: "3.12"
   push:
+    branches:
+      - "release/**"
+      - "beta/**"
     tags:
       - "v*"
 
