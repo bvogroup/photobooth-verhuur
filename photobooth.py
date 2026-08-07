@@ -4667,6 +4667,31 @@ class PhotoboothWindow(QMainWindow):
         self._inline_no_wifi_tip.hide()
         right_lay.addWidget(self._inline_no_wifi_tip)
 
+        # Derde stand: delen is niet gelukt. Tonen we in plaats van de QR-box.
+        #
+        # Hier stond eerst een terugval-QR naar de booth zelf
+        # (http://192.168.1.x:8080/...). Die werkt alleen als de gast op
+        # hetzelfde wifi zit als de booth, en op een bruiloft of bedrijfsfeest
+        # zit vrijwel niemand daarop — die staat op mobiel internet. De gast
+        # scande, kreeg een foutmelding en concludeerde dat het product niet
+        # werkt. Een kapotte QR is slechter dan geen QR: hij beschadigt het
+        # vertrouwen precies op het moment dat de gast enthousiast is.
+        #
+        # De tekst is bewust kort (er staat een rij achter hem) en vermijdt
+        # het woord "fout". Zijn foto is namelijk gewoon gelukt; alleen het
+        # delen lukt nu niet.
+        self._inline_deel_mislukt = QLabel("")
+        self._inline_deel_mislukt.setAlignment(Qt.AlignCenter)
+        self._inline_deel_mislukt.setFont(QFont("DM Sans", 14, QFont.Bold))
+        self._inline_deel_mislukt.setWordWrap(True)
+        self._inline_deel_mislukt.setStyleSheet(
+            "QLabel { background: rgba(255,255,255,0.10); color: white; "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
+            "padding: 22px 18px; }"
+        )
+        self._inline_deel_mislukt.hide()
+        right_lay.addWidget(self._inline_deel_mislukt)
+
         # Oude '📱 QR-code'-knop is volledig vervangen door de inline QR-box
         # hierboven. We houden de attribute voor backwards-compat van legacy
         # code-paden die hem nog refereren (setVisible/setEnabled in andere
@@ -7670,11 +7695,6 @@ class PhotoboothWindow(QMainWindow):
         # First photo: show intro screen, then countdown
         # Subsequent photos: skip intro, go straight to countdown
         if self.current_photo_num == 0:
-            # Belichtingskalibratie bij de eerste foto van de sessie. Het
-            # introscherm duurt een paar seconden; die tijd gebruiken we om te
-            # meten en zo nodig bij te regelen. Draait op een achtergrondraad,
-            # dus het scherm wacht nergens op.
-            self._kalibreer_belichting()
             self._countdown_phase = "intro"
             self.countdown_ring.hide()
             # Show custom intro image or default text
@@ -10511,16 +10531,12 @@ class PhotoboothWindow(QMainWindow):
     def _prepare_qr_code(self):
         """Prepare QR code data in background so it's ready when user taps QR button."""
         try:
-            from qr_generator import generate_session_url, generate_qr_pixmap
-            from web_server import register_session
+            from qr_generator import generate_qr_pixmap
 
-            session_id = self.session_id or self._new_session_id()
-            template_name = self.selected_template.name if self.selected_template else ""
-
-            register_session(
-                session_id, self.display_strip_path, self.photos, template_name,
-                boomerang_path=getattr(self, '_boomerang_path', None),
-            )
+            # De lokale webserver en zijn sessie-registratie zijn hier weg.
+            # Die bestonden alleen om de terugval-QR te bedienen, en die QR
+            # wees naar de booth zelf op het plaatselijke netwerk — waar de
+            # gast vrijwel nooit op zit. Zie _toon_delen_mislukt().
 
             cloud_url = getattr(self, '_cloud_url', '')
             if cloud_url:
@@ -10538,12 +10554,11 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[QR] Voorbereid met cloud URL: {url}")
             elif not getattr(self, '_cloud_upload_active', False):
                 # Er loopt geen upload (uitgezet, mislukt of nooit gestart) en
-                # er is geen cloud-URL → er komt niets meer. Meteen de lokale
-                # terugval-QR tonen in plaats van een spinner die eeuwig
-                # blijft draaien.
-                print("[QR] Geen cloud-upload actief — lokale terugval-QR")
-                generate_session_url(session_id, config.WEB_SERVER_PORT)
-                self._show_local_fallback_qr()
+                # er is geen cloud-URL → er komt niets meer. Meteen de
+                # mededeling tonen in plaats van een spinner die eeuwig blijft
+                # draaien.
+                print("[QR] Geen cloud-upload actief — geen QR, wel mededeling")
+                self._toon_delen_mislukt()
             else:
                 # Cloud upload still in progress — show animated spinner
                 self.qr_label.hide()
@@ -10552,8 +10567,6 @@ class PhotoboothWindow(QMainWindow):
                 self._qr_ready = False
                 self._update_inline_qr(None, "", ready=False)
                 print("[QR] Cloud upload nog bezig, spinner getoond")
-                # Register local session anyway (for fallback)
-                generate_session_url(session_id, config.WEB_SERVER_PORT)
                 # Vangnet-poll: werk de inline QR bij zodra de cloud-URL
                 # binnenkomt. Voorheen startte deze poll alleen via de
                 # (verwijderde) QR-knop — daardoor kon de spinner eeuwig
@@ -10572,13 +10585,34 @@ class PhotoboothWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _update_inline_qr(self, pixmap, url, ready: bool):
-        """Werk de INLINE QR-display bij. Toont of de pixmap of de
-        'uploading...' fallback. Beslist ook QR-box vs no-wifi-tip op
-        basis van wifi/gallery_enabled.
+    def _deel_mislukt_tekst(self) -> str:
+        """Korte, eerlijke mededeling wanneer delen niet lukt.
 
-        - ready=True + wifi → QR-box zichtbaar, tip verborgen
-        - ready=False + wifi → spinner-fallback in QR-box
+        Twee dingen sturen deze tekst:
+
+        De gast mag niet denken dat hij iets kwijt is. Zijn foto's ZIJN
+        gemaakt; alleen het versturen lukt niet. "Er is iets misgegaan" zou
+        dus onwaar zijn en onnodig schrikken.
+
+        En het moet kort — er staat een rij achter hem. Twee regels, geen
+        uitleg over waarom, geen foutcode.
+        """
+        ev = self.active_event
+        print_aan = bool(getattr(ev, 'print_enabled', True)) if ev else True
+        if print_aan:
+            return ("📸  Je foto's zijn gelukt\n"
+                    "Delen lukt nu even niet — je foto komt uit de printer.")
+        return ("📸  Je foto's zijn gelukt\n"
+                "Delen lukt nu even niet. Vraag ze na afloop even aan de "
+                "gastheer.")
+
+    def _update_inline_qr(self, pixmap, url, ready: bool, mislukt: bool = False):
+        """Werk de INLINE QR-display bij.
+
+        Vier standen:
+        - mislukt=True → mededeling dat delen niet lukt, geen QR
+        - ready=True + wifi → QR-box zichtbaar
+        - ready=False + wifi → spinner in de QR-box (upload loopt nog)
         - geen wifi of gallery uit → tip-box zichtbaar, QR verborgen
         """
         if not hasattr(self, '_inline_qr_box') or self._inline_qr_box is None:
@@ -10586,21 +10620,38 @@ class PhotoboothWindow(QMainWindow):
         ev = self.active_event
         wifi_ok = bool(getattr(self, '_has_internet', True))
         gallery_ok = bool(getattr(ev, 'gallery_enabled', True)) if ev else True
-        # Bij gallery_enabled=False is QR niet beschikbaar — verberg allebei
-        if not gallery_ok:
+
+        def _zet(widget_naam, zichtbaar):
             try:
-                self._inline_qr_box.setVisible(False)
-                self._inline_no_wifi_tip.setVisible(False)
+                widget = getattr(self, widget_naam, None)
+                if widget is not None:
+                    widget.setVisible(zichtbaar)
             except Exception:
                 pass
+
+        # Bij gallery_enabled=False is delen sowieso uitgezet — dan is er ook
+        # niets misgegaan en hoort er geen mededeling te staan.
+        if not gallery_ok:
+            _zet('_inline_qr_box', False)
+            _zet('_inline_no_wifi_tip', False)
+            _zet('_inline_deel_mislukt', False)
             return
+
+        if mislukt:
+            try:
+                self._inline_deel_mislukt.setText(self._deel_mislukt_tekst())
+            except Exception:
+                pass
+            _zet('_inline_qr_box', False)
+            _zet('_inline_no_wifi_tip', False)
+            _zet('_inline_deel_mislukt', True)
+            return
+
         # Wifi-conditie bepaalt QR-box vs tip-box
         show_qr_box = wifi_ok
-        try:
-            self._inline_qr_box.setVisible(show_qr_box)
-            self._inline_no_wifi_tip.setVisible(not show_qr_box)
-        except Exception:
-            pass
+        _zet('_inline_qr_box', show_qr_box)
+        _zet('_inline_no_wifi_tip', not show_qr_box)
+        _zet('_inline_deel_mislukt', False)
         if not show_qr_box:
             return
         if ready and pixmap is not None:
@@ -10640,7 +10691,7 @@ class PhotoboothWindow(QMainWindow):
             self._qr_ready = True
         elif not getattr(self, '_cloud_upload_active', False):
             # Geen upload meer onderweg → lokale terugval-QR i.p.v. spinner.
-            self._show_local_fallback_qr()
+            self._toon_delen_mislukt()
         else:
             # Still uploading — show animated spinner, start polling
             self.qr_label.hide()
@@ -10686,7 +10737,7 @@ class PhotoboothWindow(QMainWindow):
             # pollen op iets dat niet meer komt.
             print("[QR] Upload niet meer actief zonder cloud-URL — terugval")
             self._qr_poll_timer.stop()
-            self._show_local_fallback_qr()
+            self._toon_delen_mislukt()
 
     def _animate_qr_spinner(self):
         """Animate the QR loading label dots."""
@@ -10941,21 +10992,26 @@ class PhotoboothWindow(QMainWindow):
                 except Exception as e:
                     print(f"[CLOUD] Kon QR niet bijwerken: {e}")
         else:
-            print("[CLOUD] Upload mislukt, fallback naar lokale QR")
-            self._show_local_fallback_qr()
+            print("[CLOUD] Upload mislukt — geen QR, wel een mededeling")
+            self._toon_delen_mislukt()
 
-    def _show_local_fallback_qr(self):
-        """Toon de lokale terugval-QR (booth-webserver op het wifi-netwerk).
+    def _toon_delen_mislukt(self):
+        """Geen QR tonen, wel eerlijk zijn. Zie ook _deel_mislukt_tekst().
 
-        Wordt gebruikt zodra vaststaat dat er géén cloud-URL meer komt:
-        upload mislukt, upload uitgeschakeld, of hij is nooit gestart.
-        Stopt de poll-timer en de spinner, zodat de gast nooit voor een
-        eeuwig draaiend rondje staat.
+        Wordt aangeroepen zodra vaststaat dat er géén cloud-URL meer komt:
+        upload mislukt, upload uitgeschakeld, of nooit gestart.
 
-        Staat de gast nog niet op het deelscherm, dan wordt hier alleen de
-        spinner-state opgeruimd; _prepare_qr_code() roept deze functie
-        opnieuw aan zodra het deelscherm verschijnt (het ziet dan dat
-        _cloud_upload_active False is).
+        Hier stond een terugval-QR naar de booth zelf. Die wees naar
+        http://192.168.1.x:8080/... — het adres van de booth in het
+        plaatselijke netwerk. Dat werkt alleen als de gast op hetzelfde wifi
+        zit, en op een feest zit vrijwel niemand daarop. De gast scande, kreeg
+        een foutmelding en dacht dat het product stuk was. Een kapotte QR is
+        slechter dan geen QR.
+
+        Wat wél overeind blijft: er mag geen enkel pad zijn dat stil eindigt
+        met een draaiende spinner. Daarom stopt deze functie altijd de
+        poll-timer en de spinner, ook als er niets te tonen valt omdat de gast
+        nog niet op het deelscherm staat.
         """
         try:
             if hasattr(self, '_qr_poll_timer') and self._qr_poll_timer is not None \
@@ -10963,32 +11019,35 @@ class PhotoboothWindow(QMainWindow):
                 self._qr_poll_timer.stop()
         except Exception:
             pass
-        try:
-            from qr_generator import generate_session_url, generate_qr_pixmap
-            if self.session_id:
-                local_url = generate_session_url(
-                    self.session_id, config.WEB_SERVER_PORT
-                )
-                if local_url and self.state == State.REVIEW:
-                    qr_pixmap = generate_qr_pixmap(local_url, size=360)
-                    self.qr_label.setPixmap(qr_pixmap)
-                    self.qr_url_label.setText(local_url)
-                    self.qr_label.show()
-                    self.qr_url_label.show()
-                    self._stop_qr_spinner()
-                    self._qr_ready = True
-                    # Inline QR ook naar de lokale fallback-URL
-                    self._update_inline_qr(qr_pixmap, local_url, ready=True)
-                    print(f"[CLOUD] Fallback QR (lokaal) getoond: {local_url}")
-                    return
-        except Exception as e:
-            print(f"[CLOUD] Fallback QR mislukt: {e}")
-        # Geen QR gelukt (of gast staat niet op het deelscherm): hoe dan ook
-        # de spinner stoppen — beter geen QR dan een eeuwig rondje.
+
+        # Spinner stoppen — altijd, wat er verder ook gebeurt.
         try:
             self._stop_qr_spinner()
         except Exception:
             pass
+
+        # De QR-code is er niet. _qr_ready blijft dus False: er is niets om te
+        # tonen en niets om op te wachten.
+        self._qr_ready = False
+        try:
+            self.qr_label.clear()
+            self.qr_label.hide()
+            self.qr_url_label.hide()
+        except Exception:
+            pass
+
+        # Fullscreen QR-overlay (als die openstaat) niet met een lege doos
+        # laten staan.
+        try:
+            if hasattr(self, '_qr_overlay'):
+                self._qr_overlay.hide()
+        except Exception:
+            pass
+
+        try:
+            self._update_inline_qr(None, "", ready=False, mislukt=True)
+        except Exception as e:
+            print(f"[CLOUD] Mededeling tonen mislukt: {e}")
 
     def _start_gdrive_upload(self):
         """Upload photos to Google Drive in the background (if enabled)."""
@@ -13217,10 +13276,10 @@ class PhotoboothWindow(QMainWindow):
         # ── Card: Belichtingskalibratie ──────────────────────────────
         card_bel, card_bel_lay = self._settings_card("Belichting")
         bel_intro = QLabel(
-            "Meet bij de eerste foto van een sessie hoe licht het onderwerp "
-            "is en kan de camera bijregelen. Gaat er iets mis op een feest, "
-            "zet dit dan op Uit en druk op 'Terug naar standaard' — de camera "
-            "staat dan weer zoals hij uit de fabriek kwam."
+            "Meet bij elke foto hoe licht het onderwerp is en schrijft dat weg "
+            "in het logboek. Er wordt niets aan de foto of aan de camera "
+            "veranderd — puur meten, zodat we later kunnen bekijken waar de "
+            "verschillen vandaan komen."
         )
         bel_intro.setFont(QFont("DM Sans", 11))
         bel_intro.setWordWrap(True)
@@ -13230,9 +13289,8 @@ class PhotoboothWindow(QMainWindow):
         bel_row = QHBoxLayout()
         bel_row.setSpacing(14)
         self._bel_uit_radio = QRadioButton("Uit")
-        self._bel_meten_radio = QRadioButton("Alleen meten (standaard)")
-        self._bel_corr_radio = QRadioButton("Meten en bijregelen")
-        for rb in (self._bel_uit_radio, self._bel_meten_radio, self._bel_corr_radio):
+        self._bel_meten_radio = QRadioButton("Meten (standaard)")
+        for rb in (self._bel_uit_radio, self._bel_meten_radio):
             rb.setFont(QFont("DM Sans", 13))
             rb.setStyleSheet(f"color: {config.COLOR_TEXT};")
             bel_row.addWidget(rb)
@@ -13243,8 +13301,6 @@ class PhotoboothWindow(QMainWindow):
             lambda on: self._on_belichting_modus_changed('uit') if on else None)
         self._bel_meten_radio.toggled.connect(
             lambda on: self._on_belichting_modus_changed('meten') if on else None)
-        self._bel_corr_radio.toggled.connect(
-            lambda on: self._on_belichting_modus_changed('corrigeren') if on else None)
 
         self._bel_status_lbl = QLabel("")
         self._bel_status_lbl.setFont(QFont("DM Sans", 11))
@@ -13252,19 +13308,23 @@ class PhotoboothWindow(QMainWindow):
         self._bel_status_lbl.setStyleSheet(f"color: {config.COLOR_TEXT_DIM};")
         card_bel_lay.addWidget(self._bel_status_lbl)
 
-        bel_reset_btn = QPushButton("Terug naar standaard")
-        bel_reset_btn.setCursor(Qt.PointingHandCursor)
-        bel_reset_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
-        bel_reset_btn.setFixedHeight(40)
-        bel_reset_btn.setStyleSheet(
+        bel_proef_btn = QPushButton("Camera uitproberen")
+        bel_proef_btn.setCursor(Qt.PointingHandCursor)
+        bel_proef_btn.setFont(QFont("DM Sans", 12, QFont.Bold))
+        bel_proef_btn.setFixedHeight(40)
+        bel_proef_btn.setToolTip(
+            "Zet eenmalig wat belichtingswaarden en kijkt of het beeld "
+            "meebeweegt. Het beeld schommelt daarbij even — niet tijdens een "
+            "sessie doen.")
+        bel_proef_btn.setStyleSheet(
             f"QPushButton {{ background: {config.COLOR_SECONDARY}; "
             f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
             f"border-radius: 8px; padding: 8px 18px; font-size: 12px; }}"
             f"QPushButton:hover {{ background: {config.COLOR_SECONDARY_HOVER}; }}"
         )
-        bel_reset_btn.clicked.connect(self._on_belichting_reset)
+        bel_proef_btn.clicked.connect(self._proef_camera_eenmalig)
         bel_btn_row = QHBoxLayout()
-        bel_btn_row.addWidget(bel_reset_btn)
+        bel_btn_row.addWidget(bel_proef_btn)
         bel_btn_row.addStretch()
         card_bel_lay.addLayout(bel_btn_row)
         tab5_lay.addWidget(card_bel)
@@ -16347,12 +16407,12 @@ class PhotoboothWindow(QMainWindow):
 
     @property
     def belichting_modus(self) -> str:
-        """"uit", "meten" of "corrigeren". Bij twijfel "meten"."""
+        """"uit" of "meten". Bij twijfel "meten"."""
         try:
             from booth_settings import BoothSettings as _BS
             if _BS.exists():
                 modus = _BS.load().exposure_mode
-                if modus in ("uit", "meten", "corrigeren"):
+                if modus in ("uit", "meten"):
                     return modus
         except Exception:
             pass
@@ -16369,86 +16429,40 @@ class PhotoboothWindow(QMainWindow):
             return None
         return cam
 
-    def _kalibreer_belichting(self):
-        """Kalibreer bij de eerste foto van een sessie. Nooit blokkerend.
+    def _proef_camera_eenmalig(self):
+        """Zoek eenmalig uit of deze camera ergens op reageert. Alleen diagnose.
 
-        Draait op een achtergronddraad: de meting kost tientallen
-        milliseconden en het introscherm mag daar niet op wachten.
+        De uitkomst wordt niet gebruikt om iets bij te regelen — dat doen we
+        niet meer — maar hij hoort wel in het logboek en in het
+        instellingenscherm. Op de gemeten booth kwam er "geen enkele
+        instelling reageert" uit, en dat is precies het soort feit waar je
+        later een beslissing op neemt.
+
+        Draait alleen wanneer de operator ernaar vraagt (knop in
+        Geavanceerd), want het laat het beeld even schommelen.
         """
-        modus = self.belichting_modus
-        if modus == "uit":
-            return
         cam = self._belichting_camera()
         if cam is None:
+            print("[BELICHTING] Proef overgeslagen — geen webcam actief")
             return
-
-        sessie = getattr(self, 'session_id', '') or ''
 
         def _werk():
             try:
-                import exposure
                 from booth_settings import BoothSettings as _BS
+                proef = cam.probeer_belichtingsinstellingen()
                 bs = _BS.load() if _BS.exists() else _BS()
-
-                oordeel = cam.beoordeel_beeld()
-                if not oordeel or oordeel.get("onderwerp") is None:
-                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
-                                            modus, besluit="geen-beeld"))
-                    return
-
-                # In de modus "meten" leggen we alleen vast wat we zouden
-                # doen. Zo verzamelen we echte cijfers zonder risico.
-                if modus == "meten":
-                    _n, besluit = exposure.bereken_correctie(
-                        oordeel["onderwerp"], bs.exposure_value,
-                        bs.exposure_sensitivity, doel=oordeel["doel"],
-                        standaard_waarde=bs.exposure_default)
-                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
-                                            modus, besluit=f"zou:{besluit}"))
-                    return
-
-                # modus == "corrigeren"
-                if not bs.exposure_probed:
-                    # Eenmalig uitzoeken waar dit apparaat op reageert. Dit
-                    # laat het beeld even schommelen, dus alleen hier — bij
-                    # het opbouwen, niet midden in een sessie.
-                    proef = cam.probeer_belichtingsinstellingen()
-                    bs.exposure_probed = True
-                    bs.exposure_control = proef["instelling"]
-                    bs.exposure_sensitivity = proef["gevoeligheid"]
-                    bs.exposure_default = proef["basis"]
-                    bs.exposure_value = proef["basis"]
-                    bs.save()
-                    print(f"[BELICHTING] Apparaatproef: instelling="
-                          f"{proef['instelling']} gevoeligheid="
-                          f"{proef['gevoeligheid']:+.2f} standaard="
-                          f"{proef['basis']:g}")
-
-                if bs.exposure_control in ("", "none"):
-                    print(exposure.logregel(sessie, 0, "kalibratie", oordeel,
-                                            modus,
-                                            besluit="apparaat-reageert-nergens-op"))
-                    return
-
-                nieuw, besluit = exposure.bereken_correctie(
-                    oordeel["onderwerp"], bs.exposure_value,
-                    bs.exposure_sensitivity, doel=oordeel["doel"],
-                    standaard_waarde=bs.exposure_default)
-
-                gezet = None
-                if abs(nieuw - bs.exposure_value) > 1e-6:
-                    gezet, _gelezen = cam.zet_belichtingswaarde(
-                        bs.exposure_control, nieuw)
-                    if gezet:
-                        bs.exposure_value = nieuw
-                        bs.save()
-                print(exposure.logregel(
-                    sessie, 0, "kalibratie", oordeel, modus, besluit=besluit,
-                    instelling=bs.exposure_control,
-                    van=bs.exposure_value if gezet else bs.exposure_value,
-                    naar=nieuw, gezet=gezet))
+                bs.exposure_probed = True
+                bs.exposure_control = proef["instelling"]
+                bs.exposure_sensitivity = proef["gevoeligheid"]
+                bs.exposure_default = proef["basis"]
+                bs.exposure_value = proef["basis"]
+                bs.save()
+                print(f"[BELICHTING] Apparaatproef: instelling="
+                      f"{proef['instelling']} gevoeligheid="
+                      f"{proef['gevoeligheid']:+.2f} standaard={proef['basis']:g}")
+                QTimer.singleShot(0, self._refresh_belichting_status)
             except Exception as e:
-                print(f"[BELICHTING] Kalibratie mislukt: {e}")
+                print(f"[BELICHTING] Apparaatproef mislukt: {e}")
 
         threading.Thread(target=_werk, daemon=True).start()
 
@@ -16457,12 +16471,11 @@ class PhotoboothWindow(QMainWindow):
         if not hasattr(self, '_bel_uit_radio'):
             return
         modus = self.belichting_modus
-        radios = (self._bel_uit_radio, self._bel_meten_radio, self._bel_corr_radio)
+        radios = (self._bel_uit_radio, self._bel_meten_radio)
         for rb in radios:
             rb.blockSignals(True)
         self._bel_uit_radio.setChecked(modus == "uit")
         self._bel_meten_radio.setChecked(modus == "meten")
-        self._bel_corr_radio.setChecked(modus == "corrigeren")
         for rb in radios:
             rb.blockSignals(False)
         self._refresh_belichting_status()
@@ -16499,36 +16512,6 @@ class PhotoboothWindow(QMainWindow):
         print(f"[BELICHTING] Modus: {modus}")
         self._refresh_belichting_status()
 
-    def _on_belichting_reset(self):
-        """Zet de camera terug op de fabriekswaarde en vergeet de proef.
-
-        Dit is de knop voor als het op een echt feest misgaat. Hij moet altijd
-        werken, ook als de kalibratie zelf in de war is — daarom wordt er niets
-        gemeten en niets berekend, alleen teruggezet.
-        """
-        try:
-            from booth_settings import BoothSettings as _BS
-            bs = _BS.load() if _BS.exists() else _BS()
-            cam = self._belichting_camera()
-            hersteld = False
-            if cam is not None and bs.exposure_control not in ("", "none"):
-                hersteld, _g = cam.zet_belichtingswaarde(
-                    bs.exposure_control, bs.exposure_default)
-            bs.exposure_value = bs.exposure_default
-            bs.exposure_probed = False
-            bs.save()
-            print(f"[BELICHTING] Teruggezet naar standaard "
-                  f"({bs.exposure_default:g}); camera hersteld: "
-                  f"{'ja' if hersteld else 'nee'}")
-            if hasattr(self, '_bel_status_lbl'):
-                self._bel_status_lbl.setText(
-                    "Teruggezet naar de standaardinstelling."
-                    if hersteld else
-                    "Opgeslagen waarden gewist. De camera kon niet worden "
-                    "aangepast (of is niet verbonden).")
-        except Exception as ex:
-            print(f"[BELICHTING] Terugzetten mislukt: {ex}")
-
     def _log_belichting_foto(self, bestandspad, volgnummer):
         """Schrijf één regel per foto met wat er op de plaat staat.
 
@@ -16542,13 +16525,29 @@ class PhotoboothWindow(QMainWindow):
         sessie = getattr(self, 'session_id', '') or ''
         modus = self.belichting_modus
 
+        # De camera-instellingen en de flitsstand NU uitlezen, op de main
+        # thread en vlak na de opname. Even later zijn ze mogelijk al
+        # veranderd, en dan beschrijven ze een andere foto.
+        omstandigheden = {}
+        try:
+            omstandigheden.update(cam.lees_omstandigheden())
+        except Exception:
+            pass
+        try:
+            led = getattr(self, 'led', None)
+            if led is not None:
+                omstandigheden["flitsrelais"] = "ja" if led.available() else "nee"
+                omstandigheden["flits"] = "aan" if getattr(led, '_is_on', False) else "uit"
+        except Exception:
+            pass
+
         def _werk():
             try:
                 import exposure
                 oordeel = cam.beoordeel_bestand(bestandspad)
                 print(exposure.logregel(
                     sessie, volgnummer, os.path.basename(bestandspad),
-                    oordeel, modus))
+                    oordeel, modus, omstandigheden=omstandigheden))
             except Exception as e:
                 print(f"[BELICHTING] Foto beoordelen mislukt: {e}")
 

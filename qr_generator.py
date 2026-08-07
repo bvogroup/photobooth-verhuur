@@ -1,31 +1,19 @@
 """
 QR code generator for photobooth sessions.
 
-Generates a QR code that links to the local web server
-where guests can download their photos.
+Maakt de QR-code die naar de fotopagina in de cloud wijst.
+
+Hier stonden ook get_local_ip() en generate_session_url(), voor een QR naar
+de booth zelf op het plaatselijke netwerk. Die terugval is verwijderd: de
+gast zit op een feest zelden op hetzelfde wifi, scande zo'n code en kreeg een
+foutmelding. Lukt het delen niet, dan tonen we nu geen QR maar een korte
+mededeling (zie photobooth._toon_delen_mislukt).
 """
 
 import io
-import socket
 import qrcode
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QImage
-
-
-def get_local_ip():
-    """Get the local network IP address of this machine."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-
-
-def generate_session_url(session_id, port=8080):
-    """Generate the URL for a session's download page."""
-    ip = get_local_ip()
-    return f"http://{ip}:{port}/session/{session_id}"
 
 
 def generate_qr_pixmap(url, size=400):

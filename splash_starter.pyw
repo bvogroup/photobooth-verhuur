@@ -158,9 +158,9 @@ if "--selftest" in sys.argv:
         return "S3-client aangemaakt"
 
     def _overige_pakketten():
-        import flask, qrcode, requests, serial  # noqa: F401
+        import qrcode, requests, serial  # noqa: F401
         import win32print  # noqa: F401
-        return "flask, qrcode, requests, pyserial, pywin32"
+        return "qrcode, requests, pyserial, pywin32"
 
     def _config_is_van_ons():
         # Tweede regressietest. cv2 bevat ook een cv2/config.py; kwam die map
@@ -185,7 +185,7 @@ if "--selftest" in sys.argv:
         import photobooth  # noqa: F401
         import main  # noqa: F401
         import updater, cloud_storage, booth_settings, webcam  # noqa: F401
-        import printer, camera, qr_generator, web_server  # noqa: F401
+        import printer, camera, qr_generator  # noqa: F401
         return "photobooth, main en de rest"
 
     _log(f"Bootharoo zelftest — frozen={getattr(sys, 'frozen', False)}")

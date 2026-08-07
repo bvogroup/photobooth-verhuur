@@ -4,7 +4,7 @@ import sys
 # === App Version ===
 # updater.py vergelijkt deze waarde met de tag van de release op GitHub. Stijgt
 # hij niet mee met een nieuwe release, dan ziet geen enkele booth de update.
-VERSION = "v1.99.149-beta.2"
+VERSION = "v1.99.149-beta.3"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -50,8 +50,8 @@ EVENTS_DIR = os.path.join(DATA_DIR, "events")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback.txt")
 
-# === Web Server (QR download) ===
-WEB_SERVER_PORT = 8080
+# === QR-scherm ===
+# WEB_SERVER_PORT is vervallen samen met de lokale webserver.
 QR_DISPLAY_SEC = 15  # How long QR code screen is shown
 
 # === Cloud Storage (Cloudflare R2) ===

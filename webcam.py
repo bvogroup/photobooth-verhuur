@@ -155,13 +155,19 @@ class WebcamWorker(QThread):
         ]
 
     def get_capture_frame(self):
-        """Get the latest full-resolution frame as high-quality JPEG bytes."""
+        """Get the latest full-resolution frame as high-quality JPEG bytes.
+
+        Het beeld wordt NIET bewerkt. Er wordt voorlopig alleen gemeten (zie
+        exposure.py); een correctie komt pas als er genoeg metingen liggen om
+        er een op te baseren.
+        """
         with self._frame_lock:
-            if self._last_raw_frame is not None:
-                _, buf = cv2.imencode('.jpg', self._last_raw_frame,
-                                      self._JPEG_PARAMS_CAPTURE)
-                return buf.tobytes()
-        return None
+            if self._last_raw_frame is None:
+                return None
+            frame = self._last_raw_frame
+
+        _, buf = cv2.imencode('.jpg', frame, self._JPEG_PARAMS_CAPTURE)
+        return buf.tobytes()
 
     def stop(self):
         self._running = False
@@ -336,6 +342,43 @@ class WebcamCamera:
         except Exception as e:
             print(f"[BELICHTING] Beoordelen van {pad} mislukt: {e}")
             return None
+
+    # Camera-instellingen die we bij elke foto meeschrijven. Niet om ze te
+    # zetten — deze camera accepteert niets — maar om te kunnen zien wát de
+    # automaat aan het doen was toen de foto viel. Als straks blijkt dat de
+    # sprongen samenvallen met een springende auto-belichting, is dat het
+    # antwoord al bijna.
+    _OMSTANDIGHEDEN = (
+        ("cam_exposure", "CAP_PROP_EXPOSURE"),
+        ("cam_auto_exposure", "CAP_PROP_AUTO_EXPOSURE"),
+        ("cam_brightness", "CAP_PROP_BRIGHTNESS"),
+        ("cam_gain", "CAP_PROP_GAIN"),
+        ("cam_contrast", "CAP_PROP_CONTRAST"),
+        ("cam_saturation", "CAP_PROP_SATURATION"),
+        ("cam_wb", "CAP_PROP_WB_TEMPERATURE"),
+        ("cam_backlight", "CAP_PROP_BACKLIGHT"),
+    )
+
+    def lees_omstandigheden(self):
+        """Wat staat de camera op dit moment te doen? Levert een dict.
+
+        Alleen lezen, nooit zetten. Een waarde die de driver niet kent komt er
+        als 0 of -1 uit; dat laten we staan zoals het is, want ook dat is een
+        gegeven waar later naar te kijken valt.
+        """
+        uit = {}
+        if not _CV2_AVAILABLE or not self.cap:
+            return uit
+        for naam, prop in self._OMSTANDIGHEDEN:
+            pid = getattr(cv2, prop, None)
+            if pid is None:
+                continue
+            try:
+                waarde = float(self.cap.get(pid))
+                uit[naam] = f"{waarde:g}"
+            except Exception:
+                pass
+        return uit
 
     def probeer_belichtingsinstellingen(self):
         """Zoek uit welke camera-instelling op dit apparaat echt werkt.
