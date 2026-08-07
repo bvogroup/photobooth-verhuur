@@ -77,6 +77,131 @@ if "--print-worker" in sys.argv:
         sys.exit(1)
     sys.exit(0)
 
+# ── Zelftest ────────────────────────────────────────────────────────────
+# `Bootharoo.exe --selftest` importeert alles wat de app bij het opstarten
+# nodig heeft, controleert een paar dingen die eerder stuk zijn gegaan, en
+# sluit af met code 0 (goed) of 1 (fout). Geen venster, geen camera, geen
+# printer — puur de vraag: komt deze build overeind?
+#
+# Dit bestaat omdat v1.99.147 een installer opleverde die keurig werd
+# gebouwd en vervolgens op de booth niet meer opstartte. De bouwstraat had
+# alleen gecontroleerd DAT er een installer uit kwam, niet DAT die werkte.
+# Deze vlag wordt in de bouwstraat op de geinstalleerde exe gedraaid; faalt
+# hij, dan faalt de bouw en komt er geen artefact en geen release.
+#
+# De uitvoer gaat naar een bestand omdat de exe zonder console wordt gebouwd
+# (console=False): geschreven tekst zou anders nergens terechtkomen.
+if "--selftest" in sys.argv:
+    import traceback
+
+    _uitvoer = os.path.join(
+        os.environ.get("TEMP", os.path.expanduser("~")), "bootharoo_selftest.txt"
+    )
+    _regels = []
+
+    def _log(regel):
+        _regels.append(regel)
+
+    _fouten = 0
+
+    def _controleer(naam, functie):
+        global _fouten
+        try:
+            resultaat = functie()
+            _log(f"OK    {naam}" + (f" — {resultaat}" if resultaat else ""))
+        except Exception as exc:
+            _fouten += 1
+            _log(f"FOUT  {naam} — {type(exc).__name__}: {exc}")
+            _log(traceback.format_exc())
+
+    def _typing_is_standaard():
+        # DE regressietest voor v1.99.147. cv2 bevat een submap 'typing'; als
+        # die de standaardbibliotheek overschaduwt, klapt numpy om en start de
+        # app niet meer op. Zie rthook_cv2.py.
+        import typing
+        bestand = (getattr(typing, "__file__", "") or "").replace("\\", "/")
+        if "/cv2/" in bestand:
+            raise RuntimeError(
+                f"'typing' komt uit cv2 in plaats van de standaardbibliotheek: {bestand}"
+            )
+        return bestand or "ingebouwd"
+
+    def _numpy():
+        import numpy
+        return numpy.__version__
+
+    def _cv2():
+        import cv2
+        return cv2.__version__
+
+    def _pyqt():
+        # Offscreen zodat er geen scherm nodig is. Een echt QApplication
+        # aanmaken bewijst dat de Qt-plugins mee zijn gebouwd — een kale
+        # `import PyQt5` zou dat niet aantonen.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        return "QApplication aangemaakt"
+
+    def _pillow():
+        from PIL import Image, ImageDraw, ImageFont, ImageOps  # noqa: F401
+        import PIL
+        return PIL.__version__
+
+    def _boto3():
+        import boto3, botocore  # noqa: F401
+        # De datamappen van botocore zijn eerder eens uit de build gevallen;
+        # een client aanmaken dwingt af dat ze er echt zijn.
+        boto3.client("s3", region_name="auto",
+                     endpoint_url="https://example.invalid",
+                     aws_access_key_id="x", aws_secret_access_key="y")
+        return "S3-client aangemaakt"
+
+    def _overige_pakketten():
+        import flask, qrcode, requests, serial  # noqa: F401
+        import win32print  # noqa: F401
+        return "flask, qrcode, requests, pyserial, pywin32"
+
+    def _eigen_modules():
+        # De echte app-modules. photobooth.py is het grote bestand; als daar
+        # iets in staat dat bij het importeren al struikelt, valt dat hier op.
+        import config  # noqa: F401
+        import photobooth  # noqa: F401
+        import main  # noqa: F401
+        import updater, cloud_storage, booth_settings, webcam  # noqa: F401
+        import printer, camera, qr_generator, web_server  # noqa: F401
+        return "config, photobooth, main en de rest"
+
+    _log(f"Bootharoo zelftest — frozen={getattr(sys, 'frozen', False)}")
+    _log(f"Python {sys.version.split()[0]}")
+    _log("")
+
+    _controleer("typing komt uit de standaardbibliotheek", _typing_is_standaard)
+    _controleer("numpy", _numpy)
+    _controleer("cv2 (OpenCV)", _cv2)
+    _controleer("PyQt5", _pyqt)
+    _controleer("Pillow", _pillow)
+    _controleer("boto3 / botocore", _boto3)
+    _controleer("overige pakketten", _overige_pakketten)
+    _controleer("eigen modules", _eigen_modules)
+
+    _log("")
+    _log("RESULTAAT: " + ("GOED" if _fouten == 0 else f"{_fouten} FOUT(EN)"))
+    _tekst = "\n".join(_regels) + "\n"
+    try:
+        with open(_uitvoer, "w", encoding="utf-8") as _f:
+            _f.write(_tekst)
+    except Exception:
+        pass
+    try:
+        # Als er wel een console is (niet-frozen aanroep) ook daar tonen.
+        if sys.stdout is not None:
+            sys.stdout.write(_tekst)
+            sys.stdout.flush()
+    except Exception:
+        pass
+    sys.exit(1 if _fouten else 0)
+
 # Main app: redirect stdout/stderr to log file (frozen exe has no console)
 if getattr(sys, 'frozen', False):
     # Log to writable user directory (Program Files is read-only)

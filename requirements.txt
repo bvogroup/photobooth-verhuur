@@ -12,6 +12,11 @@ libusb>=1.0
 # te bouwen. Op de ontwikkelmachine waren ze los geinstalleerd; op een
 # bouwserver moesten ze expliciet vermeld worden.
 boto3>=1.28
-opencv-python>=4.8
+# OpenCV bewust op de 4-lijn gehouden. Zonder bovengrens haalde de bouwstraat
+# 5.0.0 binnen — een gloednieuwe hoofdversie, terwijl de booths al jaren op 4.x
+# draaien (webcam via DirectShow en de QR-scanner hangen hieraan). Een
+# hoofdversie-sprong hoort een bewuste stap te zijn, geen bijvangst van een
+# build op een willekeurige dag.
+opencv-python>=4.8,<5
 truststore>=0.8
 pywin32>=306; sys_platform == "win32"

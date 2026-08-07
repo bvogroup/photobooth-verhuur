@@ -95,6 +95,21 @@ jobs:
           & $iscc "/DMyAppVersion=${{ steps.versie.outputs.kaal }}" installer.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup faalde met code $LASTEXITCODE" }
 
+      # ── Rookproef 1: draait de zojuist gebouwde map-versie? ──────────
+      # Dit is de stap die v1.99.147 had moeten tegenhouden. Die build kwam
+      # er keurig uit en startte vervolgens op de booth niet op. Alleen
+      # controleren DAT er een bestand uitkomt is dus niet genoeg; hij moet
+      # ook echt overeind komen.
+      - name: Rookproef op de gebouwde map
+        shell: pwsh
+        run: |
+          $exe = "dist\Bootharoo\Bootharoo.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -PassThru -Wait
+          $rapport = Join-Path $env:TEMP "bootharoo_selftest.txt"
+          if (Test-Path $rapport) { Get-Content $rapport | Write-Host }
+          if ($p.ExitCode -ne 0) { throw "Zelftest op de gebouwde map faalde (code $($p.ExitCode))" }
+          Write-Host "Rookproef op de gebouwde map geslaagd."
+
       - name: Controleren dat de installer er echt is
         id: installer
         shell: pwsh
@@ -113,6 +128,49 @@ jobs:
           "pad=$pad" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "mb=$mb"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # ── Rookproef 2: de installer echt installeren en starten ────────
+      # Nu het bestand dat de opdrachtgever daadwerkelijk uitrolt. Dit toetst
+      # niet alleen de exe maar ook het Inno-script: komt alles op zijn plek
+      # in Program Files terecht, en start dat wat er is geinstalleerd?
+      - name: Installer stil installeren en starten
+        shell: pwsh
+        run: |
+          $inst = "${{ steps.installer.outputs.pad }}"
+          Write-Host "Installeren: $inst"
+          $p = Start-Process -FilePath $inst `
+               -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
+               -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Installatie faalde met code $($p.ExitCode)" }
+
+          # De installer start de app zelf na een stille installatie
+          # (Check: WizardSilent). Die instantie hier afsluiten, anders staat
+          # er een venster te wachten terwijl wij de zelftest draaien.
+          Start-Sleep -Seconds 5
+          Get-Process Bootharoo -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
+          $geinstalleerd = "C:\Program Files (x86)\Bootharoo\Bootharoo.exe"
+          if (-not (Test-Path $geinstalleerd)) {
+            Write-Host "Inhoud van C:\Program Files (x86)\Bootharoo:"
+            Get-ChildItem "C:\Program Files (x86)\Bootharoo" -ErrorAction SilentlyContinue |
+              Format-Table Name, Length
+            throw "Geinstalleerde exe niet gevonden op $geinstalleerd"
+          }
+
+          Remove-Item (Join-Path $env:TEMP "bootharoo_selftest.txt") -ErrorAction SilentlyContinue
+          $q = Start-Process -FilePath $geinstalleerd -ArgumentList "--selftest" -PassThru -Wait
+          $rapport = Join-Path $env:TEMP "bootharoo_selftest.txt"
+          if (Test-Path $rapport) {
+            Write-Host "── Zelftest van de geinstalleerde applicatie ──"
+            Get-Content $rapport | Write-Host
+          } else {
+            Write-Host "WAARSCHUWING: geen zelftestrapport gevonden."
+          }
+          if ($q.ExitCode -ne 0) {
+            throw "De geinstalleerde applicatie faalde de zelftest (code $($q.ExitCode))"
+          }
+          Write-Host "Rookproef op de geinstalleerde applicatie geslaagd."
+
       - name: Samenvatting
         shell: pwsh
         run: |
@@ -121,6 +179,7 @@ jobs:
           "- Versie: ``${{ steps.versie.outputs.tag }}``"              | Out-File $env:GITHUB_STEP_SUMMARY -Append
           "- Bestand: ``${{ steps.installer.outputs.pad }}``"          | Out-File $env:GITHUB_STEP_SUMMARY -Append
           "- Grootte: ${{ steps.installer.outputs.mb }} MB"            | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "- Rookproef: gebouwde map en geinstalleerde applicatie zijn beide gestart en geslaagd" | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Installer bewaren als artefact
         uses: actions/upload-artifact@v4
