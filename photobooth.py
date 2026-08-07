@@ -9130,9 +9130,22 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[BOOMERANG] Kan de GIF niet afspelen: {gif_path}")
                 return
             # Op de maat van het vak zetten, niet het vak op de maat van de
-            # GIF: dan blijft de indeling staan wat er ook binnenkomt.
-            film.setScaledSize(kaart.size())
-            film.setCacheMode(QMovie.CacheAll)
+            # GIF: dan blijft de indeling staan wat er ook binnenkomt. Wel MET
+            # behoud van de verhouding — config.BOOMERANG_SIZE is nu 3:2 en het
+            # vak ook, maar wie dat getal ooit verzet hoort geen uitgerekte
+            # gezichten te krijgen.
+            from PyQt5.QtGui import QImageReader
+            bron = QImageReader(gif_path).size()
+            if bron.isValid() and bron.width() > 0 and bron.height() > 0:
+                film.setScaledSize(bron.scaled(kaart.size(), Qt.KeepAspectRatio))
+            else:
+                film.setScaledSize(kaart.size())
+            # CacheNone en niet CacheAll: een boemerang van 58 beeldjes op
+            # 480 x 320 is ruim 30 MB als je hem heel in het geheugen legt, en
+            # dit draait op een fanless tablet die verderop in dit bestand op
+            # elke megabyte let. Een beeldje opnieuw uitpakken kost bijna niets
+            # bij vijftien beeldjes per seconde.
+            film.setCacheMode(QMovie.CacheNone)
             kaart.setMovie(film)
             self._boomerang_movie = film
             kaart.show()
