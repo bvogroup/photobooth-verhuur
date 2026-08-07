@@ -3834,6 +3834,12 @@ class PhotoboothWindow(QMainWindow):
                 page = startscherm.Collage(self._collage_achtergrond())
                 self._idle_collage = page
                 page.zet_fotos(startscherm.fotos_van_event(self._get_raw_dir()))
+                # Het slotje en het serienummer liggen buiten de collage en
+                # zouden anders de hele avond stilstaan — juist die twee zijn
+                # klein, contrastrijk en staan in een lege hoek. Ze schuiven
+                # mee met dezelfde beweging als de rest.
+                page.verschoven.connect(self._verschuif_idle_bediening)
+                page.zet_schuiven(self._collage_schuiven_aan())
             except Exception as e:
                 # Het startscherm mag de booth nooit tegenhouden.
                 print(f"[COLLAGE] niet opgebouwd, terug naar het stilstaande "
@@ -3990,14 +3996,27 @@ class PhotoboothWindow(QMainWindow):
         banner_row.setVisible(not self._is_logged_in())
         self._idle_license_banner_row = banner_row
 
-        # Bottom bar: status label + lock icon
+        # Bottom bar: ruimte voor het serienummer links-onder.
+        #
+        # Het label zelf hangt NIET in de indeling maar los aan de pagina, net
+        # als het slotje. Reden: het moet meeschuiven met de verschuiving tegen
+        # inbranden, en een widget die in een indeling hangt springt bij de
+        # eerstvolgende herberekening terug. De lege balk blijft staan zodat er
+        # onderaan evenveel ruimte gereserveerd wordt als voorheen.
         bottom_bar = QHBoxLayout()
         bottom_bar.setContentsMargins(10, 0, 10, 10)
-        self.status_label = QLabel("")
+        _onderruimte = QWidget()
+        _onderruimte.setStyleSheet("background: transparent;")
+        _onderruimte.setFixedHeight(40)
+        bottom_bar.addWidget(_onderruimte, stretch=1)
+
+        self.status_label = QLabel("", page)
         self.status_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         self.status_label.setFont(QFont("DM Sans", 14))
-        self.status_label.setStyleSheet(f"color: {config.COLOR_TEXT_DIM}; padding: 10px;")
-        bottom_bar.addWidget(self.status_label, stretch=1)
+        self.status_label.setStyleSheet(
+            f"color: {config.COLOR_TEXT_DIM}; background: transparent; padding: 10px;")
+        self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.status_label.show()
 
         lay.addLayout(bottom_bar)
 
@@ -4777,22 +4796,11 @@ class PhotoboothWindow(QMainWindow):
         qr_title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         qr_ov_lay.addWidget(qr_title)
 
-        # QR loading spinner label (animated dots)
-        self._qr_loading_label = QLabel(t("uploading"))
-        self._qr_loading_label.setAlignment(Qt.AlignCenter)
-        self._qr_loading_label.setFont(merk.letter(merk.TEKST_LOPEND))
-        self._qr_loading_label.setMinimumSize(200, 200)
-        self._qr_loading_label.setStyleSheet(
-            f"color: {merk.OP_DONKER_ZACHT}; background: {merk.INKT_VLAK};"
-            f" border-radius: {merk.RONDING_VLAK}px;")
-        self._qr_loading_label.hide()
-        qr_ov_lay.addWidget(self._qr_loading_label, alignment=Qt.AlignCenter)
-
-        # Timer for animating the loading dots
-        self._qr_spinner_timer = QTimer(self)
-        self._qr_spinner_dot_count = 0
-        self._qr_spinner_timer.timeout.connect(self._animate_qr_spinner)
-        self._qr_spinner_timer.setInterval(400)
+        # Hier stond een wachtanimatie met stipjes: "uploaden...". Die hoorde
+        # bij de tijd dat de QR pas kon verschijnen als het uploaden gelukt
+        # was. Sinds beta.6 wordt de code uit de sjabloon-URL en het sessie-id
+        # gebouwd en staat hij er meteen — er valt niets meer af te wachten,
+        # dus er is ook niets meer om te animeren.
 
         self.qr_label = QLabel()
         self.qr_label.setAlignment(Qt.AlignCenter)
@@ -6465,8 +6473,6 @@ class PhotoboothWindow(QMainWindow):
         self._qr_ready = False
         if hasattr(self, '_qr_overlay'):
             self._qr_overlay.hide()
-        if hasattr(self, '_qr_spinner_timer'):
-            self._stop_qr_spinner()
         if self._frame_buffer:
             self._frame_buffer.clear()
         self._email_thread = None
@@ -10552,7 +10558,6 @@ class PhotoboothWindow(QMainWindow):
             self.qr_url_label.setText(url)
             self.qr_label.show()
             self.qr_url_label.show()
-            self._stop_qr_spinner()
             self._qr_ready = True
             self._update_inline_qr(qr_pixmap, url, ready=True)
             print(f"[QR] Getoond{(' (' + aanleiding + ')') if aanleiding else ''}: "
@@ -10560,10 +10565,6 @@ class PhotoboothWindow(QMainWindow):
         except Exception as e:
             print(f"[QR] Fout bij tonen: {e}", flush=True)
             self._qr_ready = False
-            try:
-                self._stop_qr_spinner()
-            except Exception:
-                pass
 
     def _prepare_qr_code(self):
         """De QR staat er zodra het deelscherm er staat.
@@ -10671,30 +10672,6 @@ class PhotoboothWindow(QMainWindow):
         self._position_qr_overlay()
         self._qr_overlay.show()
         self._qr_overlay.raise_()
-
-    def _animate_qr_spinner(self):
-        """Animate the QR loading label dots."""
-        self._qr_spinner_dot_count = (self._qr_spinner_dot_count + 1) % 4
-        dots = "." * (self._qr_spinner_dot_count or 1)
-        self._qr_loading_label.setText(f"\u23f3  {t('uploading')}{dots}")
-
-    def _start_qr_spinner(self):
-        """Start the QR loading dot animation.
-
-        Wordt sinds beta.6 nergens meer aangeroepen: de QR staat er meteen en
-        er valt niets meer af te wachten. _stop_qr_spinner() blijft wél in
-        gebruik, als vangnet voor een spinner die nog van een oude sessie
-        openstaat.
-        """
-        self._qr_spinner_dot_count = 0
-        self._qr_loading_label.setText("\u23f3  " + t("uploading") + "...")
-        self._qr_loading_label.show()
-        self._qr_spinner_timer.start()
-
-    def _stop_qr_spinner(self):
-        """Stop the QR loading dot animation."""
-        self._qr_spinner_timer.stop()
-        self._qr_loading_label.hide()
 
     def _adapt_review_layout(self):
         """Adjust review page styling for current orientation.
@@ -10944,12 +10921,6 @@ class PhotoboothWindow(QMainWindow):
             if hasattr(self, '_qr_poll_timer') and self._qr_poll_timer is not None \
                     and self._qr_poll_timer.isActive():
                 self._qr_poll_timer.stop()
-        except Exception:
-            pass
-
-        # Spinner stoppen — altijd, wat er verder ook gebeurt.
-        try:
-            self._stop_qr_spinner()
         except Exception:
             pass
 
@@ -11403,8 +11374,31 @@ class PhotoboothWindow(QMainWindow):
             self._sharing_countdown_bar.setGeometry(0, 0, pw, 6)
             self._sharing_countdown_bar.raise_()
 
+    def _verschuif_idle_bediening(self, dx, dy):
+        """De verschuiving tegen inbranden doorgeven aan het slotje en het
+        serienummer.
+
+        Die twee liggen buiten de collage-widget en werden dus niet
+        meegenomen. Ze zijn klein, contrastrijk en staan in een hoek waar
+        verder niets gebeurt — precies het geval waar een scherm inbrandt. Een
+        grote kop die langzaam verloopt heeft daar minder last van dan een
+        scherp slotje dat nooit beweegt.
+
+        Komt ongeveer één keer per twee seconden binnen, niet per beeldje: de
+        collage meldt alleen als er een hele punt verschoven is.
+        """
+        self._idle_drift = (dx, dy)
+        self._position_idle_lock()
+
     def _position_idle_lock(self):
-        """Position lock button in bottom-right corner of idle page."""
+        """Zet het slotje rechts-onder en het serienummer links-onder neer.
+
+        Allebei met de verschuiving tegen inbranden erin verwerkt. De rustplek
+        ligt één uitslag naar binnen, zodat ze de hele slag kunnen maken en er
+        nooit iets van het scherm af loopt: het slotje blijft altijd minstens
+        tien punten van de rand. Omdat de knop zelf verplaatst wordt, verplaatst
+        het aanraakvlak mee — de verhuurder tikt dus waar hij het ziet staan.
+        """
         if not hasattr(self, '_idle_lock_btn'):
             return
         page = self.stack.widget(self.pages.get("idle", 0))
@@ -11425,9 +11419,22 @@ class PhotoboothWindow(QMainWindow):
         ls = self._idle_lock_btn.width()
         if pw < 10 or ph < 10:
             return
-        self._idle_lock_btn.move(pw - ls - 10, ph - ls - 10)
+
+        dx, dy = getattr(self, '_idle_drift', (0, 0))
+        collage = getattr(self, '_idle_collage', None)
+        ax, ay = collage.verschuiving_bereik() if collage is not None else (0, 0)
+
+        marge = 10
+        self._idle_lock_btn.move(pw - ls - marge - ax + dx,
+                                 ph - ls - marge - ay + dy)
         self._idle_lock_btn.raise_()
         self._idle_lock_btn.show()
+
+        label = getattr(self, 'status_label', None)
+        if label is not None and label.parent() is page:
+            label.adjustSize()
+            label.move(marge + ax + dx, ph - label.height() - marge - ay + dy)
+            label.raise_()
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -11819,6 +11826,30 @@ class PhotoboothWindow(QMainWindow):
         self._idle_resolution_hint.setWordWrap(True)
         custom_lay.addWidget(self._idle_resolution_hint)
         card_bg_lay.addWidget(self._idle_custom_container)
+
+        # --- Schuivende collage aan/uit (standaard AAN) ---
+        # Twee soorten beweging, en alleen deze mag uit. Het schuiven van de
+        # foto's is versiering; de trage verschuiving van de hele opbouw is
+        # bescherming tegen inbranden en blijft altijd aan. Per booth
+        # opgeslagen, zodat dit uit kan zonder op een nieuwe versie te wachten.
+        card_bg_lay.addSpacing(6)
+        self._collage_schuiven_toggle = ToggleSwitch("Foto's laten schuiven")
+        self._collage_schuiven_toggle.setFont(QFont("DM Sans", 13))
+        self._collage_schuiven_toggle.setStyleSheet(toggle_style)
+        self._collage_schuiven_toggle.setChecked(self._collage_schuiven_aan())
+        self._collage_schuiven_toggle.toggled.connect(
+            self._on_collage_schuiven_toggled)
+        card_bg_lay.addWidget(self._collage_schuiven_toggle)
+
+        _cs_hint = QLabel(
+            "Uit: de laatste foto's staan stil op het startscherm. Het scherm\n"
+            "tekent dan nog twee keer per seconde in plaats van vijfentwintig.\n"
+            "De langzame verschuiving tegen inbranden blijft hoe dan ook aan."
+        )
+        _cs_hint.setFont(QFont("DM Sans", 10))
+        _cs_hint.setStyleSheet(dim_label_style)
+        _cs_hint.setWordWrap(True)
+        card_bg_lay.addWidget(_cs_hint)
 
         # Radio group
         self._idle_mode_group = QButtonGroup(self)
@@ -15686,6 +15717,27 @@ class PhotoboothWindow(QMainWindow):
             self._layout_bg_remove_btn.setVisible(False)
 
     # ── Printer-storingsmeldingen (statusuitlezing) aan/uit ──────────
+    def _collage_schuiven_aan(self):
+        """Of de foto's op het startscherm mogen schuiven. Standaard AAN.
+
+        Per booth in settings.json, dus uit te zetten zonder nieuwe versie.
+        Dit gaat ALLEEN over het schuiven van de rijen — versiering. De trage
+        verschuiving van de hele opbouw tegen inbranden staat hier los van en
+        blijft altijd aan; die kost vrijwel niets en beschermt het scherm.
+        """
+        return bool(self._load_app_setting("collage_schuiven", True))
+
+    def _on_collage_schuiven_toggled(self, checked):
+        """Schakelaar 'Foto's laten schuiven' — onthoud en pas meteen toe."""
+        aan = bool(checked)
+        self._save_app_setting("collage_schuiven", aan)
+        collage = getattr(self, "_idle_collage", None)
+        if collage is not None:
+            try:
+                collage.zet_schuiven(aan)
+            except Exception as e:
+                print(f"[COLLAGE] schuiven omzetten mislukt: {e}", flush=True)
+
     def _printer_status_enabled(self):
         """Of de printer-statusuitlezing (storingsmeldingen) aan staat.
 

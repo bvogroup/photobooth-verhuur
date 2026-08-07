@@ -63,7 +63,7 @@ import os
 import re
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QTimer, QRect, QElapsedTimer
+from PyQt5.QtCore import Qt, QTimer, QRect, QElapsedTimer, pyqtSignal
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QPainterPath, QFontMetrics
 from PyQt5.QtWidgets import QWidget
 
@@ -86,8 +86,15 @@ KOP_ZWAAR = "Plus Jakarta Sans ExtraBold"
 
 # Hoe de collage vult en beweegt.
 SCHUIF_PX_S = 12.0      # schuifsnelheid van een rij, punten per seconde
-BEELDJES_S = 25         # tekenfrequentie
 OVERVLOEI_MS = 1200     # een vervangen tegel vloeit in 1,2 s over
+
+# Twee tekenfrequenties, want er zijn twee soorten beweging en ze kosten niet
+# hetzelfde. Zie de klasse Collage: schuiven is versiering en mag uit; de
+# verschuiving tegen inbranden is bescherming en blijft altijd aan. Staat het
+# schuiven uit, dan hoeft er nog maar twee keer per seconde getekend te worden
+# — er verandert dan hooguit één pixel per twee seconden.
+BEELDJES_S = 25
+BEELDJES_S_STIL = 2
 
 # Verschuiving tegen inbranden: de hele opbouw kruipt heel langzaam rond, met
 # perioden die geen deler gemeen hebben, zodat het pad zich pas na uren
@@ -95,6 +102,22 @@ OVERVLOEI_MS = 1200     # een vervangen tegel vloeit in 1,2 s over
 DRIFT_X, DRIFT_Y = 56, 34
 DRIFT_PERIODE_X = 11 * 60.0
 DRIFT_PERIODE_Y = 17 * 60.0
+
+# En de achtergrond schuift er zelfstandig achterlangs. Dat is niet dezelfde
+# beweging als hierboven: die verplaatst de hele opbouw als één laag, en als de
+# achtergrond meeging zou er niets aan veranderen.
+#
+# Waarom dit moet. Bij een volle collage beweegt er van alles en is het risico
+# klein. Bij een LEGE collage is de achtergrond het enige wat er is — het begin
+# van de avond, en de hele avond bij een event waar de collage uit staat. Juist
+# die stand staat het langst stil.
+#
+# En het is gratis: het veld staat overmaats klaar en er wordt een bewegend
+# deelvlak uit getekend. Eén blit, net als een stilstaande achtergrond; er wordt
+# per beeldje niets geschaald.
+BG_OVERMAAT = 1.15      # hoeveel groter dan het scherm het veld staat
+BG_PERIODE_X = 10 * 60.0
+BG_PERIODE_Y = 13 * 60.0
 
 
 class Layout:
@@ -202,12 +225,39 @@ class Collage(QWidget):
 
     Tekent achter elkaar: de achtergrond, de schuivende rijen, de instructie en
     het logo. Geen enkele laag wordt per beeldje opnieuw gerasterd of geschaald.
+
+    TWEE SOORTEN BEWEGING, en ze zijn met opzet gescheiden.
+
+    *Het schuiven van de rijen* is versiering. Het mag uit, en dat is een
+    schakelaar bij de instellingen en geen keuze in de code — wie het op zijn
+    booth niet wil, hoeft niet op een nieuwe versie te wachten. Staat het uit,
+    dan staan de laatste foto's gewoon stil op het scherm en zakt het tekenen
+    van vijfentwintig naar twee keer per seconde.
+
+    *De trage verschuiving van de hele opbouw* is bescherming tegen inbranden
+    en blijft altijd aan. Het is een verplaatsing van de tekenpositie, geen
+    hertekening van de inhoud, en het kruipt met een halve punt per seconde.
+    Dat kost vrijwel niets en het is het enige wat de instructie, het logo, het
+    slotje en het serienummer ervan weerhoudt uren op dezelfde pixels te staan.
+
+    En er wordt bijgehouden wat een beeldje werkelijk kost. Zie _tik(): elke
+    minuut komt er een regel in het logboek met het gemiddelde en het duurste
+    beeldje. Zonder dat staan we bij een klacht over haperen opnieuw naar
+    foto's van een scherm te kijken.
     """
+
+    # De verschuiving tegen inbranden, in logische punten. Het slotje en het
+    # serienummer liggen BUITEN deze widget — photobooth.py legt ze er als losse
+    # elementen overheen — en moeten dus meegetrokken worden, anders staan juist
+    # die twee de hele avond stil. En dat zijn de gevaarlijkste van het scherm:
+    # klein, contrastrijk, in een hoek waar verder niets gebeurt.
+    verschoven = pyqtSignal(int, int)
 
     def __init__(self, achtergrond_pad="", parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
+        self._achtergrond_bron_pad = achtergrond_pad
         self._achtergrond_bron = QPixmap(achtergrond_pad) if achtergrond_pad else QPixmap()
         self._achtergrond = QPixmap()     # op schermmaat, één keer geschaald
         self._layout = None
@@ -223,17 +273,31 @@ class Collage(QWidget):
         self._logo = QPixmap()
         self._logo_x = self._logo_y = 0
         self._tekst = QPixmap()
+        self._gemeld = None       # laatst gemelde verschuiving, hele punten
 
+        self._schuiven = True     # versiering; de instellingen zetten dit
         self._klok = QElapsedTimer()
         self._klok.start()
         self._timer = QTimer(self)
         self._timer.setInterval(int(1000 / BEELDJES_S))
         self._timer.timeout.connect(self._tik)
 
+        # Wat een beeldje werkelijk kost — de uitweg voor als het op de booth
+        # alsnog hapert terwijl de meting zegt dat het niet kan.
+        self._teken_klok = QElapsedTimer()
+        self._beeldjes = 0
+        self._teken_som = 0.0
+        self._teken_ergste = 0.0
+        self._volgend_verslag = 0
+
     # ── leven ──────────────────────────────────────────────────────────────
     def start(self):
         if not self._timer.isActive():
             self._timer.start()
+        # Meteen één keer melden, zodat het slotje en het serienummer op hun
+        # plek staan voordat de eerste verschuiving komt.
+        self._gemeld = None
+        self._meld_verschuiving()
 
     def stop(self):
         """Zet de tekenlus stil. Hoort te gebeuren zodra dit scherm weg is —
@@ -241,11 +305,110 @@ class Collage(QWidget):
         gast aan het fotograferen is."""
         self._timer.stop()
 
+    def zet_schuiven(self, aan):
+        """Schuiven aan of uit. Raakt de verschuiving tegen inbranden niet.
+
+        Uit betekent: de laatste foto's staan stil op het scherm, en er hoeft
+        nog maar twee keer per seconde getekend te worden in plaats van
+        vijfentwintig.
+        """
+        aan = bool(aan)
+        if aan == self._schuiven:
+            return
+        self._schuiven = aan
+        self._timer.setInterval(int(1000 / (BEELDJES_S if aan else BEELDJES_S_STIL)))
+        print(f"[COLLAGE] schuiven {'AAN' if aan else 'UIT'} — "
+              f"{BEELDJES_S if aan else BEELDJES_S_STIL} beeldjes per seconde; "
+              f"de verschuiving tegen inbranden blijft hoe dan ook aan",
+              flush=True)
+        self.update()
+
     def _tik(self):
         # Alleen hertekenen wat beweegt: het gebied van de collage, plus de
         # strook waar de instructie staat. Het logo staat stil (op de
         # verschuiving na, en die kruipt met een halve pixel per seconde).
         self.update()
+        self._meld_verschuiving()
+        self._verslag_tekentijd()
+
+    def _verslag_tekentijd(self):
+        """Elke minuut één regel: wat kostte een beeldje werkelijk.
+
+        De uitweg voor als het op de booth alsnog hapert terwijl de meting op
+        een ontwikkelmachine zegt dat het niet kan. Zonder dit staan we
+        opnieuw naar foto's van een scherm te kijken.
+        """
+        nu = self._klok.elapsed()
+        if nu < self._volgend_verslag or not self._beeldjes:
+            return
+        self._volgend_verslag = nu + 60_000
+        gem = self._teken_som / self._beeldjes
+        print(f"[COLLAGE] tekentijd over {self._beeldjes} beeldjes: gemiddeld "
+              f"{gem:.2f} ms, duurste {self._teken_ergste:.2f} ms "
+              f"(schuiven {'aan' if self._schuiven else 'uit'}, "
+              f"{self._timer.interval()} ms per beeldje beschikbaar)", flush=True)
+        self._beeldjes = 0
+        self._teken_som = 0.0
+        self._teken_ergste = 0.0
+
+    # ── de verschuiving tegen inbranden ────────────────────────────────────
+    def verschuiving_bereik(self):
+        """Hoe ver de opbouw maximaal uitslaat, in logische punten.
+
+        photobooth.py heeft dit nodig om het slotje en het serienummer zo neer
+        te zetten dat ze de hele slag kunnen maken zonder van het scherm te
+        lopen.
+        """
+        L = self._layout
+        if L is None:
+            return 0, 0
+        return int(round(DRIFT_X * L.s)), int(round(DRIFT_Y * L.s))
+
+    def _verschuiving(self, t=None):
+        """Waar de opbouw nu staat, in logische punten.
+
+        Perioden van 11 en 17 minuten, die geen deler gemeen hebben, dus het
+        pad herhaalt zich pas na ruim drie uur en staat nergens stil. De
+        uitslag schaalt met het scherm — 56 punten is gemeten op de
+        ontwerpmaat, niet op logische punten.
+        """
+        L = self._layout
+        if L is None:
+            return 0.0, 0.0
+        if t is None:
+            t = self._klok.elapsed() / 1000.0
+        return (DRIFT_X * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_X),
+                DRIFT_Y * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y))
+
+    def _meld_verschuiving(self):
+        """Melden zodra er een hele punt verschoven is, niet vaker.
+
+        De verschuiving kruipt met ruim een halve punt per seconde. Widgets
+        vijfentwintig keer per seconde verplaatsen die niet bewogen zijn is
+        verspilling; zo komt er ongeveer één melding per twee seconden door.
+        """
+        dx, dy = self._verschuiving()
+        nieuw = (int(round(dx)), int(round(dy)))
+        if nieuw != self._gemeld:
+            self._gemeld = nieuw
+            self.verschoven.emit(nieuw[0], nieuw[1])
+
+    def _achtergrond_verschuiving(self, t):
+        """Waar het achtergrondveld nu staat — een uitsnede, geen hertekening.
+
+        Het veld staat overmaats klaar; hier wordt alleen bepaald welk stuk
+        ervan in beeld komt. De volle slag is ongeveer een zesde schermbreedte
+        in tien minuten: op zijn snelst ruim een punt per seconde, en op een
+        wazig verloop is dat niet te zien.
+        """
+        L = self._layout
+        if L is None or self._achtergrond.isNull():
+            return 0.0, 0.0
+        speling_x = max(0.0, self._achtergrond.width() / self._dpr - L.W)
+        speling_y = max(0.0, self._achtergrond.height() / self._dpr - L.H)
+        fx = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_X)
+        fy = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_Y + 1.1)
+        return -speling_x * fx, -speling_y * fy
 
     # ── inhoud ─────────────────────────────────────────────────────────────
     def zet_fotos(self, paden):
@@ -453,14 +616,18 @@ class Collage(QWidget):
         if self._achtergrond_bron.isNull():
             self._achtergrond = self._doek(L.W, L.H, QColor(merk.INKT))
             return
+        # Overmaats klaarzetten, zodat het schuiven een uitsnede is en geen
+        # hertekening. Het veld is een wazig verloop; bilineair een stukje
+        # opschalen is daar met het blote oog niet van te onderscheiden.
+        bw, bh = L.W * BG_OVERMAAT, L.H * BG_OVERMAAT
         geschaald = self._achtergrond_bron.scaled(
-            int(round(L.W * self._dpr)), int(round(L.H * self._dpr)),
+            int(round(bw * self._dpr)), int(round(bh * self._dpr)),
             Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
         geschaald.setDevicePixelRatio(self._dpr)
-        doek = self._doek(L.W, L.H, QColor(merk.INKT))
+        doek = self._doek(bw, bh, QColor(merk.INKT))
         p = QPainter(doek)
-        p.drawPixmap(int(round((L.W - geschaald.width() / self._dpr) / 2.0)),
-                     int(round((L.H - geschaald.height() / self._dpr) / 2.0)),
+        p.drawPixmap(int(round((bw - geschaald.width() / self._dpr) / 2.0)),
+                     int(round((bh - geschaald.height() / self._dpr) / 2.0)),
                      geschaald)
         p.end()
         self._achtergrond = doek
@@ -548,18 +715,22 @@ class Collage(QWidget):
         self._zorg_logo()
         self._zorg_tekst()
 
+        self._teken_klok.start()
         t = self._klok.elapsed() / 1000.0
         p = QPainter(self)
 
-        # 1. achtergrond — één blit, nooit geschaald tijdens het draaien
-        p.drawPixmap(0, 0, self._achtergrond)
+        # 1. achtergrond — één blit van een uitsnede uit het overmaatse veld.
+        #    Er wordt hier niets geschaald: dat is bij het klaarzetten al
+        #    gebeurd. Het veld schuift langzaam, want bij een lege collage is
+        #    dit het enige wat er staat.
+        ox, oy = self._achtergrond_verschuiving(t)
+        p.drawPixmap(int(round(ox)), int(round(oy)), self._achtergrond)
 
         # 2. de verschuiving tegen inbranden: de hele opbouw kruipt mee, als
-        #    één laag, zodat de onderlinge verhoudingen kloppen blijven.
-        #    De uitslag schaalt met het scherm, net als in het ontwerp — 56 px
-        #    is gemeten op de ontwerpmaat, niet op logische punten.
-        dx = DRIFT_X * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_X)
-        dy = DRIFT_Y * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y)
+        #    één laag, zodat de onderlinge verhoudingen kloppen blijven. Het
+        #    slotje en het serienummer liggen buiten deze widget en krijgen
+        #    dezelfde verschuiving via het signaal `verschoven`.
+        dx, dy = self._verschuiving(t)
         p.translate(dx, dy)
 
         # 3. de schuivende rijen
@@ -571,9 +742,14 @@ class Collage(QWidget):
                     break
                 y = L.rij_y(r)
                 # om en om de andere kant op; dat leest rustiger dan alles
-                # dezelfde kant op
-                richting = -1 if (r % 2 == 0) else 1
-                verschuiving = (richting * SCHUIF_PX_S * t) % periode
+                # dezelfde kant op. Staat het schuiven uit, dan staat elke rij
+                # netjes op zijn plek — de foto's zijn dan gewoon te zien,
+                # alleen niet in beweging.
+                if self._schuiven:
+                    richting = -1 if (r % 2 == 0) else 1
+                    verschuiving = (richting * SCHUIF_PX_S * t) % periode
+                else:
+                    verschuiving = 0
                 p.setClipRect(QRect(L.raster_x, int(y), L.raster_b, L.th))
                 x0 = L.raster_x + int(verschuiving)
                 p.drawPixmap(x0, int(y), self._stroken[r])
@@ -601,6 +777,12 @@ class Collage(QWidget):
         if not self._logo.isNull():
             p.drawPixmap(self._logo_x, self._logo_y, self._logo)
         p.end()
+
+        # Wat kostte dit beeldje. Zie _verslag_tekentijd().
+        kosten = self._teken_klok.nsecsElapsed() / 1e6
+        self._beeldjes += 1
+        self._teken_som += kosten
+        self._teken_ergste = max(self._teken_ergste, kosten)
 
 
 def _asset(naam):

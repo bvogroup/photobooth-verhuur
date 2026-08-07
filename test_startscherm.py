@@ -207,6 +207,143 @@ def toets_opbouw(achtergrond, paden, dpr):
     return page, stapel
 
 
+# ── 2b. alles wat stil kan blijven staan, beweegt ──────────────────────────
+def toets_verschuiving(page, dpr):
+    """Niets op dit scherm mag uren op precies dezelfde plek staan.
+
+    De collage beschermt zichzelf, want die vakjes wisselen van inhoud. De
+    instructie, het logo, de achtergrond, het slotje en het serienummer niet.
+    """
+    print("\nDe verschuiving tegen inbranden", flush=True)
+    L = page._layout
+
+    ax, ay = page.verschuiving_bereik()
+    eis(abs(ax * dpr - 56) <= 2 and abs(ay * dpr - 34) <= 2,
+        f"de uitslag is {ax}x{ay} punten = {ax*dpr:g}x{ay*dpr:g} fysiek "
+        f"(ontwerp: 56x34)")
+
+    # Over een uur moet er werkelijk verplaatsing in zitten, en binnen een
+    # minuut mag er vrijwel niets te zien zijn.
+    standen = [page._verschuiving(t) for t in range(0, 3600, 30)]
+    breedte = max(x for x, _ in standen) - min(x for x, _ in standen)
+    eis(breedte > ax, f"de opbouw legt in een uur {breedte:.0f} punten af")
+    per_minuut = max(abs(page._verschuiving(t + 60)[0] - page._verschuiving(t)[0])
+                     for t in range(0, 660, 30))
+    eis(per_minuut * dpr < 40,
+        f"in een minuut hooguit {per_minuut*dpr:.0f} fysieke pixels — niet te zien")
+
+    # De achtergrond schuift zelfstandig. Bij een LEGE collage is dat het enige
+    # wat er beweegt, en dat is de stand die op een rustige avond het langst
+    # blijft staan. Stond die stil, dan brandde juist die in.
+    eis(page._achtergrond.width() / dpr > L.W + 8,
+        f"het achtergrondveld staat overmaats klaar "
+        f"({page._achtergrond.width()}x{page._achtergrond.height()} fysiek voor "
+        f"een scherm van {int(L.W*dpr)}x{int(L.H*dpr)})")
+    bg = [page._achtergrond_verschuiving(t) for t in range(0, 1800, 30)]
+    bg_b = max(x for x, _ in bg) - min(x for x, _ in bg)
+    bg_h = max(y for _, y in bg) - min(y for _, y in bg)
+    eis(bg_b > 20 and bg_h > 10,
+        f"de achtergrond schuift {bg_b:.0f}x{bg_h:.0f} punten")
+    bg_per_min = max(abs(page._achtergrond_verschuiving(t + 60)[0]
+                         - page._achtergrond_verschuiving(t)[0])
+                     for t in range(0, 660, 30))
+    # De bovengrens komt uit het ontwerp: daar staat de pan van de achtergrond
+    # op 4,3 fysieke pixels per seconde, ofwel een schermbreedte per kwartier,
+    # en dat is als niet te zien beoordeeld. 258 px per minuut dus.
+    eis(bg_per_min * dpr < 258,
+        f"de achtergrond doet hooguit {bg_per_min*dpr:.0f} fysieke pixels per "
+        f"minuut (ontwerp staat 258 toe) — op een wazig verloop niet te zien")
+
+    # Het slotje en het serienummer liggen buiten deze widget en moeten het te
+    # horen krijgen; zonder dit signaal staan juist zij de hele avond stil.
+    gemeld = []
+    page.verschoven.connect(lambda x, y: gemeld.append((x, y)))
+    page._gemeld = None
+    page._meld_verschuiving()
+    eis(len(gemeld) == 1,
+        "de verschuiving wordt naar buiten gemeld, voor het slotje en het "
+        "serienummer")
+    page._meld_verschuiving()
+    page._meld_verschuiving()
+    eis(len(gemeld) == 1,
+        "en alleen als er werkelijk een punt verschoven is, niet per beeldje")
+
+    # En het schuiven van de foto's mag uit ZONDER dat de bescherming meegaat.
+    # Dat is de hele reden dat die twee gescheiden zijn.
+    page.zet_schuiven(False)
+    eis(page._schuiven is False, "het schuiven kan uit")
+    eis(page._timer.interval() >= 400,
+        f"met schuiven uit tekent het scherm nog {1000/page._timer.interval():.0f} "
+        f"keer per seconde in plaats van 25")
+    standen_uit = [page._verschuiving(t) for t in range(0, 3600, 30)]
+    eis(standen_uit == standen,
+        "de verschuiving tegen inbranden loopt gewoon door met schuiven uit")
+    page.zet_schuiven(True)
+    eis(page._schuiven is True and page._timer.interval() <= 40,
+        "en weer aan")
+
+
+# ── 2c. wat een beeldje kost ───────────────────────────────────────────────
+def toets_tekentijd(page, dpr):
+    """Meten, niet gissen. De opdrachtgever zag beta.5 haperen.
+
+    Beta.5 tekende alles dubbel en negeerde de schermschaal, dus elk beeldje
+    werd door Windows opgeblazen — dat is het dure geval. Hier staat wat het
+    ná de reparatie werkelijk kost, met schuiven aan en uit, zodat er op
+    cijfers gekozen kan worden.
+    """
+    print("\nWat een beeldje kost", flush=True)
+    from PyQt5.QtCore import QElapsedTimer
+
+    def meet(aan, n=40):
+        page.zet_schuiven(aan)
+        doek = QPixmap(int(page.width() * dpr), int(page.height() * dpr))
+        doek.setDevicePixelRatio(dpr)
+        page.render(doek)                     # eerste keer bouwt de caches op
+        klok = QElapsedTimer()
+        klok.start()
+        for _ in range(n):
+            page.render(doek)
+        return klok.nsecsElapsed() / 1e6 / n
+
+    aan = meet(True)
+    uit = meet(False)
+    print(f"        volle collage, schuiven aan: {aan:.2f} ms per beeldje", flush=True)
+    print(f"        volle collage, schuiven uit: {uit:.2f} ms per beeldje", flush=True)
+    eis(aan < 1000.0 / 25,
+        f"met schuiven aan past een beeldje in de 40 ms van 25 b/s ({aan:.2f} ms)")
+    eis(uit <= aan + 1.0,
+        f"met schuiven uit is het niet duurder ({uit:.2f} tegen {aan:.2f} ms)")
+    page.zet_schuiven(True)
+
+    # En de lege toestand. Die was in de vooraf gemaakte meting het DUURSTE
+    # onderdeel van het scherm — zeven tot zeventien keer de hele schuivende
+    # collage — omdat de achtergrond per beeldje opnieuw geschaald werd. Hij
+    # wordt nu één keer overmaats klaargezet en per beeldje alleen verschoven,
+    # dus dat hoort weg te zijn. Juist deze toestand staat op een rustige avond
+    # het langst.
+    leeg = startscherm.Collage(page._achtergrond_bron_pad)
+    stapel = QStackedWidget()
+    stapel.addWidget(leeg)
+    stapel.setFixedSize(page.width(), page.height())
+    stapel.show()
+    QApplication.processEvents()
+    doek = QPixmap(int(page.width() * dpr), int(page.height() * dpr))
+    doek.setDevicePixelRatio(dpr)
+    leeg.render(doek)
+    klok = QElapsedTimer()
+    klok.start()
+    for _ in range(40):
+        leeg.render(doek)
+    leeg_ms = klok.nsecsElapsed() / 1e6 / 40
+    print(f"        lege collage:                {leeg_ms:.2f} ms per beeldje", flush=True)
+    eis(leeg_ms < 1000.0 / 25,
+        f"de lege toestand past ook in de 40 ms ({leeg_ms:.2f} ms)")
+    eis(leeg_ms < aan * 3,
+        f"de lege toestand is niet meer het duurste onderdeel "
+        f"({leeg_ms:.2f} tegen {aan:.2f} ms vol)")
+
+
 # ── 3. de achtergrond bevat geen tekst en geen logo ────────────────────────
 def _telt_merkinkt(pad):
     """Hoeveel pixels lijken op de instructie (wit) of het logo (merkgroen)?
@@ -302,7 +439,11 @@ def main():
             achtergrond = ""
 
         dpr = float(os.environ.get("QT_SCALE_FACTOR", "1") or 1)
-        onderdeel("de opbouw", toets_opbouw, achtergrond, paden, dpr)
+        uit = onderdeel("de opbouw", toets_opbouw, achtergrond, paden, dpr)
+        if uit is not None:
+            page, _stapel = uit
+            onderdeel("de verschuiving", toets_verschuiving, page, dpr)
+            onderdeel("de tekentijd", toets_tekentijd, page, dpr)
     finally:
         shutil.rmtree(werkmap, ignore_errors=True)
 
