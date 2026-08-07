@@ -4192,16 +4192,16 @@ class PhotoboothWindow(QMainWindow):
         lay.addWidget(self.live_view_label, stretch=1)
 
         # Cancel button (X) — top-left overlay, created later as child of page
-        self.cancel_session_btn = QPushButton("✕", page)
-        self.cancel_session_btn.setFixedSize(60, 60)
-        self.cancel_session_btn.setFont(QFont("DM Sans", 24, QFont.Bold))
-        self.cancel_session_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(0,0,0,0.5); color: white;
-                border: none; border-radius: 30px;
-            }}
-            QPushButton:hover {{ background: rgba(0,0,0,0.7); }}
-        """)
+        # Het kruisje is U+00D7 (het maalteken) en niet U+2715: dat laatste zit
+        # niet in DM Sans en zou als leeg blokje verschijnen.
+        self.cancel_session_btn = QPushButton("\u00d7", page)
+        self.cancel_session_btn.setFixedSize(merk.KNOP_NORMAAL, merk.KNOP_NORMAAL)
+        self.cancel_session_btn.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True))
+        self.cancel_session_btn.setStyleSheet(
+            f"QPushButton {{ background: rgba(22,32,45,0.62); color: {merk.OP_DONKER};"
+            f" border: none; border-radius: {merk.KNOP_NORMAAL // 2}px; }}"
+            f"QPushButton:hover {{ background: {merk.INKT}; }}"
+        )
         self.cancel_session_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.cancel_session_btn.clicked.connect(self._cancel_session)
         self.cancel_session_btn.raise_()
@@ -4217,16 +4217,9 @@ class PhotoboothWindow(QMainWindow):
 
         # Start button — overlay, shown initially, hidden during countdown
         self.capture_btn = QPushButton(t("photo_make"), page)
-        self.capture_btn.setFont(QFont("DM Sans", 22, QFont.Bold))
-        self.capture_btn.setMinimumSize(300, 80)
-        self.capture_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {config.COLOR_SUCCESS}; color: #ffffff;
-                border: none; border-radius: 40px; padding: 15px 40px;
-                font-size: 22px; min-height: 0;
-            }}
-            QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}
-        """)
+        self.capture_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self.capture_btn.setMinimumSize(320, merk.KNOP_HOOG)
+        self.capture_btn.setStyleSheet(merk.knop_hoofd(ronding=merk.RONDING_ROND))
         self.capture_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.capture_btn.clicked.connect(self._start_countdown)
 
@@ -4247,13 +4240,12 @@ class PhotoboothWindow(QMainWindow):
             thumb = QLabel()
             thumb.setFixedSize(t_w, t_h)
             thumb.setAlignment(Qt.AlignCenter)
+            thumb.setFont(merk.letter(merk.TEKST_LOPEND, vet=True))
             thumb.setStyleSheet(
-                f"background: rgba(255,255,255,0.15); "
-                f"border: 2px dashed rgba(255,255,255,0.4); border-radius: 8px;"
-            )
-            thumb.setFont(QFont("DM Sans", 16, QFont.Bold))
-            thumb.setStyleSheet(
-                thumb.styleSheet() + f" color: rgba(255,255,255,0.5);"
+                f"background: rgba(22,32,45,0.55);"
+                f" border: 2px dashed {merk.INKT_RAND};"
+                f" border-radius: {merk.RONDING_KNOP}px;"
+                f" color: {merk.OP_DONKER_ZACHT};"
             )
             thumb.setText(str(i + 1))
             self.thumb_labels.append(thumb)
@@ -4283,10 +4275,10 @@ class PhotoboothWindow(QMainWindow):
         self.intro_label = QLabel(preview_page)
         self.intro_label.setAlignment(Qt.AlignCenter)
         self.intro_label.setWordWrap(True)
-        self.intro_label.setFont(QFont("DM Sans", 36, QFont.Bold))
+        self.intro_label.setFont(merk.letter(merk.TEKST_KOP, vet=True, kop=True))
         self.intro_label.setStyleSheet(
-            "color: white; background: rgba(0,0,0,0.5); border-radius: 20px; "
-            "padding: 20px 40px;"
+            f"color: {merk.OP_DONKER}; background: rgba(22,32,45,0.72);"
+            f" border-radius: {merk.RONDING_VLAK}px; padding: 20px 40px;"
         )
         self.intro_label.hide()
 
@@ -4294,8 +4286,9 @@ class PhotoboothWindow(QMainWindow):
         self.capture_screen_label = QLabel(preview_page)
         self.capture_screen_label.setAlignment(Qt.AlignCenter)
         self.capture_screen_label.setWordWrap(True)
-        self.capture_screen_label.setFont(QFont("DM Sans", 36, QFont.Bold))
-        self.capture_screen_label.setStyleSheet("background: white; color: #333333;")
+        self.capture_screen_label.setFont(merk.letter(merk.TEKST_KOP, vet=True, kop=True))
+        self.capture_screen_label.setStyleSheet(
+            f"background: {merk.WIT}; color: {merk.INKT};")
         self.capture_screen_label.hide()
         self._capture_screen_pixmap = None  # cached QPixmap
         self._live_view_frozen = False

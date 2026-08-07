@@ -8,7 +8,9 @@ rendering at ~60fps.
 
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QTimer, QElapsedTimer
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont
+from PyQt5.QtGui import QPainter, QPen, QColor
+
+import merk
 
 import config
 
@@ -31,16 +33,25 @@ class CountdownRingWidget(QWidget):
         self._progress = 0.0       # 0.0 → 1.0 within current second
         self._number_str = "0"     # cached string conversion
 
-        self._ring_color = QColor("#ffffff")
-        self._text_color = QColor("#ffffff")
+        # De ring is het merkgroen: dit is een actieve toestand die aftelt, en
+        # daar is het accent voor. Het getal blijft wit — dat moet ook leesbaar
+        # zijn boven een lichte achtergrond in het live beeld, en daarvoor is de
+        # donkere omtrek hieronder.
+        self._ring_color = QColor(merk.GROEN)
+        self._text_color = QColor(merk.OP_DONKER)
 
         # Cached font — updated when widget resizes
-        self._cached_font = QFont("DM Sans", 80, QFont.Bold)
+        self._cached_font = merk.letter(merk.TEKST_REUS, vet=True, kop=True)
         self._cached_diameter = -1
 
         # Pre-created pen objects (avoid per-frame allocation)
-        self._shadow_pen = QPen(QColor(0, 0, 0, 60), self.RING_WIDTH + 4, Qt.SolidLine, Qt.RoundCap)
-        self._outline_pen = QPen(QColor(0, 0, 0, 120), 4, Qt.SolidLine, Qt.RoundCap)
+        # De schaduw en de omtrek staan in de merkinkt in plaats van in zuiver
+        # zwart: zwart slaat op een warm beeld grijs uit.
+        _i = QColor(merk.INKT)
+        self._shadow_pen = QPen(QColor(_i.red(), _i.green(), _i.blue(), 70),
+                                self.RING_WIDTH + 4, Qt.SolidLine, Qt.RoundCap)
+        self._outline_pen = QPen(QColor(_i.red(), _i.green(), _i.blue(), 140),
+                                 4, Qt.SolidLine, Qt.RoundCap)
         self._arc_pen = QPen(self._ring_color, self.RING_WIDTH, Qt.SolidLine, Qt.RoundCap)
 
         # Track pen (semi-transparent) — cached
@@ -124,7 +135,8 @@ class CountdownRingWidget(QWidget):
         # 4. Countdown number — cache font when diameter changes
         if diameter != self._cached_diameter:
             self._cached_diameter = diameter
-            self._cached_font = QFont("DM Sans", max(80, diameter // 3), QFont.Bold)
+            self._cached_font = merk.letter(
+                max(merk.TEKST_REUS, diameter // 3), vet=True, kop=True)
 
         painter.setFont(self._cached_font)
 

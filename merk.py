@@ -245,13 +245,17 @@ def _knop(vlak, tekst, aan, in_, ronding=RONDING_KNOP, rand=None,
     )
 
 
-def knop_hoofd():
+def knop_hoofd(ronding=RONDING_KNOP):
     """De hoofdactie: groen vlak, donkere letters. 9,29:1.
 
     Er is er één per scherm. Als alles groen is valt niets meer op — al het
     andere is een tweede knop.
+
+    Geef `ronding=merk.RONDING_ROND` mee voor een pil; dat past bij één grote
+    losse knop die over een beeld heen ligt, zoals "Foto's maken" op het
+    voorbeeldscherm.
     """
-    return _knop(GROEN, INKT, GROEN_AAN, GROEN_IN)
+    return _knop(GROEN, INKT, GROEN_AAN, GROEN_IN, ronding=ronding)
 
 
 def knop_tweede(op_donker=True):
