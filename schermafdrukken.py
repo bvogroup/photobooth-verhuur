@@ -407,6 +407,28 @@ def main():
     alle = startscherm.fotos_van_event(raw)
     print(f"[AFDRUK] {len(alle)} foto's uit {raw}", flush=True)
 
+    # Eerst de ECHTE idle-pagina uit photobooth.py, mét het slotje, het
+    # serienummer en de melding onderin. De losse collage hieronder laat die
+    # drie niet zien, en juist daar zaten de klachten: de melding lag over het
+    # logo en het serienummer hing scheef onder het slotje.
+    def echte_startschermen():
+        pb = proefvenster.leen_photobooth()
+        bewaar = []
+        for naam, venster, pagina in proefvenster.startschermen(
+                pb, PUNTEN_BREED, PUNTEN_HOOG, raw):
+            bewaar.append(venster)
+            collage = getattr(venster, "_idle_collage", None)
+            L = collage._layout if collage is not None else None
+            if L is not None:
+                print(f"[AFDRUK] startscherm-{naam}: {L.openingen} openingen "
+                      f"van {L.opening:.0f} punten "
+                      f"({100.0 * L.opening / L.H:.1f}% van de hoogte), "
+                      f"inhoud {100.0 * L.inhoud_h / L.H:.1f}%", flush=True)
+            schrijf(pagina, os.path.join(map_naam, f"startscherm-{naam}.png"))
+        return bewaar
+
+    _startschermen = veilig("echte startschermen", echte_startschermen)  # noqa: F841
+
     bewaar = []
     for stand, (b, h) in (("liggend", (PUNTEN_BREED, PUNTEN_HOOG)),
                           ("staand", (PUNTEN_HOOG, PUNTEN_BREED))):
@@ -438,10 +460,16 @@ def main():
                 # scherm er meteen staat. Voor een AFDRUK moet daar wel op
                 # gewacht worden — anders zie je hier de halve collage die de
                 # gast op de booth maar een paar honderd milliseconde ziet.
+                #
+                # En óók op het opkomen: een rij die er bij komt vloeit in een
+                # kwart seconde in (INVLOEI_MS). Werd daar niet op gewacht, dan
+                # stonden er halfdoorzichtige tegels op de afdruk en leek de
+                # collage veel te bleek — dat is precies wat er hier gebeurde
+                # toen het invloeien erbij kwam.
                 from PyQt5.QtCore import QElapsedTimer
                 klok = QElapsedTimer()
                 klok.start()
-                while blad._wachtrij and klok.elapsed() < 10000:
+                while (blad._wachtrij or blad.vloeit()) and klok.elapsed() < 10000:
                     QApplication.processEvents()
                 return blad
             blad = veilig(f"startscherm-{stand}-{naam}", maak)

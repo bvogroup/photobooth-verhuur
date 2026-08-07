@@ -238,9 +238,9 @@ def toets_qr(page, dpr):
     eis(L.qr_x + L.qr_tekst_w <= L.logo_x,
         f"de vraag botst niet met het logo ({L.qr_x + L.qr_tekst_w} tegen "
         f"{L.logo_x})")
-    eis(L.qr_tekst_y > L.tekst_y(L.rijen) + L.txt_h,
+    eis(L.qr_tekst_y > L.txt_y + L.txt_h,
         f"en staat onder de instructie ({L.qr_tekst_y} tegen "
-        f"{L.tekst_y(L.rijen) + L.txt_h:.0f})")
+        f"{L.txt_y + L.txt_h})")
 
 
 def toets_vult_het_scherm(page, dpr):
@@ -294,21 +294,181 @@ def toets_vult_het_scherm(page, dpr):
     eis(abs(strook.width() / dpr / L.kolommen - (L.tw + L.gap)) <= 2,
         f"en er passen precies {L.kolommen} tegels in")
 
-    # En de instructie hoort ONDER de collage te staan, over de volle breedte
-    # gecentreerd — niet ernaast.
-    onder = L.collage_onderkant(L.rijen)
-    eis(L.tekst_y(L.rijen) >= onder,
-        f"de instructie staat onder de collage (y {L.tekst_y(L.rijen):.0f} "
-        f"tegen onderkant {onder})")
-    # En er hoort lucht tussen te zitten; daar was de derde rij voor
-    # ingeleverd. Minstens een halve tegelhoogte.
-    lucht = L.tekst_y(L.rijen) - onder
-    eis(lucht >= L.th * 0.5,
-        f"met {lucht:.0f} punten lucht ertussen (minstens {L.th*0.5:.0f})")
+    # De instructie staat TUSSEN de twee rijgroepen, over de volle breedte
+    # gecentreerd — niet ernaast. De verticale verdeling zelf wordt in
+    # toets_indeling gemeten.
+    eis(L.txt_y >= L.rij_y(0) + L.th,
+        f"de instructie staat onder de bovenste rij (y {L.txt_y} tegen "
+        f"onderkant {L.rij_y(0) + L.th})")
+    eis(L.txt_y + L.txt_h <= L.rij_y(L.rijen - 1),
+        f"en boven de onderste rij ({L.txt_y + L.txt_h} tegen "
+        f"{L.rij_y(L.rijen - 1)})")
     eis(abs((L.txt_x + L.txt_w / 2) - L.W / 2) <= 2,
         "de instructie staat horizontaal in het midden")
     eis(abs((L.raster_x + L.raster_b / 2) - L.W / 2) <= 2,
         "en de collage ook — ze staan onder elkaar, niet naast elkaar")
+
+
+# ── 2d. de verticale indeling is een VERDELING ─────────────────────────────
+def _blokken(L):
+    """Wat er van boven naar beneden op het scherm staat, als (naam, van, tot).
+
+    Alleen de blokken die er werkelijk zijn — bij heel weinig ruimte laat de
+    indeling een rij foto's vallen, en dan hoort er ook geen opening te staan
+    waar die rij had gestaan.
+    """
+    plek = {
+        "rijen boven": L.raster_y,
+        "instructie": L.txt_y,
+        "rijen onder": L.groep_onder_y,
+        "onderbouw": L.onderbouw_y,
+    }
+    return [(naam, plek[naam], plek[naam] + h) for naam, h in L.blokken]
+
+
+def _openingen(L):
+    """De vier stukken lucht: boven het eerste blok en tussen de blokken.
+
+    De eerste loopt van de bovenrand van het scherm tot het eerste blok; de
+    andere drie van het ene blok tot het volgende. Onder het laatste blok zit
+    geen opening maar de ondermarge — die is de bodem en hoort niet in de
+    verdeling.
+    """
+    blok = _blokken(L)
+    uit = [("boven de bovenste rij", 0, blok[0][1])]
+    for i in range(1, len(blok)):
+        uit.append((f"boven {blok[i][0]}", blok[i - 1][2], blok[i][1]))
+    return [(naam, tot - van) for naam, van, tot in uit]
+
+
+def toets_indeling(dpr):
+    """De verticale indeling: gelijke tussenruimtes, goede volgorde, geen overlap.
+
+    Waarom dit een VERHOUDINGSEIS is en geen pixelwaarden
+    ----------------------------------------------------
+    Het oordeel over de vorige indeling was "een zwervend hoopje rommel". Er
+    stonden geen verkeerde getallen in — er stonden getallen in. De collage hing
+    met een vaste marge aan de bovenrand, het logo met een vaste marge aan de
+    onderrand, en de instructie centreerde zich in wat er tussenbleef. Werd één
+    van die drie een maat anders, dan liep de rest uit de pas.
+
+    Vastleggen op "de instructie staat op y=444" zou dus precies de fout
+    vastleggen die eruit moest. Wat hier getoetst wordt is de SOM: de vier
+    openingen zijn onderling gelijk, de volgorde klopt, en er overlapt niets.
+    Dat blijft waar als de tegels, de tekst of de verhuurvraag ooit van maat
+    veranderen — en het valt om als iemand er weer een vaste marge in zet.
+    """
+    print("\nDe verticale indeling", flush=True)
+    # Op de maat die de booth werkelijk gebruikt: de Surface staat op 200%, dus
+    # Qt rekent in 1368 x 912 punten. Niet op de maat waarop deze toets
+    # toevallig draait.
+    B, H = FYSIEK_B // 2, FYSIEK_H // 2
+
+    # De melding onderin (de wifi-tip) bezet ruim honderd punten. Precies dat
+    # geval moet er ook nog kloppen: hij lag over het logo heen.
+    for naam, onderruimte in (("zonder melding onderin", 0),
+                              ("met de wifi-tip erbij", 110),
+                              ("met een melding van het dubbele", 220)):
+        L = startscherm.Layout(B, H, onderruimte=onderruimte)
+        print(f"\n    {naam} ({onderruimte} punten, {L.rijen} van "
+              f"{L.rijen_max} rijen foto's)", flush=True)
+        blokken = _blokken(L)
+        openingen = _openingen(L)
+        for bn, van, tot in blokken:
+            print(f"        {bn:20s} {van:4d} .. {tot:4d}  "
+                  f"({100.0*(tot-van)/H:.1f}%)", flush=True)
+        print(f"        openingen: "
+              f"{', '.join(f'{h:.0f}' for _, h in openingen)} punten "
+              f"({100.0*L.opening/H:.1f}% elk)", flush=True)
+
+        # 1. GELIJK. Dit is de eis. De speling is één punt voor het afronden op
+        #    hele pixels — meer niet, anders sluipt er alsnog een marge in.
+        maten = [h for _, h in openingen]
+        spreiding = max(maten) - min(maten)
+        eis(spreiding <= 1,
+            f"[{naam}] de {len(maten)} openingen zijn onderling gelijk "
+            f"(spreiding {spreiding} punt)")
+        eis(min(maten) > 0,
+            f"[{naam}] en er is werkelijk lucht ({min(maten):.0f} punten)")
+
+        # 2. VOLGORDE. Rij, instructie, rij, onderbouw — in die volgorde en
+        #    zonder dat er iets omkeert.
+        op_volgorde = all(blokken[i][1] >= blokken[i - 1][2]
+                          for i in range(1, len(blokken)))
+        eis(op_volgorde,
+            f"[{naam}] de blokken staan in de goede volgorde: "
+            f"{' → '.join(b[0] for b in blokken)}")
+
+        # 3. GEEN OVERLAP — ook niet met de melding onderin, en ook niet met de
+        #    schermranden.
+        for i in range(1, len(blokken)):
+            vorig, dit = blokken[i - 1], blokken[i]
+            eis(dit[1] >= vorig[2],
+                f"[{naam}] {dit[0]} loopt niet door {vorig[0]} heen "
+                f"({dit[1]} tegen {vorig[2]})")
+        eis(blokken[0][1] >= 0,
+            f"[{naam}] er loopt niets van de bovenrand af ({blokken[0][1]})")
+        onderkant = blokken[-1][2]
+        eis(onderkant <= H - onderruimte,
+            f"[{naam}] en niets over de melding onderin ({onderkant} tegen "
+            f"{H - onderruimte})")
+        eis(onderkant <= H,
+            f"[{naam}] en niets van de onderrand af ({onderkant} tegen {H})")
+
+        # 4. DE ONDERBOUW IS ÉÉN BAND. De verhuurvraag links, het logo in het
+        #    midden en het slotje rechts horen op één lijn te staan.
+        eis(L.qr_y + L.qr_maat == L.basislijn,
+            f"[{naam}] de QR-code staat op de basislijn van de onderbouw "
+            f"({L.qr_y + L.qr_maat} tegen {L.basislijn})")
+        logo_midden = L.logo_y + L.logo_h / 2.0
+        qr_midden = L.qr_y + L.qr_maat / 2.0
+        eis(abs(logo_midden - qr_midden) <= 1,
+            f"[{naam}] het logo staat op de QR-code gecentreerd "
+            f"({logo_midden:.0f} tegen {qr_midden:.0f})")
+        eis(L.qr_x + L.qr_tekst_w <= L.logo_x,
+            f"[{naam}] en botst er niet mee ({L.qr_x + L.qr_tekst_w} tegen "
+            f"{L.logo_x})")
+
+    # 5. HET IS EEN VERDELING, GEEN RIJTJE MARGES.
+    #
+    #    De proef op de som: maak de instructie een stuk groter en kijk of de
+    #    openingen alle vier evenveel meegeven. Bij vaste marges zou er één
+    #    opening krimpen en de rest blijven staan — precies wat er misging.
+    print("\n    en het blijft kloppen als een blok van maat verandert", flush=True)
+    was = startscherm.TXT_H
+    try:
+        gewoon = startscherm.Layout(B, H)
+        startscherm.TXT_H = int(was * 1.4)
+        groter = startscherm.Layout(B, H)
+    finally:
+        startscherm.TXT_H = was
+
+    maten = [h for _, h in _openingen(groter)]
+    eis(max(maten) - min(maten) <= 1,
+        f"met een 40% grotere instructie zijn de openingen nog steeds "
+        f"onderling gelijk (spreiding {max(maten) - min(maten)} punt)")
+    eis(groter.opening < gewoon.opening,
+        f"en ze zijn alle vier krapper geworden ({gewoon.opening:.0f} → "
+        f"{groter.opening:.0f} punten) — de lucht komt uit de verdeling, niet "
+        f"uit één marge")
+    eis(groter.txt_h > gewoon.txt_h and groter.onderbouw_h == gewoon.onderbouw_h,
+        "terwijl de blokken zelf zijn wat ze zijn")
+
+    # 6. EN DE MELDING SLOOPT DE VERHOUDINGEN NIET. Staat hij er niet, dan hoort
+    #    de indeling gewoon te zijn wat hij zonder melding is — geen gat waar de
+    #    balk gestaan heeft.
+    zonder = startscherm.Layout(B, H, onderruimte=0)
+    terug = startscherm.Layout(B, H, onderruimte=0)
+    met = startscherm.Layout(B, H, onderruimte=110)
+    eis(_blokken(zonder) == _blokken(terug),
+        "zonder melding staat alles waar het zonder melding hoort te staan")
+    eis(met.onderbouw_y + met.onderbouw_h < zonder.onderbouw_y + zonder.onderbouw_h,
+        f"met de melding schuift de onderbouw omhoog "
+        f"({zonder.onderbouw_y + zonder.onderbouw_h} → "
+        f"{met.onderbouw_y + met.onderbouw_h})")
+    eis(met.raster_y < zonder.raster_y,
+        f"en de foto's erboven schuiven mee ({zonder.raster_y} → "
+        f"{met.raster_y}) — niet alleen het onderste stuk")
 
 
 def toets_maat_van_de_stapel(achtergrond, paden, dpr):
@@ -370,11 +530,26 @@ def wacht_tot_klaar(page, max_ms=8000):
     Dat is precies de bedoeling — het scherm mag niet wachten op achttien
     foto's van zes megapixel. Voor het meten moet er hier dus wel even op
     gewacht worden.
+
+    Alleen op de MINIATUREN, niet op het opkomen: dit getal wordt gebruikt om
+    te toetsen hoe snel het scherm bruikbaar is, en het opkomen van een rij
+    duurt daar per definitie langer dan dat. Wie een AFDRUK maakt moet er wel
+    op wachten — zie vloeit() en schermafdrukken.py.
     """
     from PyQt5.QtCore import QElapsedTimer
     klok = QElapsedTimer()
     klok.start()
     while page._wachtrij and klok.elapsed() < max_ms:
+        QApplication.processEvents()
+    return klok.elapsed()
+
+
+def wacht_tot_stil(page, max_ms=8000):
+    """Als hierboven, maar ook tot er niets meer opkomt of overvloeit."""
+    from PyQt5.QtCore import QElapsedTimer
+    klok = QElapsedTimer()
+    klok.start()
+    while (page._wachtrij or page.vloeit()) and klok.elapsed() < max_ms:
         QApplication.processEvents()
     return klok.elapsed()
 
@@ -687,6 +862,35 @@ def toets_bedrading():
     eis("startscherm.Collage(idle_bg" not in bron,
         "de collage krijgt nergens meer idle_bg mee (dat is mbb-ready, mét tekst)")
 
+    # De melding onderin mag nergens overheen liggen. Dat kan de collage niet
+    # zelf weten — photobooth.py moet hem vertellen hoeveel er onderaan vrij
+    # moet blijven. Zonder deze bedrading klopt het rekenmodel wel maar ligt de
+    # balk nog steeds over het logo, en dat is precies wat er misging.
+    eis("collage.zet_onderruimte(self._idle_onderruimte())" in bron,
+        "photobooth.py vertelt de collage hoeveel de melding onderin bezet")
+    eis("def _idle_onderruimte(self)" in bron,
+        "_idle_onderruimte() rekent dat uit de balk zelf uit, niet uit een "
+        "vast getal")
+    eis(bron.count("self._idle_ruim_op_voor_melding()") >= 3,
+        f"en dat gebeurt bij tonen, verbergen én hermaten "
+        f"({bron.count('self._idle_ruim_op_voor_melding()')} aanroepen)")
+
+    # Het slotje hangt aan de onderbouw en niet aan de onderrand, anders breekt
+    # de band zodra die melding er staat.
+    eis("collage.onderbouw_hoek()" in bron,
+        "het slotje met het serienummer hangt aan de onderbouw van de collage")
+
+    # En de melding staat in de kleuren van een DONKER scherm. Hij stond op de
+    # lichte merkkleuren en lag als een witte doos over het startscherm — de
+    # "lelijke outline" uit de klacht.
+    eis("merk.kaart(op_donker=True)" in bron,
+        "de wifi-tip gebruikt de kaartstijl voor een donker scherm")
+
+    # De twee buitenste knoppen van een gastscherm horen gelijk te zijn.
+    eis("zet_zijknop(stop_btn, stijl=" not in bron
+        and "zet_zijknop(self._filter_stop_btn," not in bron,
+        "\"Sessie stoppen\" heeft dezelfde omlijning als de knop ernaast")
+
 
 def main():
     app = QApplication(sys.argv)
@@ -716,6 +920,7 @@ def main():
         if uit is not None:
             page, _stapel = uit
             onderdeel("het vullen van het scherm", toets_vult_het_scherm, page, dpr)
+            onderdeel("de verticale indeling", toets_indeling, dpr)
             onderdeel("de QR", toets_qr, page, dpr)
             onderdeel("de verschuiving", toets_verschuiving, page, dpr)
             onderdeel("de tekentijd", toets_tekentijd, page, dpr)

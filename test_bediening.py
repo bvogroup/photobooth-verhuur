@@ -141,6 +141,31 @@ def toets_balk(breedte):
 
 
 # ── 2. de echte schermen ───────────────────────────────────────────────────
+def toets_tussenruimte():
+    """De afstand die "Sessie stoppen" van "Ja" weghoudt.
+
+    Dit was de STILLE KNOPSTIJL: geen rand, gedempte letter, zodat niemand die
+    knop voor de bevestiging zou aanzien. Die stijl is eraf — de twee buitenste
+    knoppen van een gastscherm horen er hetzelfde uit te zien — en daarmee is
+    deze afstand het enige wat de verwisseling nog tegenhoudt. Vandaar dat hij
+    hier apart wordt vastgelegd en niet alleen indirect uit de plaatsing volgt.
+
+    Veertig punten is op de Surface Pro 7 zeven komma zes millimeter tussen de
+    randen van de twee knoppen. Bij de gebruikelijke 24 was het vier komma zes.
+    """
+    print("\nDe afstand rond de hoofdknop", flush=True)
+    mm = bediening.TUSSEN * bediening.PUNT_MM
+    print(f"        {bediening.TUSSEN} punten = {mm:.1f} mm op het glas",
+          flush=True)
+    eis(bediening.TUSSEN >= 40,
+        f"de tussenruimte staat op {bediening.TUSSEN} punten (ondergrens 40)")
+    eis(mm >= 7.0,
+        f"dat is {mm:.1f} mm tussen de knopranden (ondergrens 7,0)")
+    eis(bediening.TUSSEN > merk.RUIMTE_RUIM,
+        f"ruimer dan de gewone tussenruimte ({merk.RUIMTE_RUIM}) — het is een "
+        f"bewuste afstand en niet de standaard")
+
+
 def toets_schermen(pb, breedte, hoogte, dpr):
     print(f"\nDe gastschermen op {breedte}x{hoogte} punten bij {dpr:g}x", flush=True)
     import tempfile
@@ -191,6 +216,23 @@ def toets_schermen(pb, breedte, hoogte, dpr):
             eis(gat * bediening.PUNT_MM >= 7.0,
                 f"tussen “{hoofd.text()}” en “{k.text()}” zit "
                 f"{gat * bediening.PUNT_MM:.1f} mm (ondergrens 7,0)")
+
+        # DE TWEE BUITENSTE KNOPPEN ZIEN ER HETZELFDE UIT.
+        #
+        # "Sessie stoppen" stond op de stilste knopstijl — geen rand, gedempte
+        # letter — zodat niemand hem voor "Ja" zou aanzien. Naast een omlijnde
+        # knop las dat als een knop die half uitgeschakeld was, en de klacht was
+        # dat de rechterkant er raar uitzag. De bescherming zit nu in de
+        # AFSTAND (zie hieronder); alleen de middelste knop mag eruit springen.
+        zij = [k for k in knoppen if k is not hoofd]
+        if len(zij) == 2:
+            eis(zij[0].styleSheet() == zij[1].styleSheet(),
+                f"“{zij[0].text()}” en “{zij[1].text()}” hebben dezelfde "
+                f"omlijning")
+            eis(zij[0].height() == zij[1].height(),
+                f"en dezelfde hoogte ({zij[0].height()} punten)")
+            eis(hoofd.styleSheet() != zij[0].styleSheet(),
+                f"terwijl “{hoofd.text()}” er wél uit springt")
 
         # En laag. De duim komt van onderen.
         onder = hoofd.mapTo(venster, hoofd.rect().bottomLeft()).y()
@@ -486,6 +528,7 @@ def main():
 
     onderdeel("de erfenis", toets_erfenis)
     onderdeel("de balk", toets_balk, breedte)
+    onderdeel("de tussenruimte", toets_tussenruimte)
     onderdeel("de stalen", toets_stalen)
 
     pb = onderdeel("photobooth importeren", proefvenster.leen_photobooth)

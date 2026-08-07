@@ -1,7 +1,14 @@
 """Het startscherm van MyBoothBox — de collage.
 
-Het scherm dat de hele avond staat te wachten. Er staat precies drie dingen op:
-de collage, één instructie, en het logo. Verder niets.
+Het scherm dat de hele avond staat te wachten. Van boven naar beneden: een rij
+foto's, de instructie, nog een rij foto's, en onderin de onderbouw met de
+verhuurvraag, het logo en het slotje. Verder niets.
+
+Wat er tussen die dingen staat is LUCHT DIE UITGEREKEND WORDT en geen marge die
+ergens is ingetikt — zie de klasse Layout. Dat is de belangrijkste regel van dit
+bestand: de vorige opzet hing de collage aan de bovenrand, het logo aan de
+onderrand en de instructie in het midden van wat er overbleef, en het oordeel
+daarover was "een zwervend hoopje rommel".
 
 De collage loopt in de loop van de avond vol — leeg, één rij, twee rijen, vol —
 en de rijen schuiven continu opzij. Is hij vol, dan vervangt de nieuwste foto de
@@ -95,10 +102,30 @@ import merk
 
 # ── maatvoering — overgenomen uit docs/startscherm/render/ontwerp.py ────────
 REF = 1824          # referentie op de korte zijde; alles schaalt hiermee mee
-M_V = 64            # marge boven en onder
-GAP = 26            # tussenruimte tussen tegels
+M_V = 64            # de kleinste marge die er onderaan overblijft; zie Layout
+GAP = 26            # tussenruimte tussen tegels binnen één rijgroep
 TILE_W, TILE_H = 456, 285      # tegel 16:10
-TXT_W, TXT_H = 1420, 267       # het instructieblok
+
+# Het instructieblok. Was 1420 x 267; de opdrachtgever wilde de tekst "misschien
+# 15 procent" groter, en dat is het geworden: 1633 x 307.
+#
+# Wat die vergroting kost, staat in het rekenmodel van Layout en is dus na te
+# rekenen in plaats van te beoordelen. Op de Surface (1824 hoog, dus s = 1) gaat
+# er 40 ontwerppixels aan inhoud bij — 2,2% van de schermhoogte. Die 40 komen
+# uit de lucht, en omdat die over vier openingen verdeeld wordt, krimpt elke
+# opening met 10 punten: van 90 naar 80, ofwel van 4,9% naar 4,4% van de hoogte.
+#
+# Dat is het waard. De instructie is het enige wat een gast op dit scherm moet
+# lezen, en hij leest hem van twee meter afstand in een donkere zaal. De
+# verhouding tussen de vier openingen blijft exact gelijk — dat is wat het model
+# bewaakt, en niet de absolute maat.
+#
+# De breedte gaat met dezelfde 15% mee. Niet omdat de tekst hem nodig heeft (de
+# breedste regel haalt ongeveer 1270 van de 1633), maar omdat het blok anders
+# van vorm verandert zodra de letter groeit, en dan kapt het doek de tekst af bij
+# een langere vertaling.
+TXT_W, TXT_H = 1633, 307
+
 LOGO_W, LOGO_H = 520, 376
 RONDING = 12        # hoekafronding van een tegel
 
@@ -119,7 +146,38 @@ QR_MAAT = 300       # het witte vlak waar de code in staat
 QR_RAND = 20        # stille zone binnen dat vlak — hoort erbij, niet weglaten
 QR_TEKST_W = 620    # breed genoeg voor "Ook een photobooth huren?" op twee regels
 QR_TEKST_H = 130
-QR_PIJL_H = 130     # ruimte tussen het regeltje en de code, waar de pijl loopt
+# Ruimte tussen het regeltje en de code, waar de pijl loopt. Was 130; de
+# opdrachtgever vond dat het geheel zweefde — "tekst, dan niets, dan een QR".
+# De pijl begint nu NAAST het laatste woord in plaats van eronder, dus die
+# ruimte is er niet meer voor nodig ook.
+QR_PIJL_H = 96
+
+# De pijl zelf, in verhoudingen tot zijn eigen lijndikte. Zie _teken_pijl().
+PIJL_DIK = 7.0          # lijndikte in ontwerppixels; overal even dik
+PIJL_PUNT_LANG = 4.2    # lengte van de pijlpunt, in lijndiktes
+PIJL_PUNT_BREED = 1.55  # halve basisbreedte van de punt, in lijndiktes
+PIJL_HOEK_EIND = 112.0  # onder welke hoek hij op de code aankomt, graden met
+                        # de y-as naar beneden: overwegend omlaag, iets naar
+                        # links, zodat de punt de code aanwijst en niet langs
+                        # de code scheert
+PIJL_MIK = 0.55         # waar op de bovenrand van de code hij aanwijst
+PIJL_ZWAAI = 1.15       # hoe ver hij naar rechts uitzwaait voordat hij
+                        # terugkomt, als deel van de ruimte rechts van het
+                        # aanlooppunt. Boven 1 ligt het stuurpunt buiten het
+                        # doek; dat mag — alleen de kromme wordt getekend, en
+                        # die haalt ongeveer 42% van die afstand. Was 1,35: dan
+                        # schoot de pijl de lege ruimte rechts van de QR in en
+                        # zweefde het geheel. Korter houdt tekst, pijl en code
+                        # bij elkaar.
+PIJL_DAAL = 0.55        # hoeveel van de daling hij op de heenweg al maakt.
+                        # Bij nul liggen heen- en terugweg op dezelfde hoogte
+                        # en knijpt de bocht rechts tot een punt — precies het
+                        # hoekige waar de klacht over ging. Bij 0,30 was het nog
+                        # een langgerekte punt; bij 0,55 is het een ronde bocht.
+                        # Vier waarden naast elkaar gezet en bekeken, niet
+                        # beredeneerd.
+PIJL_GRIP = 0.45        # hoe recht hij op de code aankomt; deel van de afstand
+                        # tussen begin en punt
 
 # De letter van de instructie. Plus Jakarta Sans ExtraBold meldt zich bij Qt aan
 # als een EIGEN familie en niet als een dikte binnen "Plus Jakarta Sans" — zie
@@ -129,6 +187,17 @@ KOP_ZWAAR = "Plus Jakarta Sans ExtraBold"
 # Hoe de collage vult en beweegt.
 SCHUIF_PX_S = 12.0      # schuifsnelheid van een rij, punten per seconde
 OVERVLOEI_MS = 1200     # een vervangen tegel vloeit in 1,2 s over
+
+# En hoe een rij VOOR HET EERST verschijnt, tijdens het opbouwen van het scherm.
+#
+# De tegels worden in stukjes gemaakt zodat het scherm meteen bruikbaar is (zie
+# _herbouw_beeld). Daardoor komen de rijen er ná elkaar bij, en tot nu toe
+# ploften ze er hard in: "bij het opbouwen glitcht het een beetje". Een rij die
+# in een kwart seconde opkomt leest als iets dat zich vult; een rij die er
+# ineens staat leest als een storing.
+#
+# Het kost niets: het is één extra getal op de verf, geen extra tekenwerk.
+INVLOEI_MS = 260
 
 # ...maar het schuiven staat STANDAARD UIT. De opdrachtgever heeft er twee keer
 # zelf over begonnen: "misschien moeten we het maar gewoon statisch houden" en
@@ -190,9 +259,76 @@ PARALLAX_STANDAARD = False
 
 
 class Layout:
-    """De indeling. De enige plek waar maten staan — net als in het ontwerp."""
+    """De indeling. De enige plek waar maten staan — net als in het ontwerp.
 
-    def __init__(self, W, H):
+    DE VERTICALE INDELING IS EEN VERDELING, GEEN RIJTJE MARGES
+    ----------------------------------------------------------
+    Dit is de kern van dit bestand en het is met opzet één som. Het oordeel over
+    de vorige opzet was "een zwervend hoopje rommel", en dat kwam niet doordat
+    er verkeerde getallen stonden maar doordat er getallen stonden. De collage
+    hing met een vaste marge aan de bovenrand, het logo met een vaste marge aan
+    de onderrand, en de instructie centreerde zich in wat er toevallig
+    tussenbleef. Werd één van die drie een maatje anders, dan verschoof alleen
+    de instructie mee en liep de rest uit de pas.
+
+    Nu wordt het andersom gerekend. Van boven naar beneden staan er vier
+    BLOKKEN op het scherm, met tussen en boven elk blok een OPENING:
+
+        opening 1
+        de bovenste rijgroep foto's
+        opening 2
+        de instructie ("Druk op het scherm om een foto te maken")
+        opening 3
+        de onderste rijgroep foto's
+        opening 4
+        de onderbouw: de verhuurvraag met de QR, het logo, het slotje
+
+    De som is: tel op wat de blokken aan hoogte kosten, trek dat af van de
+    hoogte die te verdelen valt, en deel de rest in EVENVEEL GELIJKE OPENINGEN
+    als er blokken zijn. Er staat dus nergens meer een marge tussen twee dingen.
+    Verandert een tegel van maat, wordt de instructie groter, of komt er een
+    regel bij in de verhuurvraag, dan verschuift alles vanzelf mee en blijven de
+    openingen onderling gelijk.
+
+    Op de Surface Pro 7 (2736 x 1824, en 1824 is precies REF, dus s = 1) komt
+    dat uit op:
+
+        bovenste rij foto's      285   15,6%
+        de instructie            307   16,8%
+        onderste rij foto's      285   15,6%
+        de onderbouw             564   30,9%
+        ---------------------------------------
+        inhoud                  1441   79,0%
+        vier openingen van        80    4,4%   (samen 17,5%)
+        ondermarge                64    3,5%
+
+    De ondermarge staat er los van: die is de bodem waar de onderbouw op rust,
+    niet een opening tussen twee dingen. Vandaar dat er onder de onderbouw geen
+    vijfde opening zit.
+
+    Past de inhoud niet — en dat kan alleen als er onderin iets groots bij komt
+    — dan wijkt er een RIJ FOTO'S en niet een stuk lucht. Zie _verdeel().
+
+    RUIMTE VOOR IETS DAT NIET VAN DEZE WIDGET IS
+    --------------------------------------------
+    `onderruimte` is hoeveel er onderaan vrij moet blijven, gemeten vanaf de
+    onderrand, voor iets dat een ander neerzet. In de praktijk is dat de wifi-tip
+    die photobooth.py erover legt. Die balk lag over de onderste helft van het
+    logo heen — je zag "MY BOOTH" en niet "BOX".
+
+    Het gaat de verdeling niet slopen, want het is één getal in dezelfde som:
+    het verlaagt de hoogte die te verdelen valt, en dus krimpen de vier
+    openingen alle vier evenveel. De volgorde en de verhoudingen blijven staan.
+    Nul betekent: niets aan de hand. Er blijft daarmee ook geen gat staan waar de
+    balk gestaan heeft, want de indeling wordt opnieuw uitgerekend en niet
+    bijgewerkt.
+
+    Het is met opzet een AANTAL PUNTEN en geen schakelaar: de balk kan van maat
+    veranderen (langere tekst, andere schermschaal) en dan hoort de indeling mee
+    te bewegen.
+    """
+
+    def __init__(self, W, H, onderruimte=0):
         self.W, self.H = W, H
         self.liggend = W > H
         self.s = (H if self.liggend else W) / float(REF)
@@ -232,48 +368,121 @@ class Layout:
         # Staand is met dezelfde verhouding meegegaan (vijf gedeeld door
         # anderhalf is drie); dat scherm is veel hoger, dus daar valt die
         # ruimte ook echt als ruimte.
-        self.rijen = 2 if self.liggend else 3
-        self.n = self.kolommen * self.rijen
+        self.rijen_max = 2 if self.liggend else 3
 
         self.raster_b = self.kolommen * self.tw + (self.kolommen - 1) * self.gap
-        self.raster_h = self.rijen * self.th + (self.rijen - 1) * self.gap
         # Deelt zich vanzelf symmetrisch: links en rechts evenveel eraf.
         self.raster_x = (W - self.raster_b) // 2
         self.overhang = (self.raster_b - W) / 2.0
-        self.raster_y = self.mv
 
-        self.logo_x = (W - self.logo_w) // 2
-        self.logo_y = H - self.mv - self.logo_h
-        self.txt_x = (W - self.txt_w) // 2
-
-        # De verhuurvraag met de QR, linksonder. De andere hoek is van het
-        # slotje en het serienummer; het logo staat ertussenin.
+        # DE ONDERBOUW. Eén blok met drie dingen erin: de verhuurvraag met de
+        # QR linksonder, het logo in het midden, en (buiten deze widget) het
+        # slotje met het serienummer rechtsonder.
         self.qr_maat = r(QR_MAAT)
         self.qr_rand = max(2, r(QR_RAND))
         self.qr_tekst_w = r(QR_TEKST_W)
         self.qr_tekst_h = r(QR_TEKST_H)
-        self.qr_x = self.mv
-        self.qr_y = H - self.mv - self.qr_maat
+        self.qr_pijl_h = r(QR_PIJL_H)
+        # Het hoogste van de drie is de verhuurvraag: regeltje, pijl, code.
+        qr_blok_h = self.qr_tekst_h + self.qr_pijl_h + self.qr_maat
+        # Het logo staat verticaal op de CODE gecentreerd en niet op het hele
+        # blok. Dat is het "iets lager en iets dichter bij de QR-code": zo
+        # staan het logo en de code op één band in plaats van dat het logo
+        # boven de code uit begint te zweven. Het logo is hoger dan de code, dus
+        # het steekt er aan weerszijden een stukje buiten — de onderste helft
+        # daarvan telt mee in de hoogte van het blok, anders klopt de som niet.
+        self.logo_uitloop = max(0, (self.logo_h - self.qr_maat) // 2)
+        self.onderbouw_h = qr_blok_h + self.logo_uitloop
+
+        # ── de verdeling ───────────────────────────────────────────────────
+        #
+        # Hier gebeurt het. Zie de klasse-uitleg hierboven: de blokken kosten
+        # wat ze kosten, en wat er overblijft wordt in gelijke openingen
+        # verdeeld. Nergens hieronder staat nog een marge tussen twee dingen.
+        self.onderruimte = max(0, int(onderruimte))
+        # De bodem waar de onderbouw op rust. Normaal de ondermarge; staat er
+        # een melding onderin, dan wat die melding bezet houdt.
+        self.bodem = H - max(self.mv, self.onderruimte)
+
+        # WAT ER WIJKT ALS HET NIET PAST.
+        #
+        # De inhoud kost bijna vier vijfde van de hoogte. Komt er onderin een
+        # melding bij die groot genoeg is, dan blijft er niets te verdelen over
+        # en zouden de blokken door elkaar heen gaan lopen — en "niets mag
+        # overlappen" is een harde eis, geen streven.
+        #
+        # Dus gaat er dan een RIJ FOTO'S af, en niet een stuk lucht. De collage
+        # is versiering; de instructie, de verhuurvraag en het logo zijn waar
+        # het scherm voor is. Bij de melding die er nu staat gebeurt dit niet —
+        # het is een vangnet voor als die balk ooit groter wordt.
+        self.rijen = self.rijen_max
+        while True:
+            self._verdeel()
+            if self.lucht >= 0 or self.rijen <= 0:
+                break
+            self.rijen -= 1
+        self.n = self.kolommen * self.rijen
+
+    def _verdeel(self):
+        """De som zelf, voor het aantal rijen dat er nu staat."""
+        W, H = self.W, self.H
+
+        # De rijen gaan uit elkaar, met de instructie ertussen. Ze stonden tegen
+        # elkaar aan als één blok bovenin; de bovenste helft gaat nu boven de
+        # instructie staan en de onderste eronder. Bij twee rijen is dat één en
+        # één; bij drie (staand) twee en één, en die twee houden onderling de
+        # gewone tussenruimte.
+        self.rijen_boven = (self.rijen + 1) // 2
+        self.rijen_onder = self.rijen - self.rijen_boven
+        groep_h = lambda n: (n * self.th + (n - 1) * self.gap) if n > 0 else 0
+        self.groep_boven_h = groep_h(self.rijen_boven)
+        self.groep_onder_h = groep_h(self.rijen_onder)
+
+        # Alleen blokken die er WERKELIJK zijn tellen mee, en er is één opening
+        # boven elk blok. Zonder dat zou een lege rijgroep twee openingen achter
+        # elkaar zetten en stond er ineens dubbele lucht op één plek.
+        self.blokken = [(naam, h) for naam, h in (
+            ("rijen boven", self.groep_boven_h),
+            ("instructie", self.txt_h),
+            ("rijen onder", self.groep_onder_h),
+            ("onderbouw", self.onderbouw_h),
+        ) if h > 0]
+        self.openingen = len(self.blokken)
+        self.inhoud_h = sum(h for _, h in self.blokken)
+        self.lucht = self.bodem - self.inhoud_h
+        self.opening = max(0.0, self.lucht / float(max(1, self.openingen)))
+
+        # De y van elk blok: opening, blok, opening, blok, ... en het laatste
+        # blok eindigt precies op de bodem.
+        y = 0.0
+        plek = {}
+        for naam, h in self.blokken:
+            y += self.opening
+            plek[naam] = int(round(y))
+            y += h
+        self.raster_y = plek.get("rijen boven", plek.get("instructie", 0))
+        self.txt_y = plek["instructie"]
+        self.groep_onder_y = plek.get("rijen onder", self.txt_y + self.txt_h)
+        self.onderbouw_y = plek["onderbouw"]
+
+        # Wat er in de onderbouw staat, van links naar rechts.
+        self.txt_x = (W - self.txt_w) // 2
         self.qr_tekst_x = self.mv
-        self.qr_tekst_y = self.qr_y - r(QR_PIJL_H) - self.qr_tekst_h
-
-        self.vrij_boven = self.mv
-        self.vrij_onder = self.logo_y
-
-    def collage_onderkant(self, rijen_zichtbaar):
-        if rijen_zichtbaar <= 0:
-            return self.raster_y
-        return (self.raster_y + rijen_zichtbaar * self.th
-                + (rijen_zichtbaar - 1) * self.gap)
-
-    def tekst_y(self, rijen_zichtbaar):
-        """De instructie staat altijd midden in de ruimte die de collage overlaat."""
-        boven = (self.collage_onderkant(rijen_zichtbaar) if rijen_zichtbaar
-                 else self.vrij_boven)
-        return boven + (self.vrij_onder - boven - self.txt_h) / 2.0
+        self.qr_tekst_y = self.onderbouw_y
+        self.qr_x = self.mv
+        self.qr_y = self.qr_tekst_y + self.qr_tekst_h + self.qr_pijl_h
+        # De basislijn van de onderbouw: de onderkant van de QR-code. Het logo
+        # centreert erop, en photobooth.py zet het slotje met het serienummer
+        # er met zijn onderkant op — zo staan de drie op één lijn.
+        self.basislijn = self.qr_y + self.qr_maat
+        self.logo_x = (W - self.logo_w) // 2
+        self.logo_y = self.qr_y + (self.qr_maat - self.logo_h) // 2
 
     def rij_y(self, r):
-        return self.raster_y + r * (self.th + self.gap)
+        """Waar rij `r` staat. De bovenste groep bovenin, de rest onder de tekst."""
+        if r < self.rijen_boven:
+            return self.raster_y + r * (self.th + self.gap)
+        return self.groep_onder_y + (r - self.rijen_boven) * (self.th + self.gap)
 
 
 # ── de foto's ───────────────────────────────────────────────────────────────
@@ -402,7 +611,10 @@ class Collage(QWidget):
         self._miniaturen = []     # dezelfde volgorde, op tegelmaat
         self._stroken = []        # één brede pixmap per rij
         self._oude_stroken = {}   # rij -> (pixmap, tijdstip) tijdens een overvloeier
+        self._invloei = {}        # rij -> tijdstip waarop hij begon op te komen
+        self._rijen_getoond = 0   # hoeveel rijen er de vorige keer stonden
         self._volgende = 0        # welk vakje als eerstvolgende vervangen wordt
+        self._onderruimte = 0     # wat er onderaan voor iets anders vrij blijft
 
         self._logo = QPixmap()
         self._logo_x = self._logo_y = 0
@@ -415,6 +627,21 @@ class Collage(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(int(1000 / BEELDJES_S))
         self._timer.timeout.connect(self._tik)
+
+        # Een APARTE klok voor het opkomen en overvloeien.
+        #
+        # Die twee duren een kwart tot ruim één seconde en moeten in die tijd
+        # vloeiend getekend worden. De gewone tekenlus staat standaard op twee
+        # beeldjes per seconde — het schuiven van de foto's staat immers uit —
+        # en dan zou een overvloeier van 1,2 seconde in twee sprongen gebeuren.
+        # Dat is precies het haperen waar de klacht over ging.
+        #
+        # Hij hangt bewust NIET aan beweegt(): dat gaat over blijvende beweging
+        # en bepaalt het grondtempo. Dit is eenmalig, dus het zet zichzelf ook
+        # weer stil zodra er niets meer te vervagen valt.
+        self._vloeitimer = QTimer(self)
+        self._vloeitimer.setInterval(int(1000 / BEELDJES_S))
+        self._vloeitimer.timeout.connect(self._vloei_tik)
 
         # Wat een beeldje werkelijk kost — de uitweg voor als het op de booth
         # alsnog hapert terwijl de meting zegt dat het niet kan.
@@ -462,6 +689,62 @@ class Collage(QWidget):
         anders staat er een timer van 25 keer per seconde te draaien terwijl de
         gast aan het fotograferen is."""
         self._timer.stop()
+        self._vloeitimer.stop()
+
+    # ── opkomen en overvloeien ─────────────────────────────────────────────
+    def vloeit(self):
+        """Is er op dit moment iets aan het opkomen of overvloeien?
+
+        Op de TIJD en niet op de lijstjes. Die lijstjes worden pas opgeruimd
+        door het tekenen zelf (_dekking en de overvloeier in paintEvent), en er
+        wordt niet getekend als de widget niet te zien is. Wie hier op de
+        lijstjes zou kijken, zou dus eeuwig wachten.
+
+        Bestaat voor gereedschap dat wil wachten tot het beeld af is:
+        schermafdrukken.py en test_startscherm.py. Zonder dit maakten die hun
+        afdruk middenin het opkomen, en dan staan er halfdoorzichtige tegels op
+        — wat er op de booth een kwart seconde te zien is, en niet wat er
+        beoordeeld moet worden.
+        """
+        nu = self._klok.elapsed()
+        if any(nu - begin < INVLOEI_MS for begin in self._invloei.values()):
+            return True
+        return any(nu - t < OVERVLOEI_MS for _, t in self._oude_stroken.values())
+
+    def _zorg_vloeitimer(self):
+        """De vloeiklok loopt precies zolang er iets te vervagen valt."""
+        if self.vloeit():
+            if not self._vloeitimer.isActive():
+                self._vloeitimer.start()
+        elif self._vloeitimer.isActive():
+            self._vloeitimer.stop()
+
+    def _vloei_tik(self):
+        self.update()
+        self._zorg_vloeitimer()
+
+    def _laat_opkomen(self, rijen):
+        """Deze rijen staan er nu voor het eerst — laat ze opkomen.
+
+        Wordt aangeroepen zodra het opbouwen een rij vol heeft. Een rij die er
+        ineens staat leest als een storing; een rij die in een kwart seconde
+        opkomt leest als iets dat zich vult.
+        """
+        nu = self._klok.elapsed()
+        for r in rijen:
+            self._invloei.setdefault(r, nu)
+        self._zorg_vloeitimer()
+
+    def _dekking(self, r):
+        """Hoe ver deze rij is opgekomen: 0 tot 1. Weg uit de lijst als hij er is."""
+        begin = self._invloei.get(r)
+        if begin is None:
+            return 1.0
+        verstreken = self._klok.elapsed() - begin
+        if verstreken >= INVLOEI_MS:
+            self._invloei.pop(r, None)
+            return 1.0
+        return max(0.0, min(1.0, verstreken / float(INVLOEI_MS)))
 
     def zet_schuiven(self, aan):
         """Schuiven aan of uit. Raakt de verschuiving tegen inbranden niet.
@@ -683,6 +966,13 @@ class Collage(QWidget):
             self._paden.append(pad)
             self._miniaturen.append(mini)
             self._bouw_stroken()
+            # Wordt hier een rij vol, dan komt hij op — net als tijdens het
+            # opbouwen. Anders staat er halverwege de avond ineens een hele rij
+            # foto's op het scherm.
+            nu_te_zien = self.rijen_zichtbaar()
+            if nu_te_zien > self._rijen_getoond:
+                self._laat_opkomen(range(self._rijen_getoond, nu_te_zien))
+                self._rijen_getoond = nu_te_zien
             self.update()
             return
 
@@ -698,6 +988,10 @@ class Collage(QWidget):
         self._miniaturen[plek] = mini
         self._volgende = (plek + 1) % L.n
         self._bouw_strook(rij)
+        # De overvloeier duurt 1,2 seconde en moet in die tijd vloeiend
+        # getekend worden. Met het schuiven uit staat de gewone tekenlus op twee
+        # beeldjes per seconde; dan zou die overvloeier in twee sprongen gaan.
+        self._zorg_vloeitimer()
         self.update()
 
     def rijen_zichtbaar(self):
@@ -706,6 +1000,65 @@ class Collage(QWidget):
         if L is None:
             return 0
         return min(L.rijen, len(self._miniaturen) // L.kolommen)
+
+    def onderbouw_hoek(self):
+        """Waar het slotje met het serienummer hoort te staan.
+
+        De rechterbenedenhoek van de onderbouw, als (rechts, onder) in logische
+        punten binnen deze widget — dus dezelfde marge als de verhuurvraag links
+        aanhoudt, en dezelfde onderlijn als de QR-code.
+
+        Die twee liggen buiten deze widget (photobooth.py legt ze er als losse
+        widgets overheen) maar horen wél bij de onderbouw: linksonder de
+        verhuurvraag met de QR, in het midden het logo, rechtsonder het slotje.
+        Zonder dit hing de rechterhoek aan de ONDERRAND van het scherm terwijl
+        de andere twee met de verdeling meebewegen — en dan staat de band niet
+        meer op één lijn zodra er een melding onderin komt.
+
+        Nog geen indeling? Dan None: houd je eigen plek maar aan.
+        """
+        L = self._layout
+        if L is None:
+            return None
+        return (self._vlak.x() + L.W - L.mv, self._vlak.y() + L.basislijn)
+
+    # ── ruimte voor iets dat niet van deze widget is ───────────────────────
+    def zet_onderruimte(self, punten):
+        """Houd onderaan zoveel punten vrij, gemeten vanaf de onderrand.
+
+        photobooth.py legt daar de wifi-tip neer als de booth geen internet
+        heeft. Die balk lag over de onderste helft van het logo: je zag "MY
+        BOOTH" en niet "BOX".
+
+        Het is één getal in het rekenmodel en geen los duwtje aan het logo. Het
+        verlaagt de bodem waar de onderbouw op rust, dus er valt minder te
+        verdelen, dus krimpen de vier openingen alle vier evenveel — de volgorde
+        en de verhoudingen blijven staan. Alles gaat samen omhoog: de foto's, de
+        instructie, de verhuurvraag, het logo, en via basislijn() ook het slotje.
+
+        Nul zet alles terug op de gewone plek. Er blijft dus geen gat staan waar
+        de balk gestaan heeft; dat is een aparte eis, en het volgt hieruit omdat
+        de indeling opnieuw uitgerekend wordt en niet bijgewerkt.
+        """
+        punten = max(0, int(punten))
+        if punten == self._onderruimte:
+            return
+        self._onderruimte = punten
+        if self._layout is not None:
+            # Alleen de PLEKKEN veranderen, niet de maten: de tegels, de
+            # instructie en de QR zijn even groot als daarnet. De miniaturen
+            # hier ongeldig maken zou achttien foto's opnieuw laten schalen om
+            # een balk van zeventig punten — dat is precies de halve seconde
+            # stilstand die er net uit gehaald is.
+            self._layout = Layout(self._vlak.width(), self._vlak.height(),
+                                  onderruimte=self._onderruimte)
+            self._logo = QPixmap()      # zijn plek wordt in _zorg_logo bepaald
+            self.update()
+        L = self._layout
+        gevolg = (f" — de vier openingen worden {L.opening:.0f} punten"
+                  if L is not None else "")
+        print(f"[COLLAGE] onderruimte {punten} punten vrij voor de melding "
+              f"onderin{gevolg}", flush=True)
 
     # ── opbouw ─────────────────────────────────────────────────────────────
     def resizeEvent(self, event):
@@ -789,7 +1142,8 @@ class Collage(QWidget):
                 or abs(dpr - self._dpr) > 1e-6):
             self._dpr = dpr
             self._vlak = vlak
-            self._layout = Layout(vlak.width(), vlak.height())
+            self._layout = Layout(vlak.width(), vlak.height(),
+                                  onderruimte=self._onderruimte)
             self._achtergrond = QPixmap()
             self._logo = QPixmap()
             self._tekst = QPixmap()
@@ -826,6 +1180,11 @@ class Collage(QWidget):
         breedte het raster vult. Hoort ongeveer 87% te zijn. Staat daar de
         helft, dan denkt de widget dat hij half zo hoog is als hij is — de
         rasterbreedte volgt namelijk uit de HOOGTE, niet uit de breedte.
+
+        En sinds de verticale indeling een verdeling is: de derde regel is de
+        som zelf, in percentages van de schermhoogte. Wie op de booth vindt dat
+        het scheef staat, kan hem daar narekenen in plaats van er een foto van
+        te maken.
         """
         L = self._layout
         f = lambda v: int(round(v * self._dpr))
@@ -845,6 +1204,18 @@ class Collage(QWidget):
               f"punten per kant, nodig {L.overhang_min} voor de verschuiving "
               f"— {genoeg}", flush=True)
 
+        # De verticale verdeling, in procenten van de schermhoogte.
+        pct = lambda v: 100.0 * v / max(1, L.H)
+        blokken = " + ".join(f"{n} {pct(h):.1f}%" for n, h in L.blokken)
+        gewijkt = ("" if L.rijen == L.rijen_max else
+                   f"  (LET OP: {L.rijen_max - L.rijen} rij(en) foto's "
+                   f"weggelaten, anders paste het niet)")
+        print(f"[COLLAGE] verdeling: {blokken} = {pct(L.inhoud_h):.1f}% inhoud "
+              f"| {L.openingen} openingen van {L.opening:.0f} punten = "
+              f"{pct(L.opening):.1f}% elk ({pct(L.lucht):.1f}% samen) | bodem "
+              f"op {L.bodem} van {L.H} ({L.H - L.bodem} punten voor de "
+              f"ondermarge en een melding){gewijkt}", flush=True)
+
     def _herbouw_beeld(self):
         """Miniaturen en rijen opnieuw maken op de maat die nu geldt.
 
@@ -859,9 +1230,32 @@ class Collage(QWidget):
         en zich in een halve seconde vult, voelt sneller dan een scherm dat een
         halve seconde wegblijft — en het is ook echt eerder bruikbaar, want
         aanraken kan al.
+
+        Waarom dat gespreide opbouwen daarna toch zichtbaar was
+        ------------------------------------------------------
+        "Bij het opbouwen glitcht het een beetje." Twee oorzaken, en de eerste
+        was de grote:
+
+        1. **De instructie sprong twee keer omlaag.** Hij centreerde zich in de
+           ruimte die de collage overliet, en die ruimte krimpt bij elke rij die
+           erbij komt. Op de Surface is dat 142 en daarna 156 fysieke pixels
+           binnen twee tienden van een seconde — de grootste tekst op het scherm
+           die tweemaal verspringt. Dát was het meeste van wat er glitcht, en
+           niet de tegels zelf. Weg sinds de indeling een VERDELING is (zie
+           Layout): elk blok heeft zijn eigen plek, of er nu nul, één of twee
+           rijen klaar zijn. Er valt niets meer te verspringen.
+        2. **De rijen ploften erin.** Een rij verschijnt pas als hij vol is, dus
+           er stond eerst niets en dan ineens een halve wand foto's. Die komt nu
+           in een kwart seconde op: zie INVLOEI_MS. Dat kost geen tekenwerk —
+           het is één getal op de verf — dus de snelheid blijft.
+
+        De winst blijft: er wordt niets vooraf uitgerekend en niets vooruit
+        gewacht. Het scherm staat er nog steeds bij het eerste beeldje.
         """
         L = self._layout
         self._oude_stroken.clear()
+        self._invloei.clear()
+        self._rijen_getoond = 0
         # Alles wat er is: de foto's die al een miniatuur hebben ÉN wat er nog
         # in de wachtrij stond. Dat tweede is makkelijk te vergeten — er komt
         # tijdens het opbouwen een tweede herbouw langs, want de widget krijgt
@@ -903,6 +1297,13 @@ class Collage(QWidget):
         for r in gewijzigd:
             if 0 <= r < L.rijen:
                 self._stroken[r] = self._maak_strook(r)
+        # Wat er door dit stukje bij is gekomen, komt op in plaats van erin te
+        # ploffen. Een rij verschijnt pas als hij vol is, dus dit gebeurt hooguit
+        # twee keer (liggend) of drie keer (staand) per opbouw.
+        nu_te_zien = self.rijen_zichtbaar()
+        if nu_te_zien > self._rijen_getoond:
+            self._laat_opkomen(range(self._rijen_getoond, nu_te_zien))
+            self._rijen_getoond = nu_te_zien
         self.update()
         if not self._wachtrij:
             self._klaar_met_bouwen()
@@ -1144,6 +1545,32 @@ class Collage(QWidget):
 
         Tekst en pijl zitten in één pixmap: ze horen bij elkaar, verschuiven
         samen, en zo is het één blit in plaats van drie.
+
+        Over de pijl, want die was op de booth "een beetje een zootje"
+        ------------------------------------------------------------
+        Hij werd getekend als één gebogen lijn PLUS twee losse streepjes voor de
+        punt, alle drie met dezelfde ronde-kop-pen. Daar zitten twee fouten in
+        die je pas op glas ziet:
+
+        * **Drie ronde koppen op één punt.** Het einde van de kromme en het begin
+          van de twee streepjes vielen samen. Ronde koppen steken een halve
+          lijndikte voorbij hun eindpunt uit, dus daar lag een klodder van drie
+          over elkaar heen gestapelde halve rondjes. Dat is de vlek op de foto.
+        * **Een punt die geen punt is.** Twee streepjes van 30 ontwerppixels bij
+          een lijn van 7 dik lezen als een vinkje dat toevallig aan de lijn
+          vastzit, niet als een pijlpunt. En omdat ze even dik zijn als de lijn
+          staat er niets in verhouding.
+
+        Nu is het één kromme plus één GEVULDE driehoek. De kromme houdt op waar
+        de basis van de driehoek ligt, dus de ronde kop van de kromme valt
+        helemaal binnen de driehoek — één ononderbroken vorm, overal even dik,
+        met een punt die vier lijndiktes lang is. De richting waarin hij aankomt
+        wordt niet meer uit de kromme gepeild (dat was een schatting over 7% van
+        de lengte) maar staat vast: PIJL_HOEK_EIND, overwegend omlaag, iets naar
+        links. Daar wordt de kromme naartoe gerekend in plaats van andersom.
+
+        Antialiasing stond al aan; het probleem zat in de vorm, niet in de
+        instelling.
         """
         L = self._layout
         if not self._qr_tekst.isNull():
@@ -1156,7 +1583,7 @@ class Collage(QWidget):
         except Exception:
             regel = "Ook een photobooth huren?"
 
-        hoogte = L.qr_tekst_h + int(round(QR_PIJL_H * L.s))
+        hoogte = L.qr_tekst_h + L.qr_pijl_h
         doek = self._doek(L.qr_tekst_w, hoogte)
         p = QPainter(doek)
         p.setRenderHint(QPainter.TextAntialiasing, True)
@@ -1187,44 +1614,76 @@ class Collage(QWidget):
         regelhoogte = int(korps * 1.2)
         for i, r in enumerate(regels):
             p.drawText(0, i * regelhoogte + fm.ascent(), r)
-        tekst_onder = len(regels) * regelhoogte
+        # Waar de laatste regel ophoudt: daar begint de pijl. Niet eronder, maar
+        # ernaast — zo loopt hij de zin uit in plaats van er los onder te hangen.
+        staart_x = breed(regels[-1]) if regels else 0
+        staart_y = (len(regels) - 1) * regelhoogte + fm.ascent() - korps * 0.28
 
-        # De kronkelende pijl: van onder het regeltje naar de code, met een
-        # bocht erin zodat hij naar iets wijst in plaats van ergens te staan.
-        dik = max(2.5, 7.0 * L.s)
-        pen = QPen(QColor(merk.GROEN), dik, Qt.SolidLine, Qt.RoundCap,
-                   Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        # Van onder het regeltje, naar rechts uitzwaaien en dan naar links
-        # terug op de code af. Die bocht is waarom het een pijl is en geen
-        # streep: hij wijst ergens naartoe.
-        x0 = L.qr_tekst_w * 0.55
-        y0 = tekst_onder + dik * 2
-        x1 = L.qr_maat * 0.5
-        y1 = hoogte - dik
-        boog = QPainterPath()
-        boog.moveTo(x0, y0)
-        boog.cubicTo(x0 + (L.qr_tekst_w - x0) * 0.75, y0 + (y1 - y0) * 0.15,
-                     x1 + (x0 - x1) * 1.05, y0 + (y1 - y0) * 0.75,
-                     x1, y1)
-        p.drawPath(boog)
-
-        # de punt van de pijl, in de richting waarin de kromme aankomt
-        eind = boog.pointAtPercent(1.0)
-        bijna = boog.pointAtPercent(0.93)
-        hoek = math.atan2(eind.y() - bijna.y(), eind.x() - bijna.x())
-        lengte = max(8.0, 30.0 * L.s)
-        punt = QPainterPath()
-        punt.moveTo(eind)
-        punt.lineTo(eind.x() - lengte * math.cos(hoek - 0.45),
-                    eind.y() - lengte * math.sin(hoek - 0.45))
-        punt.moveTo(eind)
-        punt.lineTo(eind.x() - lengte * math.cos(hoek + 0.45),
-                    eind.y() - lengte * math.sin(hoek + 0.45))
-        p.drawPath(punt)
+        self._teken_pijl(p, L, hoogte, staart_x, staart_y, korps)
         p.end()
         self._qr_tekst = doek
+
+    def _teken_pijl(self, p, L, hoogte, staart_x, staart_y, korps):
+        """De kronkelende pijl van het regeltje naar de code.
+
+        Eén vloeiende kromme met een gevulde punt eraan. De maatvoering staat
+        bovenaan dit bestand; hier staat alleen hoe de vier punten van de kromme
+        eruit volgen.
+        """
+        dik = max(2.5, PIJL_DIK * L.s)
+
+        # WAAR HIJ AANKOMT. Op de bovenrand van de code, iets rechts van het
+        # midden — daar zit ook de tekst, dus de pijl kruist zichzelf niet. De
+        # punt komt onder een vaste hoek binnen: overwegend omlaag, iets naar
+        # links, zodat hij de code aanwijst in plaats van er langs te scheren.
+        hoek = math.radians(PIJL_HOEK_EIND)
+        rx, ry = math.cos(hoek), math.sin(hoek)
+        punt_lang = PIJL_PUNT_LANG * dik
+        punt_half = PIJL_PUNT_BREED * dik
+        tip_x = L.qr_maat * PIJL_MIK
+        tip_y = hoogte - dik * 0.5
+        # De basis van de driehoek. Daar houdt de kromme op: de ronde kop van de
+        # kromme steekt een halve lijndikte vooruit en valt dus binnen de
+        # driehoek, die daar al 1,4 lijndikte breed is. Geen klodder meer.
+        bas_x = tip_x - rx * punt_lang
+        bas_y = tip_y - ry * punt_lang
+
+        # WAAR HIJ VERTREKT. Vlak achter het laatste woord, op de hoogte van dat
+        # woord. Dat is het "logische aanlooppunt": de pijl loopt de zin uit.
+        # Stond hij eronder, dan hing hij tussen tekst en code in en las het als
+        # drie losse dingen. Blijft kloppen als de vertaling korter of langer is,
+        # want het volgt de werkelijk gezette regel.
+        x0 = min(L.qr_tekst_w * 0.62, staart_x + korps * 0.45)
+        y0 = staart_y
+
+        # DE BOCHT. Eerst naar rechts uitzwaaien, dan terug naar links op de code
+        # af. Dat uitzwaaien is waarom het een pijl is en geen streep: hij komt
+        # ergens vandaan en wijst ergens naartoe.
+        c1_x = x0 + (L.qr_tekst_w - x0) * PIJL_ZWAAI
+        c1_y = y0 + (bas_y - y0) * PIJL_DAAL
+        # Het tweede stuurpunt ligt op de aankomstrichting, achter de basis van
+        # de punt. Zo komt de kromme daar gegarandeerd onder de juiste hoek aan
+        # en hoeft er niets gepeild te worden.
+        grip = PIJL_GRIP * math.hypot(bas_x - x0, bas_y - y0)
+        c2_x = bas_x - rx * grip
+        c2_y = bas_y - ry * grip
+
+        boog = QPainterPath()
+        boog.moveTo(x0, y0)
+        boog.cubicTo(c1_x, c1_y, c2_x, c2_y, bas_x, bas_y)
+        p.setPen(QPen(QColor(merk.GROEN), dik, Qt.SolidLine, Qt.RoundCap,
+                      Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(boog)
+
+        # De punt: één gevulde driehoek, geen twee streepjes.
+        punt = QPainterPath()
+        punt.moveTo(tip_x, tip_y)
+        punt.lineTo(bas_x - ry * punt_half, bas_y + rx * punt_half)
+        punt.lineTo(bas_x + ry * punt_half, bas_y - rx * punt_half)
+        punt.closeSubpath()
+        p.setPen(Qt.NoPen)
+        p.fillPath(punt, QColor(merk.GROEN))
 
     # ── tekenen ────────────────────────────────────────────────────────────
     def paintEvent(self, event):
@@ -1291,8 +1750,15 @@ class Collage(QWidget):
                     verschuiving = 0
                 p.setClipRect(QRect(L.raster_x, int(y), L.raster_b, L.th))
                 x0 = L.raster_x + int(verschuiving)
+                # Komt deze rij nog op, dan komt hij op in plaats van erin te
+                # ploffen. Zie INVLOEI_MS.
+                dekking = self._dekking(r)
+                if dekking < 1.0:
+                    p.setOpacity(dekking)
                 p.drawPixmap(x0, int(y), self._stroken[r])
                 p.drawPixmap(x0 - periode, int(y), self._stroken[r])
+                if dekking < 1.0:
+                    p.setOpacity(1.0)
 
                 # een vervangen tegel vloeit over: de oude strook eroverheen,
                 # aflopend doorzichtig. Kost twee blits, 1,2 s lang.
@@ -1308,11 +1774,18 @@ class Collage(QWidget):
                         p.setOpacity(1.0)
                 p.setClipping(False)
 
-        # 4. de instructie — een gecachte pixmap die alleen van plek verandert
+        # 4. de instructie — een gecachte pixmap op een VASTE plek.
+        #    Hij centreerde zich vroeger in de ruimte die de collage overliet,
+        #    en die ruimte krimpt bij elke rij die er tijdens het opbouwen
+        #    bijkomt: twee sprongen van ruim 140 fysieke pixels binnen twee
+        #    tienden van een seconde, met de grootste tekst van het scherm. Dát
+        #    was het grootste deel van "bij het opbouwen glitcht het een beetje".
+        #    Sinds de indeling een verdeling is (zie Layout) staat hij stil,
+        #    ongeacht hoeveel rijen er al klaar zijn.
         if not self._tekst.isNull():
-            p.drawPixmap(L.txt_x, int(L.tekst_y(zichtbaar)), self._tekst)
+            p.drawPixmap(L.txt_x, L.txt_y, self._tekst)
 
-        # 5. het logo — staat onderaan, gecentreerd, in elke toestand
+        # 5. het logo — in de onderbouw, op de QR-code gecentreerd
         if not self._logo.isNull():
             p.drawPixmap(self._logo_x, self._logo_y, self._logo)
 

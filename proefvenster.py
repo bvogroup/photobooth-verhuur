@@ -258,6 +258,135 @@ def overdrachtschermen(pb, breedte, hoogte):
     return uit
 
 
+class Startschermvenster(QMainWindow):
+    """De ECHTE idle-pagina uit photobooth.py los kunnen tekenen.
+
+    Waarom dit erbij moest
+    ----------------------
+    Op de afdrukken van het startscherm stond alleen de collage-widget. Drie
+    dingen die er op de booth óók staan, kwamen er niet op: het slotje, het
+    serienummer en de wifi-tip. En precies daar zaten de klachten — de tip lag
+    over het logo ("je ziet MY BOOTH en niet BOX"), en het slotje en het
+    serienummer liepen uit elkaar. Wat een afdruk niet laat zien, wordt niet
+    beoordeeld; vandaar dat _build_idle_page hier ONVERANDERD geleend wordt.
+
+    Wat er niet is: een echte event (er wordt een klein object nagemaakt met de
+    twee eigenschappen die de pagina uitleest), een echte inlogtoestand, en een
+    echte wifi-controle. De melding wordt hier met de hand aan- of uitgezet, en
+    dat is precies de schakelaar die _on_idle_wifi_state op de booth omzet.
+    """
+
+    GELEEND = ("_build_idle_page", "_position_idle_lock",
+               "_position_idle_wifi_tip", "_idle_onderruimte",
+               "_idle_ruim_op_voor_melding", "_verschuif_idle_bediening",
+               "_collage_achtergrond", "_get_default_idle_path",
+               "_load_idle_background", "_is_logged_in")
+    OVERGENOMEN = ("_IDLE_HOEK_LUCHT", "_IDLE_TIP_HOOG", "_IDLE_TIP_ONDER",
+                   "_IDLE_TIP_LUCHT")
+
+    def __init__(self, pb, breedte, hoogte, raw_dir="", serienummer="3D04"):
+        super().__init__()
+        self._pb = pb
+        self._nepscherm = Nepscherm(breedte, hoogte)
+        for naam in self.GELEEND:
+            setattr(self, naam, getattr(pb.PhotoboothWindow, naam).__get__(self))
+        for naam in self.OVERGENOMEN:
+            setattr(self, naam, getattr(pb.PhotoboothWindow, naam))
+        self._raw_dir = raw_dir
+        self.serial_number = serienummer
+        self.pages = {}
+        self.stack = QStackedWidget()
+        self.setCentralWidget(self.stack)
+        self.resize(breedte, hoogte)
+        self.show()
+        QApplication.processEvents()
+
+        # Een event met precies de twee eigenschappen die de idle-pagina
+        # uitleest. Geen echt Event-object: dat trekt de hele opslag mee.
+        import types as _t
+        self.active_event = _t.SimpleNamespace(
+            collage_enabled=True, lock_icon_size=60, idle_screen_mode="default",
+            payment_enabled=False, payment_method="none", sumup_enabled=False,
+            payment_bg_path="", payment_screen_text="")
+
+    def screen(self):
+        return self._nepscherm
+
+    def _get_raw_dir(self):
+        return self._raw_dir
+
+    # De collage staat aan, de versiering uit — net als de standaardinstelling.
+    def _collage_schuiven_aan(self):
+        return False
+
+    def _collage_parallax_aan(self):
+        return False
+
+    def _load_app_setting(self, *a, **k):
+        return False
+
+    def _niets(self, *a, **k):
+        pass
+
+    _on_lock_clicked = _show_login = _go_select_template = _niets
+    _show_voucher_input = _on_idle_wifi_setup_clicked = _niets
+
+    def bouw(self, melding=False):
+        """Bouw de pagina en zet hem klaar, met of zonder de melding onderin."""
+        page = self._build_idle_page()
+        self.pages["idle"] = self.stack.count()
+        self.stack.addWidget(page)
+        self.stack.setCurrentIndex(self.pages["idle"])
+        _afronden(self, self._nepscherm.geometry().width(),
+                  self._nepscherm.geometry().height())
+
+        # Zonder beeldscherm meldt Qt een scherm van 800 x 600 en zou de
+        # indeling daarop uitkomen. De maat van de tablet wordt daarom
+        # opgegeven, net als in schermafdrukken.py.
+        collage = getattr(self, "_idle_collage", None)
+        if collage is not None:
+            collage.zet_zichtbaar_vlak(
+                QRect(0, 0, self._nepscherm.geometry().width(),
+                      self._nepscherm.geometry().height()))
+            collage.start()
+
+        # De melding: precies dezelfde weg als _on_idle_wifi_state op de booth.
+        if melding:
+            self._position_idle_wifi_tip()
+            self._idle_wifi_tip.show()
+            self._idle_wifi_tip.raise_()
+        self._idle_ruim_op_voor_melding()
+        self.status_label.setText(self.serial_number)
+        self._position_idle_lock()
+
+        # Wachten tot de tegels klaar zijn ÉN tot er niets meer opkomt: een rij
+        # vloeit in een kwart seconde in, en halfdoorzichtige tegels op een
+        # afdruk zeggen niets over de indeling.
+        from PyQt5.QtCore import QElapsedTimer
+        klok = QElapsedTimer()
+        klok.start()
+        while collage is not None and (collage._wachtrij or collage.vloeit()) \
+                and klok.elapsed() < 10000:
+            QApplication.processEvents()
+        _afronden(self, self._nepscherm.geometry().width(),
+                  self._nepscherm.geometry().height())
+        return page
+
+
+def startschermen(pb, breedte, hoogte, raw_dir):
+    """De idle-pagina zoals de booth hem toont: met en zonder de melding onderin.
+
+    Geeft [(naam, venster, pagina)]. De vensters moeten door de aanroeper
+    bewaard worden, anders ruimt Python ze meteen op.
+    """
+    uit = []
+    for naam, melding in (("compleet", False), ("compleet-wifi-tip", True)):
+        v = Startschermvenster(pb, breedte, hoogte, raw_dir=raw_dir)
+        page = v.bouw(melding=melding)
+        uit.append((naam, v, page))
+    return uit
+
+
 def nepsessie(map_naam):
     """Een fotostrook en een boemerang op schijf, zoals een sessie ze achterlaat.
 

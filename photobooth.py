@@ -4023,11 +4023,20 @@ class PhotoboothWindow(QMainWindow):
         _onderruimte.setFixedHeight(40)
         bottom_bar.addWidget(_onderruimte, stretch=1)
 
+        # Het serienummer. Hangt onder het slotje en vormt daar één blok mee —
+        # zie _position_idle_lock, dat allebei op hetzelfde hart centreert.
+        #
+        # GECENTREERD en ZONDER PADDING, en dat is geen smaak. Het label werd
+        # rechts uitgelijnd met tien punten padding eromheen; die padding is
+        # onzichtbaar maar telt wel mee in width() en height(), dus alles wat er
+        # op uitgelijnd wordt komt tien punten scheef te staan. Dat was het
+        # verschil waardoor het serienummer naast het slotje leek te hangen in
+        # plaats van eronder.
         self.status_label = QLabel("", page)
-        self.status_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(QFont("DM Sans", 14))
         self.status_label.setStyleSheet(
-            f"color: {config.COLOR_TEXT_DIM}; background: transparent; padding: 10px;")
+            f"color: {config.COLOR_TEXT_DIM}; background: transparent; padding: 0;")
         self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.status_label.show()
 
@@ -4048,46 +4057,57 @@ class PhotoboothWindow(QMainWindow):
         self._idle_lock_btn.clicked.connect(self._on_lock_clicked)
         self._idle_lock_btn.raise_()
 
-        # Wifi-tip popup onderaan (alleen bij geen wifi)
-        # Stijl past bij de software-popups (warm gold accent, niet rood)
+        # De wifi-tip onderin, alleen als er geen internet is.
+        #
+        # DE STIJL IS DIE VAN EEN DONKER SCHERM. Hij stond op de LICHTE
+        # merkkleuren (COLOR_CARD_BG is merk.PAPIER_DIEPER, COLOR_BORDER is
+        # merk.RAND, COLOR_TEXT is de donkere leestekst) en lag dus als een witte
+        # doos met een lichte rand over een donkerpaars startscherm. Dat is de
+        # "lelijke outline om het tekstje en om het logo heen" van de klacht: het
+        # is geen schaduw maar een kaart die uit een ander scherm komt.
+        # merk.kaart(op_donker=True) is precies dezelfde soort kaart, in de
+        # kleuren die hier horen — één rand, geen schaduw, zoals het merk
+        # voorschrijft.
         self._idle_wifi_tip = QFrame(page)
         self._idle_wifi_tip.setStyleSheet(
-            f"QFrame {{ background: {config.COLOR_CARD_BG}; "
-            f"border: 1px solid {config.COLOR_BORDER}; "
-            f"border-radius: 14px; }}"
+            f"QFrame {{ {merk.kaart(op_donker=True)} }}"
         )
         wifi_lay = QHBoxLayout(self._idle_wifi_tip)
         wifi_lay.setContentsMargins(18, 12, 18, 12)
         wifi_lay.setSpacing(14)
         wifi_icon = QLabel("📶")
         wifi_icon.setFont(QFont("DM Sans", 22))
-        wifi_icon.setStyleSheet(f"color: {config.COLOR_PRIMARY}; background: transparent;")
+        wifi_icon.setStyleSheet(f"color: {merk.GROEN}; background: transparent;"
+                                f" border: none;")
         wifi_lay.addWidget(wifi_icon)
         wifi_text = QLabel(
             "<b>TIP</b> — Verbind de photobooth met wifi en download "
             "je foto's direct op je telefoon."
         )
         wifi_text.setFont(QFont("DM Sans", 13))
-        wifi_text.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
+        wifi_text.setStyleSheet(f"color: {merk.OP_DONKER}; background: transparent;"
+                                f" border: none;")
         wifi_text.setWordWrap(True)
         wifi_lay.addWidget(wifi_text, stretch=1)
         wifi_btn = QPushButton("Stel wifi in")
         wifi_btn.setCursor(Qt.PointingHandCursor)
-        wifi_btn.setFont(QFont("DM Sans", 13, QFont.Bold))
-        wifi_btn.setMinimumHeight(42)
-        wifi_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_PRIMARY}; "
-            f"color: {config.COLOR_TEXT_ON_PRIMARY}; border: none; "
-            f"border-radius: 10px; padding: 8px 22px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_PRIMARY_HOVER}; }}"
-        )
+        wifi_btn.setFont(merk.letter(merk.TEKST_KLEIN, vet=True))
+        wifi_btn.setMinimumHeight(merk.KNOP_MIN)
+        wifi_btn.setStyleSheet(merk.knop_hoofd())
         wifi_btn.clicked.connect(self._on_idle_wifi_setup_clicked)
         wifi_lay.addWidget(wifi_btn)
-        self._idle_wifi_tip.setFixedHeight(70)
+        self._idle_wifi_tip.setFixedHeight(self._IDLE_TIP_HOOG)
         self._idle_wifi_tip.hide()
         self._idle_wifi_tip_page = page  # voor positioning
 
         return page
+
+    # De maatvoering van de melding onderin. Staat hier bij elkaar omdat het
+    # startscherm er ruimte voor moet vrijmaken en dus dezelfde getallen nodig
+    # heeft — zie _idle_onderruimte().
+    _IDLE_TIP_HOOG = 70                    # de balk zelf
+    _IDLE_TIP_ONDER = merk.RUIMTE_RUIM     # 24 — van de onderrand af
+    _IDLE_TIP_LUCHT = merk.RUIMTE          # 16 — tussen de balk en de onderbouw
 
     def _position_idle_wifi_tip(self):
         """Positioneer de wifi-tip onderaan, gecentreerd horizontaal."""
@@ -4099,10 +4119,48 @@ class PhotoboothWindow(QMainWindow):
         w = min(700, page.width() - 60)
         h = self._idle_wifi_tip.height()
         x = (page.width() - w) // 2
-        # Net boven de onderkant — niet helemaal tegen rand vanwege lock-btn
-        y = page.height() - h - 40
+        # Tegen de onderrand, op de gewone kantlijn na. Stond op 40 "vanwege de
+        # lock-btn"; dat slotje staat nu in de onderbouw en niet meer in de
+        # onderste veertig punten, dus die reden is weg — en elke punt die deze
+        # balk lager staat, is een punt die de indeling erboven overhoudt.
+        y = page.height() - h - self._IDLE_TIP_ONDER
         self._idle_wifi_tip.setGeometry(x, y, w, h)
         self._idle_wifi_tip.raise_()
+
+    def _idle_onderruimte(self):
+        """Hoeveel punten de melding onderin bezet houdt, vanaf de onderrand.
+
+        Nul als er geen melding staat. Dan hoort de indeling gewoon te zijn wat
+        hij zonder melding is — er blijft dus geen gat staan waar de balk
+        gestaan heeft.
+        """
+        tip = getattr(self, '_idle_wifi_tip', None)
+        if tip is None or not tip.isVisible():
+            return 0
+        return tip.height() + self._IDLE_TIP_ONDER + self._IDLE_TIP_LUCHT
+
+    def _idle_ruim_op_voor_melding(self):
+        """Geef de melding onderin zijn plek, en schuif de rest omhoog.
+
+        De balk lag over de onderste helft van het logo heen: je zag "MY BOOTH"
+        en niet "BOX". Nu krijgt de collage te horen hoeveel er onderaan vrij
+        moet blijven en verlaagt hij de bodem van zijn verdeling — waardoor
+        alles boven de melding evenredig omhoog schuift: de foto's, de
+        instructie, de verhuurvraag met de QR, het logo, en via
+        _position_idle_lock ook het slotje met het serienummer.
+
+        Het is met opzet een AANTAL PUNTEN en geen schakelaar: verandert de balk
+        van maat (langere tekst, andere schermschaal), dan verschuift de
+        indeling mee zonder dat hier iets bijgesteld hoeft te worden.
+        """
+        collage = getattr(self, '_idle_collage', None)
+        if collage is not None:
+            try:
+                collage.zet_onderruimte(self._idle_onderruimte())
+            except Exception as e:
+                print(f"[COLLAGE] onderruimte niet gezet: {e}", flush=True)
+        # Het slotje hangt aan de onderbouw en moet dus mee.
+        self._position_idle_lock()
 
     def _on_idle_wifi_setup_clicked(self):
         """Open de Windows wifi-flyout (zelfde aanpak als de welcome-page).
@@ -4137,6 +4195,7 @@ class PhotoboothWindow(QMainWindow):
             if hasattr(self, '_idle_wifi_tip') and self._idle_wifi_tip is not None \
                     and self._idle_wifi_tip.isVisible():
                 self._idle_wifi_tip.hide()
+                self._idle_ruim_op_voor_melding()
             return
         def _bg():
             import socket
@@ -4149,18 +4208,24 @@ class PhotoboothWindow(QMainWindow):
         threading.Thread(target=_bg, daemon=True).start()
 
     def _on_idle_wifi_state(self, online: bool):
-        """Update wifi-tip visibility op de idle-page."""
+        """Update wifi-tip visibility op de idle-page.
+
+        Verschijnt of verdwijnt de balk, dan moet de indeling erboven mee: zie
+        _idle_ruim_op_voor_melding(). Zonder dat lag hij over het logo heen.
+        """
         self._has_internet = online
         if not hasattr(self, '_idle_wifi_tip') or self._idle_wifi_tip is None:
             return
         if online:
             if self._idle_wifi_tip.isVisible():
                 self._idle_wifi_tip.hide()
+                self._idle_ruim_op_voor_melding()
         else:
             if not self._idle_wifi_tip.isVisible():
                 self._position_idle_wifi_tip()
                 self._idle_wifi_tip.show()
                 self._idle_wifi_tip.raise_()
+                self._idle_ruim_op_voor_melding()
 
     # --- TEMPLATE SELECT ---
     def _build_template_select_page(self):
@@ -4484,9 +4549,19 @@ class PhotoboothWindow(QMainWindow):
         bediening.zet_zijknop(no_btn)
         self._review_confirm_no_btn = no_btn
 
+        # DEZELFDE OMLIJNING ALS DE KNOP LINKS. De twee buitenste knoppen van
+        # een gastscherm horen gelijk te zijn; alleen de middelste mag eruit
+        # springen. Deze stond op knop_stil() — geen rand, gedempte letter — en
+        # dat las als een knop die half uitgeschakeld was.
+        #
+        # De bescherming die die stille stijl moest geven blijft, maar via de
+        # TUSSENRUIMTE: bediening.TUSSEN staat op 40 punten (7,6 mm op dit
+        # scherm) juist omdat "Sessie stoppen" naast "Ja" de verwisseling is die
+        # je niet wil hebben. Dat is een afstand die je met je duim voelt; een
+        # afwijkende omlijning is alleen iets dat je achteraf ziet.
         stop_btn = QPushButton("Sessie stoppen")
         stop_btn.clicked.connect(self._on_review_stop)
-        bediening.zet_zijknop(stop_btn, stijl=merk.knop_stil(op_donker=True))
+        bediening.zet_zijknop(stop_btn)
         self._review_confirm_stop_btn = stop_btn
 
         lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn,
@@ -4526,9 +4601,19 @@ class PhotoboothWindow(QMainWindow):
         bediening.zet_zijknop(no_btn)
         self._review_print_no_btn = no_btn
 
+        # DEZELFDE OMLIJNING ALS DE KNOP LINKS. De twee buitenste knoppen van
+        # een gastscherm horen gelijk te zijn; alleen de middelste mag eruit
+        # springen. Deze stond op knop_stil() — geen rand, gedempte letter — en
+        # dat las als een knop die half uitgeschakeld was.
+        #
+        # De bescherming die die stille stijl moest geven blijft, maar via de
+        # TUSSENRUIMTE: bediening.TUSSEN staat op 40 punten (7,6 mm op dit
+        # scherm) juist omdat "Sessie stoppen" naast "Ja" de verwisseling is die
+        # je niet wil hebben. Dat is een afstand die je met je duim voelt; een
+        # afwijkende omlijning is alleen iets dat je achteraf ziet.
         stop_btn = QPushButton("Sessie stoppen")
         stop_btn.clicked.connect(self._on_review_stop)
-        bediening.zet_zijknop(stop_btn, stijl=merk.knop_stil(op_donker=True))
+        bediening.zet_zijknop(stop_btn)
         self._review_print_stop_btn = stop_btn
 
         lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn,
@@ -8457,10 +8542,11 @@ class PhotoboothWindow(QMainWindow):
         self._filter_retake_btn.clicked.connect(self._filter_retake)
         bediening.zet_zijknop(self._filter_retake_btn)
 
+        # Zelfde omlijning als "Foto opnieuw nemen" ernaast — zie
+        # _build_review_confirm_panel. De bescherming zit in bediening.TUSSEN.
         self._filter_stop_btn = QPushButton("Stoppen")
         self._filter_stop_btn.clicked.connect(self._filter_stop)
-        bediening.zet_zijknop(self._filter_stop_btn,
-                              stijl=merk.knop_stil(op_donker=True))
+        bediening.zet_zijknop(self._filter_stop_btn)
 
         self._filter_balk = bediening.gastbalk(
             hoofd=self._filter_next_btn,
@@ -11734,8 +11820,11 @@ class PhotoboothWindow(QMainWindow):
             if self._qr_overlay.isVisible():
                 self._position_qr_overlay()
         elif self.state == State.IDLE:
-            self._position_idle_lock()
+            # De melding eerst op zijn nieuwe maat zetten; pas dan weet de
+            # collage hoeveel er onderaan vrij moet blijven, en pas dan weet het
+            # slotje waar de onderbouw ligt.
             self._position_idle_wifi_tip()
+            self._idle_ruim_op_voor_melding()
         # Reposition printer-fout overlay + QR-code bij elke resize
         if getattr(self, '_dnp_error_overlay', None) is not None:
             try:
@@ -11774,8 +11863,19 @@ class PhotoboothWindow(QMainWindow):
         self._idle_drift = (dx, dy)
         self._position_idle_lock()
 
+    # Wat er tussen het slotje en het serienummer zit: NIETS, en dat is geen
+    # slordigheid.
+    #
+    # De slotjesknop is een AANRAAKVLAK van zestig punten (elf millimeter, de
+    # ondergrens voor een vinger) om een icoon dat er ongeveer een derde van
+    # vult. Er zit dus al zo'n twintig punten lege knop onder het zichtbare
+    # slotje. Daar nog een tussenruimte bij optellen maakt het gat twee keer zo
+    # groot als bedoeld, en dan lezen ze weer als twee losse dingen in plaats
+    # van als één blok — precies wat er weg moest.
+    _IDLE_HOEK_LUCHT = 0
+
     def _position_idle_lock(self):
-        """Zet het slotje en het serienummer samen rechts-onder neer.
+        """Zet het slotje met het serienummer eronder neer, als ÉÉN BLOK.
 
         Het serienummer stond links-onder en staat nu ONDER het slotje: dat
         zijn allebei dingen voor de verhuurder, en samen vormen ze één hoekje
@@ -11783,11 +11883,37 @@ class PhotoboothWindow(QMainWindow):
         daarmee vrijgekomen voor de verhuurvraag met de QR, die de collage
         zelf tekent.
 
-        Allebei met de verschuiving tegen inbranden erin verwerkt. De rustplek
-        ligt één uitslag naar binnen, zodat ze de hele slag kunnen maken en er
-        nooit iets van het scherm af loopt: het slotje blijft altijd minstens
-        tien punten van de rand. Omdat de knop zelf verplaatst wordt, verplaatst
-        het aanraakvlak mee — de verhuurder tikt dus waar hij het ziet staan.
+        WAAROM ZE UIT ELKAAR LIEPEN
+        ---------------------------
+        Ze werden allebei RECHTS UITGELIJND op dezelfde rand. Dat lijkt hetzelfde
+        als onder elkaar zetten, maar het is het niet: het slotje is een emoji
+        die door Qt in het MIDDEN van een knop van 60 x 60 gezet wordt, dus het
+        zichtbare slotje houdt aan de rechterkant een halve knop over. Het
+        serienummer eindigde daarentegen precies op de rand (met alleen zijn
+        eigen padding van tien punten ertussen). Zo stond het serienummer altijd
+        een stuk of vijftien punten verder naar rechts dan het slotje — en dat is
+        precies genoeg om als "los" te lezen. Nu wordt er GECENTREERD, allebei op
+        hetzelfde hart, en dat hart is het midden van het blok.
+
+        Het blok is zo breed als het breedste van de twee. Bij het gewone geval
+        (een serienummer van vier tekens) is dat het slotje. Komt er een
+        waarschuwing bij in het serienummerregeltje, dan wordt het label breder
+        en schuift het slotje mee naar links — want ze zijn samen één ding.
+
+        WAAR HET BLOK STAAT
+        -------------------
+        In de rechterbenedenhoek van de ONDERBOUW, niet in die van het scherm.
+        De onderbouw is de band waar ook de verhuurvraag en het logo in staan
+        (zie startscherm.Layout); die band beweegt mee met het rekenmodel, dus
+        ook als er onderin een melding bij komt. Vroeger hing dit hoekje aan de
+        onderrand en brak de band zodra dat gebeurde. Zonder collage is er geen
+        band en valt hij terug op de oude plek.
+
+        En met de verschuiving tegen inbranden erin. Die werkt op het BLOK en
+        niet op de twee onderdelen apart — dat is hetzelfde getal voor allebei,
+        dus ze kunnen niet uit de pas gaan lopen. Omdat de knop zelf verplaatst
+        wordt, verplaatst het aanraakvlak mee: de verhuurder tikt waar hij het
+        ziet staan.
         """
         if not hasattr(self, '_idle_lock_btn'):
             return
@@ -11814,24 +11940,33 @@ class PhotoboothWindow(QMainWindow):
         collage = getattr(self, '_idle_collage', None)
         ax, ay = collage.verschuiving_bereik() if collage is not None else (0, 0)
 
-        marge = 10
-        # Rechterrand en onderrand van het hoekje, met de verschuiving erin.
-        rechts = pw - marge - ax + dx
-        onder = ph - marge - ay + dy
+        # De hoek van de onderbouw, als die er is. Anders de oude plek: één
+        # uitslag van de schermrand af, zodat de verschuiving de hele slag kan
+        # maken zonder dat er iets van het scherm loopt.
+        hoek = collage.onderbouw_hoek() if collage is not None else None
+        if hoek is not None:
+            rechts, onder = hoek[0] + dx, hoek[1] + dy
+        else:
+            marge = 10
+            rechts = pw - marge - ax + dx
+            onder = ph - marge - ay + dy
 
         label = getattr(self, 'status_label', None)
-        label_h = 0
+        label_w = label_h = 0
         if label is not None and label.parent() is page:
             label.adjustSize()
-            label_h = label.height()
-            # Rechts uitgelijnd, zodat de rechterkant van het serienummer op
-            # één lijn staat met de rechterkant van het slotje.
-            label.move(rechts - label.width(), onder - label_h)
-            label.raise_()
+            label_w, label_h = label.width(), label.height()
 
-        # Het slotje erboven; het serienummer hangt eronder.
-        self._idle_lock_btn.move(rechts - ls,
-                                 onder - label_h - (6 if label_h else 0) - ls)
+        # Eén hart voor allebei: het midden van het blok.
+        blok_w = max(ls, label_w)
+        lucht = self._IDLE_HOEK_LUCHT if label_h else 0
+        hart = rechts - blok_w / 2.0
+
+        if label_h:
+            label.move(int(round(hart - label_w / 2.0)), int(onder) - label_h)
+            label.raise_()
+        self._idle_lock_btn.move(int(round(hart - ls / 2.0)),
+                                 int(onder) - label_h - lucht - ls)
         self._idle_lock_btn.raise_()
         self._idle_lock_btn.show()
 
