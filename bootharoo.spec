@@ -67,6 +67,8 @@ a = Analysis(
         # meeleveren met software uitdrukkelijk toestaat; het licentiebestand
         # gaat daarom mee in dezelfde map.
         (os.path.join(app_dir, 'fonts'), 'fonts'),
+        # Het logo voor de collage op het startscherm (startscherm.py).
+        (os.path.join(app_dir, 'startscherm'), 'startscherm'),
     # boto3/botocore data files (required for S3/R2 cloud upload) — zie de
     # toelichting bovenaan; opgehaald bij de pakketten zelf i.p.v. via een
     # hardgecodeerd Python-pad.
@@ -74,7 +76,7 @@ a = Analysis(
     hiddenimports=[
         # Eigen modules die pas binnen een functie geimporteerd worden en die
         # PyInstaller daardoor kan missen.
-        'merk', 'lettertype',
+        'merk', 'lettertype', 'startscherm',
         # Qt5
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',
         'PyQt5.QtPrintSupport',

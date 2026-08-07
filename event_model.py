@@ -29,6 +29,11 @@ class Event:
     template_name: str = ""          # Selected template name
     idle_screen_mode: str = "default" # "default" or "custom"
     idle_background: str = ""        # Custom idle background path
+    collage_enabled: bool = True     # Collage op het startscherm aan/uit.
+                                     # Niet elk feest wil dit: een bedrijfsfeest,
+                                     # een schoolfeest, of een bruidspaar dat
+                                     # het liever niet heeft. Uit betekent
+                                     # terugvallen op de lege toestand.
     background_path: str = ""        # Print achtergrond pad
     print_copies: int = 1            # Legacy — mapped to auto_print_copies on load
     auto_print_copies: int = 1       # Number of copies for auto-print

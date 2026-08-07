@@ -26,6 +26,7 @@ from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, 
 
 import config
 import merk  # de merkwaarden: kleuren, maten, afrondingen en knopstijlen
+import startscherm  # de collage op het startscherm
 from camera import (Camera, CaptureThread, EDSDKWorker,
                      get_search_folders, snapshot_files,
                      ensure_digicam_running, stop_digicam)
@@ -3810,7 +3811,28 @@ class PhotoboothWindow(QMainWindow):
     def _build_idle_page(self):
         """Build clean idle screen - tap anywhere to start, lock icon for operator."""
         idle_bg = self._load_idle_background()
-        if idle_bg and os.path.isfile(idle_bg):
+        heeft_bg = bool(idle_bg) and os.path.isfile(idle_bg)
+
+        # De collage van MyBoothBox. Hij tekent zelf zijn achtergrond, dus hij
+        # komt in de plaats van _BgWidget; al het andere (de tikknop, het
+        # slotje, de banner) blijft er gewoon overheen liggen.
+        #
+        # Staat hij uit voor dit event, dan valt het scherm terug op de lege
+        # toestand — dat is precies het beeld dat er nu ook staat, dus dat
+        # kost niets.
+        self._idle_collage = None
+        if startscherm.collage_aan(self.active_event):
+            try:
+                page = startscherm.Collage(idle_bg if heeft_bg else "")
+                self._idle_collage = page
+                page.zet_fotos(startscherm.fotos_van_event(self._get_raw_dir()))
+            except Exception as e:
+                # Het startscherm mag de booth nooit tegenhouden.
+                print(f"[COLLAGE] niet opgebouwd, terug naar het stilstaande "
+                      f"scherm: {e}", flush=True)
+                self._idle_collage = None
+                page = _BgWidget(idle_bg) if heeft_bg else QWidget()
+        elif heeft_bg:
             page = _BgWidget(idle_bg)
         else:
             page = QWidget()
@@ -6486,6 +6508,7 @@ class PhotoboothWindow(QMainWindow):
             self._welcome_spinner_timer.stop()
 
         self.stack.setCurrentIndex(self.pages["idle"])
+        self._ververs_collage()
         self._update_status()
         # Position lock button in bottom-right corner
         if hasattr(self, '_idle_lock_btn'):
@@ -6600,6 +6623,9 @@ class PhotoboothWindow(QMainWindow):
         if self.state != State.IDLE:
             print(f"[UI] _go_select_template genegeerd (state={self.state})")
             return
+        # De collage staat vanaf hier uit beeld; de tekenlus mag stil, want de
+        # camera en de printer gaan het nu druk krijgen.
+        self._stop_collage()
         pos = self.pos()
         print(
             f"[UI] _go_select_template gestart  venster=({pos.x()},{pos.y()}) "
@@ -20834,16 +20860,35 @@ class PhotoboothWindow(QMainWindow):
         if not os.path.isdir(defaults_dir):
             return "", screen_w, screen_h
 
-        # Collect all ready{N} files with their width
+        # Collect all ready{N} files with their width.
+        #
+        # Er staan twee reeksen naast elkaar. "ready{N}" is de bestaande, van
+        # het oude systeem, en die blijft ongemoeid — daar draaien nog booths
+        # op. "mbb-ready{N}" is de MyBoothBox-versie: de lege toestand van de
+        # collage, gerenderd op dezelfde vier breedtes. Draait dit event op
+        # MyBoothBox, dan gaat die voor; is hij er niet, dan valt hij vanzelf
+        # terug op de oude.
         import re
+        mbb = startscherm.collage_aan(self.active_event)
+        patroon = r"mbb-ready(\d+)\." if mbb else r"ready(\d+)\."
         candidates = []
         for f in os.listdir(defaults_dir):
             if not f.lower().endswith((".png", ".jpg", ".jpeg")):
                 continue
-            m = re.match(r"ready(\d+)\.", f, re.IGNORECASE)
+            m = re.match(patroon, f, re.IGNORECASE)
             if m:
                 file_w = int(m.group(1))
                 candidates.append((file_w, os.path.join(defaults_dir, f)))
+
+        if mbb and not candidates:
+            # De MyBoothBox-reeks ontbreekt — dan gewoon de oude.
+            for f in os.listdir(defaults_dir):
+                if not f.lower().endswith((".png", ".jpg", ".jpeg")):
+                    continue
+                m = re.match(r"ready(\d+)\.", f, re.IGNORECASE)
+                if m:
+                    candidates.append((int(m.group(1)),
+                                       os.path.join(defaults_dir, f)))
 
         if not candidates:
             return "", screen_w, screen_h
@@ -21072,6 +21117,39 @@ class PhotoboothWindow(QMainWindow):
         self._cap_preview_label.setStyleSheet(
             f"background: {config.COLOR_INPUT_BG}; border: 2px solid {config.COLOR_BORDER}; border-radius: 6px; color: {config.COLOR_TEXT_DIM};"
         )
+
+    def _ververs_collage(self):
+        """Zet de collage aan en voeg de foto's toe die er nog niet op staan.
+
+        Alleen de nieuwe foto's worden verwerkt, niet alle vijftien opnieuw:
+        het maken van een miniatuur is de dure kant, het schuiven niet. Zo
+        kost een sessie erbij één miniatuur en één rij die opnieuw wordt
+        samengesteld.
+        """
+        collage = getattr(self, "_idle_collage", None)
+        if collage is None:
+            return
+        try:
+            bekend = set(collage._paden)
+            for pad in startscherm.fotos_van_event(self._get_raw_dir()):
+                if pad not in bekend:
+                    collage.nieuwe_foto(pad)
+            collage.start()
+        except Exception as e:
+            print(f"[COLLAGE] bijwerken mislukt: {e}", flush=True)
+
+    def _stop_collage(self):
+        """Zet de tekenlus stil zodra het startscherm uit beeld is.
+
+        Zonder dit staat er 25 keer per seconde een scherm te tekenen dat
+        niemand ziet, terwijl de camera en de printer het druk hebben.
+        """
+        collage = getattr(self, "_idle_collage", None)
+        if collage is not None:
+            try:
+                collage.stop()
+            except Exception:
+                pass
 
     def _rebuild_idle_page(self):
         """Rebuild idle page fully — replaces the page in the stack.

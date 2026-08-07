@@ -11,6 +11,28 @@ _current_language = "nl"
 
 TRANSLATIONS = {
     # ──────────────────────────────────────────────
+    # STARTSCHERM — de instructie op de collage
+    # ──────────────────────────────────────────────
+    # Twee regels: de eerste wit, de tweede in het merkgroen. Ze staan hier als
+    # tekst en niet als plaatje, want het oude startscherm had de instructie in
+    # het beeld gebakken en was daardoor altijd Engels, wat de taal ook stond.
+    "idle_tap_line1": {
+        "nl": "Druk op het scherm",
+        "en": "Touch the screen",
+        "de": "Bildschirm berühren",
+        "fr": "Touchez l'écran",
+        "es": "Toca la pantalla",
+        "it": "Tocca lo schermo",
+    },
+    "idle_tap_line2": {
+        "nl": "om een foto te maken",
+        "en": "to take a photo",
+        "de": "um ein Foto zu machen",
+        "fr": "pour prendre une photo",
+        "es": "para hacer una foto",
+        "it": "per fare una foto",
+    },
+    # ──────────────────────────────────────────────
     # GENERAL UI
     # ──────────────────────────────────────────────
     "app_name": {

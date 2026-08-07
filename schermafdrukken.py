@@ -43,6 +43,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,    # noqa: E402
 
 import merk                                                    # noqa: E402
 import lettertype                                              # noqa: E402
+import startscherm                                             # noqa: E402
 
 # De Surface Pro 7: 2736 x 1824 op 12,3 inch. Bij 200% vergroting is dat 1368 x
 # 912 aan punten, en dat is de maat waarin de code rekent.
@@ -64,6 +65,21 @@ def _knop(tekst, stijl, hoogte):
     k.setMinimumHeight(hoogte)
     k.setStyleSheet(stijl)
     return k
+
+
+def _nepfotos(aantal, map_naam):
+    """Plaatshouders in zaalkleuren — genoeg om te zien hoe de opbouw valt."""
+    tijdelijk = os.path.join(map_naam, "_nep")
+    os.makedirs(tijdelijk, exist_ok=True)
+    paden = []
+    for i in range(aantal):
+        pm = QPixmap(1800, 1200)
+        pm.fill(QColor.fromHsv((i * 37) % 360, 90, 120 + (i * 11) % 90))
+        # de naam moet op het patroon lijken dat de booth zelf schrijft
+        pad = os.path.join(tijdelijk, f"01-01-2026_12.{i // 60:02d}.{i % 60:02d}_2.jpg")
+        pm.save(pad, "JPG")
+        paden.append(pad)
+    return paden
 
 
 def bouw_proefblad():
@@ -247,6 +263,24 @@ def main():
 
     schrijf(bouw_proefblad(), os.path.join(map_naam, "proefblad.png"))
     schrijf(bouw_deelscherm(), os.path.join(map_naam, "deelscherm.png"))
+
+    # Het startscherm in zijn vier toestanden, liggend en staand. Met
+    # nepfoto's, want op een bouwserver staat geen event.
+    for stand, (b, h) in (("liggend", (PUNTEN_BREED, PUNTEN_HOOG)),
+                          ("staand", (PUNTEN_HOOG, PUNTEN_BREED))):
+        vorm = startscherm.Layout(b, h)
+        for naam, aantal in (("leeg", 0),
+                             ("1-rij", vorm.kolommen),
+                             ("2-rijen", vorm.kolommen * 2),
+                             ("vol", vorm.n)):
+            blad = startscherm.Collage()
+            blad.setFixedSize(b, h)
+            blad.show()
+            QApplication.processEvents()
+            if aantal:
+                blad.zet_fotos(_nepfotos(aantal, map_naam))
+            schrijf(blad, os.path.join(map_naam,
+                                       f"startscherm-{stand}-{naam}.png"))
     app.quit()
     return 0
 

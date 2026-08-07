@@ -187,7 +187,7 @@ if "--selftest" in sys.argv:
         # merk en lettertype worden pas binnen main() gebruikt. Zonder ze hier
         # te noemen bewijst de zelftest niet dat ze mee zijn gebouwd, en dat is
         # precies waar de installatie-rookproef een keer op is blijven hangen.
-        import merk, lettertype  # noqa: F401
+        import merk, lettertype, startscherm  # noqa: F401
         import updater, cloud_storage, booth_settings, webcam  # noqa: F401
         import printer, camera, qr_generator  # noqa: F401
         return "photobooth, main en de rest"
