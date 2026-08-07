@@ -4505,8 +4505,12 @@ class PhotoboothWindow(QMainWindow):
         return panel
 
     def _build_review_page(self):
-        """Build unified sharing screen: photo + all actions on one page.
-        Layout adapts: landscape = side-by-side, portrait = stacked."""
+        """Het deelscherm: de fotostrook boven, een band met de bediening onder.
+
+        Hier stond "Layout adapts: landscape = side-by-side, portrait =
+        stacked". Die twee standen zijn er niet meer; de band staat altijd
+        onderin. Zie _adapt_review_layout voor waarom.
+        """
         page = QWidget()
         page.setStyleSheet(merk.pagina(op_donker=True))
         self._review_page = page
@@ -4562,7 +4566,7 @@ class PhotoboothWindow(QMainWindow):
         paneel_lay.setSpacing(merk.RUIMTE_KRAP)
 
         # De leesbare helft van de band: QR links, meldingen rechts, samen
-        # gecentreerd. right_lay bestaat nog onder deze naam omdat er verderop
+        # gecentreerd. meldingen_lay bestaat nog onder deze naam omdat er verderop
         # in dit blok nog naar verwezen wordt.
         self._review_info = QWidget()
         self._review_info.setStyleSheet("background: transparent;")
@@ -4583,11 +4587,11 @@ class PhotoboothWindow(QMainWindow):
         _tekstkolom = QWidget()
         _tekstkolom.setFixedWidth(self._REVIEW_MELDING_BREED)
         _tekstkolom.setStyleSheet("background: transparent;")
-        right_lay = QVBoxLayout(_tekstkolom)
-        right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(merk.RUIMTE_KRAP)
+        meldingen_lay = QVBoxLayout(_tekstkolom)
+        meldingen_lay.setContentsMargins(0, 0, 0, 0)
+        meldingen_lay.setSpacing(merk.RUIMTE_KRAP)
 
-        right_lay.addStretch()
+        meldingen_lay.addStretch()
 
         # Print status label (shows when printing)
         self._sharing_print_status = QLabel("")
@@ -4601,7 +4605,7 @@ class PhotoboothWindow(QMainWindow):
         _sp.setRetainSizeWhenHidden(True)
         self._sharing_print_status.setSizePolicy(_sp)
         self._sharing_print_status.hide()
-        right_lay.addWidget(self._sharing_print_status)
+        meldingen_lay.addWidget(self._sharing_print_status)
 
         # --- PRINT button ---
         # Deze knop was tot beta.6 de groene hoofdknop van dit scherm. Dat is
@@ -4657,7 +4661,7 @@ class PhotoboothWindow(QMainWindow):
             _k.setMinimumHeight(merk.KNOP_MIN)
             _k.setMaximumHeight(merk.KNOP_NORMAAL)
             _printrij.addWidget(_k)
-        right_lay.addLayout(_printrij)
+        meldingen_lay.addLayout(_printrij)
 
         # Print remaining indicator
         self._sharing_prints_remaining = QLabel("")
@@ -4665,9 +4669,9 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_prints_remaining.setFont(merk.letter(merk.TEKST_KLEIN))
         self._sharing_prints_remaining.setStyleSheet(merk.tekst(merk.OP_DONKER_FIJN))
         self._sharing_prints_remaining.setFixedHeight(26)
-        right_lay.addWidget(self._sharing_prints_remaining)
+        meldingen_lay.addWidget(self._sharing_prints_remaining)
 
-        right_lay.addSpacing(8)
+        meldingen_lay.addSpacing(8)
 
         # ── Inline QR-block: direct zichtbaar op sharing-screen ─────
         # (Vervangt de oude '📱 QR-code' knop die een fullscreen overlay
@@ -4775,7 +4779,7 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_qr_btn.show = lambda: None  # no-op show — kan nooit verschijnen
         self._sharing_qr_btn.setVisible = lambda _v=False: None
 
-        right_lay.addSpacing(8)
+        meldingen_lay.addSpacing(8)
 
         # --- EMAIL button ---
         self._sharing_email_btn = QPushButton(t("btn_email"))
@@ -4802,14 +4806,10 @@ class PhotoboothWindow(QMainWindow):
         _sp2.setRetainSizeWhenHidden(True)
         self._no_wifi_label.setSizePolicy(_sp2)
         self._no_wifi_label.hide()
-        right_lay.addWidget(self._no_wifi_label)
+        meldingen_lay.addWidget(self._no_wifi_label)
 
         # --- KLAAR button ---
         self._sharing_done_btn = QPushButton(t("btn_done"))
-        self._sharing_done_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_done_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        self._sharing_done_btn.setMinimumHeight(merk.KNOP_NORMAAL)
-        self._sharing_done_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         self._sharing_done_btn.clicked.connect(self._go_done)
         bediening.zet_hoofdknop(self._sharing_done_btn)
 
@@ -4820,7 +4820,7 @@ class PhotoboothWindow(QMainWindow):
         # geprint, dan is dat op de vorige vraag al beslist en loopt de printer
         # allang. Wat de gast hier nog doet is afronden zodat de volgende groep
         # kan. Printen en e-mail zijn de uitzonderingen, en die staan ernaast.
-        right_lay.addStretch()
+        meldingen_lay.addStretch()
         info_lay.addWidget(_tekstkolom)
         info_lay.addStretch()
         paneel_lay.addWidget(self._review_info, stretch=1)
@@ -4835,8 +4835,8 @@ class PhotoboothWindow(QMainWindow):
         # ── Tussen-scherm 2: "Wil je de foto's geprint hebben?" ──
         self._review_print_question_panel = self._build_review_print_question_panel()
 
-        # QStackedWidget houdt de 3 panelen op de rechterkant (of onderkant
-        # in portrait). Page-volgorde matters: confirm → print-vraag → action.
+        # QStackedWidget houdt de 3 panelen in de band onderin. De volgorde
+        # doet ertoe: confirm → print-vraag → action.
         from PyQt5.QtWidgets import QStackedWidget as _QStackedWidget
         self._review_panel_stack = _QStackedWidget()
         self._review_panel_stack.setStyleSheet("background: transparent;")
