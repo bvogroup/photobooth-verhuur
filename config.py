@@ -84,7 +84,20 @@ CLOUD_PHOTO_EXPIRY_MIN = 30    # Auto-delete after N minutes
 #   4. terugval {CLOUD_WORKER_URL}/gallery/{session_id}
 #
 # De foto's blijven naar dezelfde R2-emmer gaan; alleen de link verandert.
-CLOUD_GALLERY_URL_TEMPLATE = ""
+#
+# NAGEMETEN OP DE ECHTE PAGINA (7 augustus 2026), met sessies die de booth zelf
+# in photobooth-photos heeft gezet:
+#     20260807_115009_506be0da   -> 5 foto's staan voor je klaar
+#     20260807_103717_22ca76f3   -> 5 foto's staan voor je klaar
+#     20260806_150556_046c0d7e   -> 5 foto's staan voor je klaar (dag oud)
+#     20260807_115619            -> 8 foto's staan voor je klaar (oud
+#                                   sessie-id zonder achtergevoegde tekens,
+#                                   van een booth die nog niet is bijgewerkt)
+# Een niet-bestaande sessie geeft netjes "Deze foto's zijn er niet meer".
+#
+# Let op: de pagina rendert client-side. Een 200 zegt dus niets — deze
+# uitkomsten zijn afgelezen uit de gerenderde pagina, niet uit de statuscode.
+CLOUD_GALLERY_URL_TEMPLATE = "https://myboothbox.nl/fotos/{session_id}"
 
 # === Google Drive ===
 GDRIVE_ENABLED = False  # Set to True after configuring client_secrets.json
