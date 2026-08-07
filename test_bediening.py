@@ -164,6 +164,47 @@ def toets_schermen(pb, breedte, hoogte, dpr):
         f"de hoofdknop staat op alle schermen op dezelfde hoogte "
         f"({spreiding} punten verschil)")
 
+    # De rij kleurstalen: zestien tegels die samen binnen het scherm passen en
+    # elk boven de aanraaknorm blijven. Ze zijn hierboven gebouwd terwijl het
+    # filterscherm nog nooit vooraan had gestaan — de toestand van de eerste
+    # foto van de eerste sessie. Werd de maat aan de balk gevraagd in plaats van
+    # aan het scherm, dan kwam daar 640 punten uit en werden het acht tegels van
+    # 65 in plaats van zestien van 74. Dat is dezelfde fout als de miniaturen
+    # van beta.5 en de collage van beta.8, en hij hoort niet nog een keer te
+    # gebeuren.
+    filterv = [s for s in schermen if s[0] == "filterscherm"][0][1]
+    tegels = list(filterv._filter_thumb_btns.values())
+    eis(len(tegels) == len(_filters.FILTERS),
+        f"er staat een tegel per filter ({len(tegels)})")
+    if tegels:
+        # De maat die de tegels WERKELIJK hebben gekregen, niet een die hier
+        # opnieuw uitgerekend wordt — dat laatste zou de fout juist verbergen,
+        # want op het moment van deze regel staat de pagina wél vooraan en komt
+        # er dus een goed getal uit.
+        gebouwd_b = max(t.width() for t in tegels)
+        raster = filterv._filter_thumbs_layout
+        kolommen = max(raster.getItemPosition(i)[1] for i in range(raster.count())) + 1
+        rijen = max(raster.getItemPosition(i)[0] for i in range(raster.count())) + 1
+        bedoeld_k, bedoeld_b, _sb, _sh = filterv._filterstaal_maat()
+
+        eis(gebouwd_b == bedoeld_b and kolommen == bedoeld_k,
+            f"de tegels zijn op de SCHERMbreedte gebouwd en niet op de maat die "
+            f"een nooit-getoonde pagina toevallig heeft "
+            f"({rijen}x{kolommen} van {gebouwd_b} punten; hoort "
+            f"{(len(tegels) + bedoeld_k - 1) // bedoeld_k}x{bedoeld_k} van "
+            f"{bedoeld_b} te zijn)")
+
+        nodig = kolommen * gebouwd_b + (kolommen - 1) * merk.RUIMTE_KRAP \
+            + 2 * merk.RUIMTE_KANTLIJN
+        eis(nodig <= breedte,
+            f"de rij past op het scherm ({nodig} van {breedte} punten)")
+        eis(min(t.width() for t in tegels) >= merk.KNOP_MIN
+            and min(t.height() for t in tegels) >= merk.KNOP_MIN,
+            f"elke tegel haalt de aanraaknorm "
+            f"({min(t.width() for t in tegels)}x"
+            f"{min(t.height() for t in tegels)} punten, ondergrens {merk.KNOP_MIN})")
+        eis(rijen <= 2, f"het past in hoogstens twee rijen ({rijen})")
+
     # De fotostrook mag niet verdwijnen onder de band met de bediening.
     deel = [s for s in schermen if s[0] == "deelscherm"][0][1]
     band = deel._review_panel_stack.height()

@@ -8542,17 +8542,22 @@ class PhotoboothWindow(QMainWindow):
         dan worden het twee rijen van acht. Liever een rij erbij dan tegels
         waar niemand met een glas in zijn hand op kan mikken.
 
-        De balk kan bij het bouwen nog geen maat hebben — dat is precies de
-        fout die beta.5 op de booth onbruikbaar maakte. Daarom wordt hier, als
-        de balk nog leeg is, teruggevallen op de schermbreedte en niet op de
-        640 punten die een leeg QWidget toevallig heeft.
+        DE MAAT KOMT VAN HET SCHERM EN NIET VAN DE BALK. Dat lijkt omslachtig —
+        de balk staat er toch? — maar hij klopt niet. Het filterscherm is
+        pagina 18 in de stapel, en QStackedLayout geeft in zijn gewone stand
+        alleen de pagina die VOORAAN staat een maat. Een pagina die daar nog
+        nooit gestaan heeft houdt de 640 x 480 die een leeg QWidget toevallig
+        heeft. Op de eerste foto van de eerste sessie zou de rij dan op 640
+        punten uitgerekend worden: acht tegels van 65 in plaats van zestien van
+        74, en die uitkomst blijft in de kast staan.
+
+        Dat is dezelfde fout als de miniaturen op 640 x 480 in beta.5 en als de
+        collage in beta.8. Het scherm is de enige maat die altijd klopt: de
+        booth draait schermvullend, dus de balk is zo breed als het scherm.
         """
         n = len(_filters.FILTERS)
-        balk = getattr(self, '_filter_bar', None)
-        breed = balk.width() if balk is not None else 0
-        if breed < 200:
-            scherm = QApplication.primaryScreen()
-            breed = scherm.geometry().width() if scherm else self.width()
+        scherm = self.screen() or QApplication.primaryScreen()
+        breed = scherm.geometry().width() if scherm else self.width()
 
         kolommen = n
         for kandidaat in (n, (n + 1) // 2, (n + 3) // 4):
@@ -11934,11 +11939,11 @@ class PhotoboothWindow(QMainWindow):
         custom_lay.addWidget(self._idle_resolution_hint)
         card_bg_lay.addWidget(self._idle_custom_container)
 
-        # --- Schuivende collage aan/uit (standaard AAN) ---
+        # --- Schuivende collage aan/uit (standaard UIT) ---
         # Twee soorten beweging, en alleen deze mag uit. Het schuiven van de
         # foto's is versiering; de trage verschuiving van de hele opbouw is
         # bescherming tegen inbranden en blijft altijd aan. Per booth
-        # opgeslagen, zodat dit uit kan zonder op een nieuwe versie te wachten.
+        # opgeslagen, zodat dit aan kan zonder op een nieuwe versie te wachten.
         card_bg_lay.addSpacing(6)
         self._collage_schuiven_toggle = ToggleSwitch("Foto's laten schuiven")
         self._collage_schuiven_toggle.setFont(QFont("DM Sans", 13))
@@ -11949,8 +11954,8 @@ class PhotoboothWindow(QMainWindow):
         card_bg_lay.addWidget(self._collage_schuiven_toggle)
 
         _cs_hint = QLabel(
-            "Uit: de laatste foto's staan stil op het startscherm. Het scherm\n"
-            "tekent dan nog twee keer per seconde in plaats van vijfentwintig.\n"
+            "Staat uit: de foto's staan stil op het startscherm. Aanzetten laat\n"
+            "de rijen langzaam opzij schuiven, allemaal dezelfde kant op.\n"
             "De langzame verschuiving tegen inbranden blijft hoe dan ook aan."
         )
         _cs_hint.setFont(QFont("DM Sans", 10))
@@ -15849,12 +15854,18 @@ class PhotoboothWindow(QMainWindow):
     def _collage_schuiven_aan(self):
         """Of de foto's op het startscherm mogen schuiven. Standaard AAN.
 
-        Per booth in settings.json, dus uit te zetten zonder nieuwe versie.
+        STANDAARD UIT sinds beta.9. Op de booth stoorde die beweging: "die
+        foto's bewegen nog steeds heen en weer en heel traag". Het kost niets
+        — zes milliseconde van de veertig, op de booth zelf gemeten — maar
+        goedkoop is geen reden om iets aan te laten staan dat er niet uitziet.
+
+        Per booth in settings.json, dus aan te zetten zonder nieuwe versie.
         Dit gaat ALLEEN over het schuiven van de rijen — versiering. De trage
         verschuiving van de hele opbouw tegen inbranden staat hier los van en
         blijft altijd aan; die kost vrijwel niets en beschermt het scherm.
         """
-        return bool(self._load_app_setting("collage_schuiven", True))
+        return bool(self._load_app_setting(
+            "collage_schuiven", startscherm.SCHUIVEN_STANDAARD))
 
     def _on_collage_schuiven_toggled(self, checked):
         """Schakelaar 'Foto's laten schuiven' — onthoud en pas meteen toe."""

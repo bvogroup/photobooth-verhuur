@@ -32,7 +32,8 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 from PyQt5.QtCore import QRect                                   # noqa: E402
-from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget  # noqa: E402
+from PyQt5.QtWidgets import (QApplication, QMainWindow,        # noqa: E402
+                             QStackedWidget, QWidget)
 
 # Alles wat photobooth.py bij het importeren aan hardware en netwerk optuigt.
 # Er wordt hieronder niets van gebruikt; het gaat om de vensteropbouw.
@@ -142,10 +143,17 @@ def gastschermen(pb, breedte, hoogte):
     uit = []
 
     v = Proefvenster(pb, breedte, hoogte)
+    # Twee lege pagina's ervoor, want op de booth is het filterscherm pagina 18
+    # en niet pagina 0. Een QStackedWidget geeft alleen de pagina die vooraan
+    # staat een maat; wie het filterscherm hier als eerste toevoegt, bouwt hem
+    # op een maat die hij op de booth pas ná de eerste foto krijgt.
+    v.stack.addWidget(QWidget())
+    v.stack.addWidget(QWidget())
     v._build_filter_page()
-    v.stack.setCurrentWidget(v._filter_page)
-    _afronden(v, breedte, hoogte)
+    # De stalen worden gebouwd terwijl de pagina nog NOOIT vooraan heeft
+    # gestaan — precies zoals bij de eerste foto van de eerste sessie.
     v._zorg_filterstalen("sepia")
+    v.stack.setCurrentWidget(v._filter_page)
     _afronden(v, breedte, hoogte)
     uit.append(("filterscherm", v, v._filter_page, "_filter_next_btn"))
 
