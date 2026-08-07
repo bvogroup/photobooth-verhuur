@@ -6,8 +6,12 @@ Maakt de QR-code die naar de fotopagina in de cloud wijst.
 Hier stonden ook get_local_ip() en generate_session_url(), voor een QR naar
 de booth zelf op het plaatselijke netwerk. Die terugval is verwijderd: de
 gast zit op een feest zelden op hetzelfde wifi, scande zo'n code en kreeg een
-foutmelding. Lukt het delen niet, dan tonen we nu geen QR maar een korte
-mededeling (zie photobooth._toon_delen_mislukt).
+foutmelding.
+
+De URL die hier in gaat komt uit cloud_storage.gallery_url_for(): sjabloon
+plus sessie-id, en dus zonder internet te bouwen. De gast krijgt daarom altijd
+dezelfde werkende code, of het uploaden nu gelukt is of niet. Zie
+photobooth._toon_qr().
 """
 
 import io
