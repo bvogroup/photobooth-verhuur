@@ -316,16 +316,32 @@ class Layout:
     die photobooth.py erover legt. Die balk lag over de onderste helft van het
     logo heen — je zag "MY BOOTH" en niet "BOX".
 
-    Het gaat de verdeling niet slopen, want het is één getal in dezelfde som:
-    het verlaagt de hoogte die te verdelen valt, en dus krimpen de vier
-    openingen alle vier evenveel. De volgorde en de verhoudingen blijven staan.
-    Nul betekent: niets aan de hand. Er blijft daarmee ook geen gat staan waar de
-    balk gestaan heeft, want de indeling wordt opnieuw uitgerekend en niet
-    bijgewerkt.
+    ALLEEN HET LOGO WIJKT ERVOOR. Niet de hele onderbouw, en al helemaal niet
+    de verdeling erboven. De balk staat gecentreerd onderin, precies onder het
+    logo; links en rechts ervan is hij niemand in de weg. De verhuurvraag met de
+    QR staat op de linkermarge en de balk begint pas ver daarnaast; het slotje
+    met het serienummer staat op de rechtermarge en de balk houdt daar net zo
+    ver vandaan. Die twee hoeven dus nergens voor te wijken, en het oordeel over
+    de vorige oplossing — die de hele band omhoog schoof — was dan ook dat er
+    "alleen het mbb logo omhoog hoeft".
+
+    Het rekenmodel hierboven blijft daarmee ONAANGERAAKT: de bodem is de
+    ondermarge en niets anders, de blokken kosten wat ze kosten, en de vier
+    openingen zijn wat er overblijft. De balk verandert daar niets aan. Wat er
+    gebeurt is één regel in _verdeel(): het logo schuift precies zoveel omhoog
+    als het nodig heeft om boven de balk te blijven, en geen punt meer.
+
+    Nul betekent: niets aan de hand, alles staat op zijn gewone plek. Er blijft
+    dus ook geen gat staan waar de balk gestaan heeft, want de indeling wordt
+    opnieuw uitgerekend en niet bijgewerkt.
 
     Het is met opzet een AANTAL PUNTEN en geen schakelaar: de balk kan van maat
-    veranderen (langere tekst, andere schermschaal) en dan hoort de indeling mee
-    te bewegen.
+    veranderen (langere tekst, andere schermschaal) en dan hoort het logo mee te
+    bewegen.
+
+    Wordt de balk zó hoog dat het logo tegen het blok erboven aan zou lopen, dan
+    wijkt er alsnog een rij foto's — hetzelfde vangnet als hierboven, en om
+    dezelfde reden: de collage is versiering, het merk niet.
     """
 
     def __init__(self, W, H, onderruimte=0):
@@ -400,16 +416,23 @@ class Layout:
         # wat ze kosten, en wat er overblijft wordt in gelijke openingen
         # verdeeld. Nergens hieronder staat nog een marge tussen twee dingen.
         self.onderruimte = max(0, int(onderruimte))
-        # De bodem waar de onderbouw op rust. Normaal de ondermarge; staat er
-        # een melding onderin, dan wat die melding bezet houdt.
-        self.bodem = H - max(self.mv, self.onderruimte)
+        # De bodem waar de onderbouw op rust: de ondermarge, en niets anders.
+        #
+        # Hier stond `H - max(self.mv, self.onderruimte)`, en dat schoof bij een
+        # melding onderin de HELE indeling omhoog — de foto's, de instructie, de
+        # verhuurvraag, het logo en het slotje. Dat was meer dan de bedoeling.
+        # De melding staat gecentreerd onderin en zit alleen het logo in de weg;
+        # zie de klasse-uitleg. `onderruimte` komt daarom niet meer in de
+        # verdeling voor maar alleen bij het logo, onderaan _verdeel().
+        self.bodem = H - self.mv
 
         # WAT ER WIJKT ALS HET NIET PAST.
         #
-        # De inhoud kost bijna vier vijfde van de hoogte. Komt er onderin een
-        # melding bij die groot genoeg is, dan blijft er niets te verdelen over
-        # en zouden de blokken door elkaar heen gaan lopen — en "niets mag
-        # overlappen" is een harde eis, geen streven.
+        # De inhoud kost bijna vier vijfde van de hoogte. Wordt de melding
+        # onderin groot genoeg, dan moet het logo zo ver omhoog dat het tegen
+        # het blok erboven aan loopt — en "niets mag overlappen" is een harde
+        # eis, geen streven. Hetzelfde geldt als er zoveel inhoud is dat er
+        # niets meer te verdelen valt.
         #
         # Dus gaat er dan een RIJ FOTO'S af, en niet een stuk lucht. De collage
         # is versiering; de instructie, de verhuurvraag en het logo zijn waar
@@ -418,7 +441,7 @@ class Layout:
         self.rijen = self.rijen_max
         while True:
             self._verdeel()
-            if self.lucht >= 0 or self.rijen <= 0:
+            if (self.lucht >= 0 and self.logo_past) or self.rijen <= 0:
                 break
             self.rijen -= 1
         self.n = self.kolommen * self.rijen
@@ -464,6 +487,11 @@ class Layout:
         self.txt_y = plek["instructie"]
         self.groep_onder_y = plek.get("rijen onder", self.txt_y + self.txt_h)
         self.onderbouw_y = plek["onderbouw"]
+        # Waar de onderbouw bovenaan tegenaan loopt: de onderkant van het blok
+        # erboven. Verder dan dit kan het logo niet wijken zonder erdoorheen te
+        # gaan lopen. Is de onderbouw het enige blok, dan is dat de bovenrand.
+        self.plafond = (plek[self.blokken[-2][0]] + self.blokken[-2][1]
+                        if len(self.blokken) >= 2 else 0)
 
         # Wat er in de onderbouw staat, van links naar rechts.
         self.txt_x = (W - self.txt_w) // 2
@@ -474,9 +502,31 @@ class Layout:
         # De basislijn van de onderbouw: de onderkant van de QR-code. Het logo
         # centreert erop, en photobooth.py zet het slotje met het serienummer
         # er met zijn onderkant op — zo staan de drie op één lijn.
+        #
+        # Let op: de basislijn hangt NIET van `onderruimte` af. Daar hangt het
+        # slotje aan (via onderbouw_hoek()), en dat hoort voor de melding
+        # onderin niet te wijken.
         self.basislijn = self.qr_y + self.qr_maat
         self.logo_x = (W - self.logo_w) // 2
         self.logo_y = self.qr_y + (self.qr_maat - self.logo_h) // 2
+
+        # ── en dan wijkt het logo, als enige, voor de melding onderin ───────
+        #
+        # Het logo is hoger dan de QR-code en steekt er dus onderuit; precies
+        # dat stuk lag onder de balk. Het schuift nu omhoog tot zijn onderkant
+        # de balk raakt en geen punt verder — bij `onderruimte = 0` is dat nul
+        # en staat het gewoon op de code gecentreerd.
+        #
+        # De verhuurvraag links en het slotje rechts blijven staan waar ze
+        # staan. Dat mag omdat de balk gecentreerd is en die twee op de
+        # buitenmarges staan; test_startscherm.py rekent dat na op de breedtes
+        # die voorkomen, in plaats van het hier aan te nemen.
+        self.logo_wijk = max(0, (self.logo_y + self.logo_h)
+                             - (H - self.onderruimte))
+        self.logo_y -= self.logo_wijk
+        # Past het logo daar nog? Zo niet, dan wijkt er in __init__ alsnog een
+        # rij foto's — het logo mag niet door het blok erboven heen zakken.
+        self.logo_past = self.logo_y >= self.plafond
 
     def rij_y(self, r):
         """Waar rij `r` staat. De bovenste groep bovenin, de rest onder de tekst."""
@@ -1012,8 +1062,12 @@ class Collage(QWidget):
         widgets overheen) maar horen wél bij de onderbouw: linksonder de
         verhuurvraag met de QR, in het midden het logo, rechtsonder het slotje.
         Zonder dit hing de rechterhoek aan de ONDERRAND van het scherm terwijl
-        de andere twee met de verdeling meebewegen — en dan staat de band niet
-        meer op één lijn zodra er een melding onderin komt.
+        de verhuurvraag aan de verdeling hangt — en dan staat de band niet meer
+        op één lijn zodra de indeling van maat verandert.
+
+        De basislijn hangt NIET van de melding onderin af. Komt de wifi-tip
+        erbij, dan wijkt alleen het logo daarvoor en blijft het slotje hier
+        staan — samen met de QR links, waar het op één lijn mee staat.
 
         Nog geen indeling? Dan None: houd je eigen plek maar aan.
         """
@@ -1030,15 +1084,15 @@ class Collage(QWidget):
         heeft. Die balk lag over de onderste helft van het logo: je zag "MY
         BOOTH" en niet "BOX".
 
-        Het is één getal in het rekenmodel en geen los duwtje aan het logo. Het
-        verlaagt de bodem waar de onderbouw op rust, dus er valt minder te
-        verdelen, dus krimpen de vier openingen alle vier evenveel — de volgorde
-        en de verhoudingen blijven staan. Alles gaat samen omhoog: de foto's, de
-        instructie, de verhuurvraag, het logo, en via basislijn() ook het slotje.
+        ALLEEN HET LOGO WIJKT ERVOOR — zie Layout. De balk staat gecentreerd
+        onderin en zit alleen het merkbeeld in de weg; de verhuurvraag met de QR
+        linksonder en het slotje met het serienummer rechtsonder staan er ruim
+        naast en blijven dus staan waar ze staan. Ook de foto's en de instructie
+        erboven verschuiven niet: het rekenmodel eromheen blijft ongemoeid.
 
-        Nul zet alles terug op de gewone plek. Er blijft dus geen gat staan waar
-        de balk gestaan heeft; dat is een aparte eis, en het volgt hieruit omdat
-        de indeling opnieuw uitgerekend wordt en niet bijgewerkt.
+        Nul zet het logo terug op zijn gewone plek. Er blijft dus geen gat staan
+        waar de balk gestaan heeft; dat is een aparte eis, en het volgt hieruit
+        omdat de indeling opnieuw uitgerekend wordt en niet bijgewerkt.
         """
         punten = max(0, int(punten))
         if punten == self._onderruimte:
@@ -1055,7 +1109,7 @@ class Collage(QWidget):
             self._logo = QPixmap()      # zijn plek wordt in _zorg_logo bepaald
             self.update()
         L = self._layout
-        gevolg = (f" — de vier openingen worden {L.opening:.0f} punten"
+        gevolg = (f" — het logo wijkt {L.logo_wijk} punten, de rest staat stil"
                   if L is not None else "")
         print(f"[COLLAGE] onderruimte {punten} punten vrij voor de melding "
               f"onderin{gevolg}", flush=True)
@@ -1210,11 +1264,14 @@ class Collage(QWidget):
         gewijkt = ("" if L.rijen == L.rijen_max else
                    f"  (LET OP: {L.rijen_max - L.rijen} rij(en) foto's "
                    f"weggelaten, anders paste het niet)")
+        wijkt = ("" if not L.logo_wijk else
+                 f" | het logo wijkt {L.logo_wijk} punten voor de melding "
+                 f"onderin ({L.onderruimte} punten); de rest staat stil")
         print(f"[COLLAGE] verdeling: {blokken} = {pct(L.inhoud_h):.1f}% inhoud "
               f"| {L.openingen} openingen van {L.opening:.0f} punten = "
               f"{pct(L.opening):.1f}% elk ({pct(L.lucht):.1f}% samen) | bodem "
-              f"op {L.bodem} van {L.H} ({L.H - L.bodem} punten voor de "
-              f"ondermarge en een melding){gewijkt}", flush=True)
+              f"op {L.bodem} van {L.H} ({L.H - L.bodem} punten "
+              f"ondermarge){wijkt}{gewijkt}", flush=True)
 
     def _herbouw_beeld(self):
         """Miniaturen en rijen opnieuw maken op de maat die nu geldt.
@@ -1785,7 +1842,8 @@ class Collage(QWidget):
         if not self._tekst.isNull():
             p.drawPixmap(L.txt_x, L.txt_y, self._tekst)
 
-        # 5. het logo — in de onderbouw, op de QR-code gecentreerd
+        # 5. het logo — in de onderbouw, op de QR-code gecentreerd, en als
+        #    enige van de drie omhoog als er onderin een melding staat
         if not self._logo.isNull():
             p.drawPixmap(self._logo_x, self._logo_y, self._logo)
 

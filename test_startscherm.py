@@ -341,6 +341,99 @@ def _openingen(L):
     return [(naam, tot - van) for naam, van, tot in uit]
 
 
+# ── de melding onderin, gelezen uit photobooth.py zelf ─────────────────────
+def _tipbalk(W, H):
+    """Het vlak dat de wifi-tip bezet, als (links, boven, rechts, onder).
+
+    De getallen komen uit photobooth.py en staan hier niet nog een keer
+    ingetikt: _position_idle_wifi_tip() en de drie maten eromheen worden uit de
+    bron gelezen. Zo toetst dit de balk die er werkelijk staat, ook als hij ooit
+    van maat verandert — en het valt om zodra die regels van vorm veranderen,
+    wat beter is dan stilletjes een verouderd getal blijven bewaken.
+
+    Geeft (vlak, onderruimte): het vlak van de balk, en hoeveel punten hij
+    vanaf de onderrand bezet houdt — precies wat _idle_onderruimte() uitrekent
+    en aan de collage doorgeeft.
+    """
+    import merk
+    bron = open(os.path.join(APP, "photobooth.py"), encoding="utf-8").read()
+
+    def getal(patroon, wat):
+        m = re.search(patroon, bron)
+        if not m:
+            raise AssertionError(
+                f"de maatvoering van de wifi-tip is niet meer te vinden in "
+                f"photobooth.py: {wat}")
+        return m
+
+    hoog = int(getal(r"_IDLE_TIP_HOOG\s*=\s*(\d+)", "_IDLE_TIP_HOOG").group(1))
+    onder = getattr(merk, getal(r"_IDLE_TIP_ONDER\s*=\s*merk\.(\w+)",
+                                "_IDLE_TIP_ONDER").group(1))
+    lucht = getattr(merk, getal(r"_IDLE_TIP_LUCHT\s*=\s*merk\.(\w+)",
+                                "_IDLE_TIP_LUCHT").group(1))
+    m = getal(r"w = min\((\d+), page\.width\(\) - (\d+)\)",
+              "de breedte in _position_idle_wifi_tip")
+    getal(r"y = page\.height\(\) - h - self\._IDLE_TIP_ONDER",
+          "de hoogte-plaatsing in _position_idle_wifi_tip")
+
+    breed = min(int(m.group(1)), W - int(m.group(2)))
+    x = (W - breed) // 2
+    bodem = H - onder
+    return (x, bodem - hoog, x + breed, bodem), hoog + onder + lucht
+
+
+def _raakt(a, b):
+    """Overlappen twee vlakken (links, boven, rechts, onder) elkaar?
+
+    Randen die elkaar precies aanraken tellen niet als overlap: een blok dat op
+    punt 802 ophoudt en een balk die op 802 begint staan tegen elkaar aan en
+    niet over elkaar heen.
+    """
+    return (a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3])
+
+
+def _onderbouwdelen(L):
+    """De drie dingen in de onderbouw, elk als eigen vlak.
+
+    Met opzet drie vlakken en niet één omhullend blok. Het regeltje met de pijl
+    is bijna dubbel zo breed als de QR-code eronder, dus een omhullend blok zou
+    rechtsonder een leeg hoekje meerekenen dat er niet is — en juist daar staat
+    de balk. Wat er getekend wordt is wat er getoetst wordt.
+    """
+    return [
+        ("het regeltje met de pijl",
+         (L.qr_tekst_x, L.qr_tekst_y,
+          L.qr_tekst_x + L.qr_tekst_w,
+          L.qr_tekst_y + L.qr_tekst_h + L.qr_pijl_h)),
+        ("de QR-code",
+         (L.qr_x, L.qr_y, L.qr_x + L.qr_maat, L.qr_y + L.qr_maat)),
+        ("het logo",
+         (L.logo_x, L.logo_y, L.logo_x + L.logo_w, L.logo_y + L.logo_h)),
+    ]
+
+
+def _hoekje(L, label_w, label_h, slot=60):
+    """Het slotje met het serienummer, zoals _position_idle_lock het neerzet.
+
+    Rechtsonder in de onderbouw: de twee op één hart, het serienummer met zijn
+    onderkant op de basislijn en het slotje daar direct boven. Het blok is zo
+    breed als het breedste van de twee.
+    """
+    blok_w = max(slot, label_w)
+    rechts = L.W - L.mv
+    return (rechts - blok_w, L.basislijn - label_h - slot, rechts, L.basislijn)
+
+
+def _labelmaat(tekst):
+    """Hoe breed en hoog het serienummerregeltje wordt, met de échte letter."""
+    from PyQt5.QtGui import QFont
+    from PyQt5.QtWidgets import QLabel
+    lab = QLabel(tekst)
+    lab.setFont(QFont("DM Sans", 14))
+    lab.adjustSize()
+    return lab.width(), lab.height()
+
+
 def toets_indeling(dpr):
     """De verticale indeling: gelijke tussenruimtes, goede volgorde, geen overlap.
 
@@ -357,6 +450,8 @@ def toets_indeling(dpr):
     openingen zijn onderling gelijk, de volgorde klopt, en er overlapt niets.
     Dat blijft waar als de tegels, de tekst of de verhuurvraag ooit van maat
     veranderen — en het valt om als iemand er weer een vaste marge in zet.
+
+    En de melding onderin verandert daar NIETS aan; zie toets_de_melding().
     """
     print("\nDe verticale indeling", flush=True)
     # Op de maat die de booth werkelijk gebruikt: de Surface staat op 200%, dus
@@ -399,8 +494,12 @@ def toets_indeling(dpr):
             f"[{naam}] de blokken staan in de goede volgorde: "
             f"{' → '.join(b[0] for b in blokken)}")
 
-        # 3. GEEN OVERLAP — ook niet met de melding onderin, en ook niet met de
-        #    schermranden.
+        # 3. GEEN OVERLAP — tussen de blokken onderling en met de schermranden.
+        #    De melding onderin staat hier bewust NIET bij: die overlapt de
+        #    onderbouw als blok wél, want hij staat gecentreerd onder het logo
+        #    en de onderbouw loopt van rand tot rand. Wat hij niet mag raken
+        #    zijn de drie dingen die er werkelijk in staan, en dat wordt in
+        #    toets_de_melding() per ding nagerekend.
         for i in range(1, len(blokken)):
             vorig, dit = blokken[i - 1], blokken[i]
             eis(dit[1] >= vorig[2],
@@ -409,21 +508,21 @@ def toets_indeling(dpr):
         eis(blokken[0][1] >= 0,
             f"[{naam}] er loopt niets van de bovenrand af ({blokken[0][1]})")
         onderkant = blokken[-1][2]
-        eis(onderkant <= H - onderruimte,
-            f"[{naam}] en niets over de melding onderin ({onderkant} tegen "
-            f"{H - onderruimte})")
         eis(onderkant <= H,
             f"[{naam}] en niets van de onderrand af ({onderkant} tegen {H})")
 
         # 4. DE ONDERBOUW IS ÉÉN BAND. De verhuurvraag links, het logo in het
-        #    midden en het slotje rechts horen op één lijn te staan.
+        #    midden en het slotje rechts horen op één lijn te staan — en die
+        #    band blijft staan waar hij staat, ook met een melding onderin.
+        #    Alleen het logo wijkt daarvoor, en precies zoveel als het moet.
         eis(L.qr_y + L.qr_maat == L.basislijn,
             f"[{naam}] de QR-code staat op de basislijn van de onderbouw "
             f"({L.qr_y + L.qr_maat} tegen {L.basislijn})")
-        logo_midden = L.logo_y + L.logo_h / 2.0
+        logo_midden = L.logo_y + L.logo_wijk + L.logo_h / 2.0
         qr_midden = L.qr_y + L.qr_maat / 2.0
         eis(abs(logo_midden - qr_midden) <= 1,
-            f"[{naam}] het logo staat op de QR-code gecentreerd "
+            f"[{naam}] het logo staat op de QR-code gecentreerd, op de "
+            f"{L.logo_wijk} punten na die het voor de melding wijkt "
             f"({logo_midden:.0f} tegen {qr_midden:.0f})")
         eis(L.qr_x + L.qr_tekst_w <= L.logo_x,
             f"[{naam}] en botst er niet mee ({L.qr_x + L.qr_tekst_w} tegen "
@@ -456,19 +555,121 @@ def toets_indeling(dpr):
 
     # 6. EN DE MELDING SLOOPT DE VERHOUDINGEN NIET. Staat hij er niet, dan hoort
     #    de indeling gewoon te zijn wat hij zonder melding is — geen gat waar de
-    #    balk gestaan heeft.
+    #    balk gestaan heeft. En staat hij er wél, dan óók niet: de verdeling
+    #    gaat niet over de melding, alleen het logo doet dat.
     zonder = startscherm.Layout(B, H, onderruimte=0)
     terug = startscherm.Layout(B, H, onderruimte=0)
-    met = startscherm.Layout(B, H, onderruimte=110)
     eis(_blokken(zonder) == _blokken(terug),
         "zonder melding staat alles waar het zonder melding hoort te staan")
-    eis(met.onderbouw_y + met.onderbouw_h < zonder.onderbouw_y + zonder.onderbouw_h,
-        f"met de melding schuift de onderbouw omhoog "
-        f"({zonder.onderbouw_y + zonder.onderbouw_h} → "
-        f"{met.onderbouw_y + met.onderbouw_h})")
-    eis(met.raster_y < zonder.raster_y,
-        f"en de foto's erboven schuiven mee ({zonder.raster_y} → "
-        f"{met.raster_y}) — niet alleen het onderste stuk")
+
+
+def toets_de_melding(dpr):
+    """De melding onderin duwt ALLEEN het logo omhoog, en raakt niets.
+
+    Wat hier veranderd is, en waarom
+    --------------------------------
+    De eerste oplossing voor "de wifi-tip ligt over het logo" verlaagde de bodem
+    van de hele verdeling. Dan schoof er van alles omhoog: de foto's, de
+    instructie, de verhuurvraag met de QR, en via de basislijn ook het slotje
+    met het serienummer. Het oordeel daarover was dat "alleen het mbb logo
+    omhoog hoeft, die zooi links en rechts kan gewoon blijven staan".
+
+    Dat is ook waar het naar kijkt: de balk staat GECENTREERD onderin, precies
+    onder het logo. Links en rechts ervan is hij niemand in de weg. Dus wijkt
+    alleen het logo, en de rest van het scherm merkt er niets van.
+
+    De eis heeft daarmee drie helften:
+
+      * het logo wijkt — genoeg om vrij te blijven, en geen punt meer;
+      * al het andere staat stil — tot op de punt dezelfde y als zonder balk;
+      * en niets overlapt, met én zonder balk. Niet het logo met de balk, niet
+        de verhuurvraag ermee, en niet het hoekje rechtsonder.
+
+    Die laatste is de reden dat de balk hier wordt NAGEREKEND en niet aangenomen:
+    hij is 700 punten breed op een scherm van 1368, en dan hangt het van de
+    marges af of hij links en rechts ergens tegenaan komt. De maten komen uit
+    photobooth.py zelf (_tipbalk).
+    """
+    print("\nDe melding onderin", flush=True)
+    B, H = FYSIEK_B // 2, FYSIEK_H // 2
+    balk, onderruimte = _tipbalk(B, H)
+    print(f"        de wifi-tip beslaat {balk[0]}..{balk[2]} breed en "
+          f"{balk[1]}..{balk[3]} hoog van {B}x{H} punten, en houdt "
+          f"{onderruimte} punten vanaf de onderrand bezet", flush=True)
+
+    zonder = startscherm.Layout(B, H, onderruimte=0)
+    met = startscherm.Layout(B, H, onderruimte=onderruimte)
+
+    # 1. ALLEEN HET LOGO WIJKT. Alles wat een plek heeft in de indeling staat op
+    #    de punt af waar het zonder de balk stond — behalve het logo.
+    stil = ("raster_y", "txt_y", "txt_x", "groep_onder_y", "onderbouw_y",
+            "onderbouw_h", "qr_tekst_y", "qr_x", "qr_y", "basislijn",
+            "logo_x", "rijen", "opening", "bodem")
+    for veld in stil:
+        eis(getattr(met, veld) == getattr(zonder, veld),
+            f"{veld} blijft staan waar het stond "
+            f"({getattr(zonder, veld)} → {getattr(met, veld)})")
+    print(f"        alles behalve het logo staat stil: "
+          f"{len(stil)} maten ongewijzigd", flush=True)
+
+    eis(met.logo_wijk > 0,
+        f"en het logo wijkt wél ({zonder.logo_y} → {met.logo_y}, "
+        f"{met.logo_wijk} punten)")
+    eis(zonder.logo_wijk == 0,
+        f"zonder de balk wijkt het niet ({zonder.logo_wijk} punten)")
+
+    # 2. PRECIES GENOEG EN NIET MEER. De onderkant van het logo komt op de rand
+    #    van wat de balk bezet houdt — niet erboven blijven zweven met een
+    #    marge die niemand heeft ingesteld, en niet eronder blijven hangen.
+    eis(met.logo_y + met.logo_h == H - onderruimte,
+        f"het logo wijkt precies tot de rand van de melding "
+        f"({met.logo_y + met.logo_h} tegen {H - onderruimte})")
+
+    # 3. NIETS OVERLAPT. Met de balk erbij én zonder.
+    slot = 60
+    label_w, label_h = _labelmaat("3D04")
+    for naam, L, balkje in (("zonder de balk", zonder, None),
+                            ("met de balk", met, balk)):
+        delen = _onderbouwdelen(L)
+        delen.append(("het slotje met het serienummer",
+                      _hoekje(L, label_w, label_h, slot)))
+        for a in range(len(delen)):
+            for b in range(a + 1, len(delen)):
+                eis(not _raakt(delen[a][1], delen[b][1]),
+                    f"[{naam}] {delen[a][0]} raakt {delen[b][0]} niet")
+        if balkje is None:
+            continue
+        for ding, vlak in delen:
+            # Twee vlakken staan vrij van elkaar zodra ze aan ÉÉN kant langs
+            # elkaar heen gaan; vandaar het grootste van de vier gaten en niet
+            # het kleinste. Boven nul is de speling, onder nul de overlap.
+            speling = max(balkje[0] - vlak[2], vlak[0] - balkje[2],
+                          balkje[1] - vlak[3], vlak[1] - balkje[3])
+            print(f"        {ding:32s} {speling:5d} punten speling", flush=True)
+            eis(not _raakt(vlak, balkje),
+                f"[{naam}] de melding onderin raakt {ding} niet "
+                f"(speling {speling} punten)")
+
+    # 4. EN DE RANDGEVALLEN DIE ER OOK ZIJN, HARDOP.
+    #
+    #    Het regeltje rechtsonder is niet altijd alleen het serienummer: bij
+    #    minder dan 10 GB vrije schijfruimte komt daar een waarschuwing achter,
+    #    en dan wordt het blok een stuk breder en schuift het naar links — de
+    #    balk in. Dat is een bestaande eigenschap van dat regeltje en niet iets
+    #    wat de indeling kan oplossen, dus het staat hier als MELDING en niet
+    #    als eis: wie het wil verhelpen, moet aan de balk of aan dat regeltje
+    #    zitten, niet aan de verdeling.
+    breed_w, breed_h = _labelmaat("3D04   ·   ⚠ Schijfruimte: 8.3 GB vrij")
+    breed = _hoekje(met, breed_w, breed_h, slot)
+    if _raakt(breed, balk):
+        print(f"        LET OP: staat de schijfruimte-waarschuwing in het "
+              f"regeltje rechtsonder, dan wordt dat blok {breed_w} punten "
+              f"breed en komt het {balk[2] - breed[0]} punten over de balk "
+              f"heen. Alleen als er tegelijk geen wifi is én minder dan 10 GB "
+              f"vrij is.", flush=True)
+    else:
+        print(f"        ook met de schijfruimte-waarschuwing erbij "
+              f"({breed_w} punten breed) blijft het hoekje vrij", flush=True)
 
 
 def toets_maat_van_de_stapel(achtergrond, paden, dpr):
@@ -921,6 +1122,7 @@ def main():
             page, _stapel = uit
             onderdeel("het vullen van het scherm", toets_vult_het_scherm, page, dpr)
             onderdeel("de verticale indeling", toets_indeling, dpr)
+            onderdeel("de melding onderin", toets_de_melding, dpr)
             onderdeel("de QR", toets_qr, page, dpr)
             onderdeel("de verschuiving", toets_verschuiving, page, dpr)
             onderdeel("de tekentijd", toets_tekentijd, page, dpr)

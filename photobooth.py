@@ -4122,7 +4122,7 @@ class PhotoboothWindow(QMainWindow):
         # Tegen de onderrand, op de gewone kantlijn na. Stond op 40 "vanwege de
         # lock-btn"; dat slotje staat nu in de onderbouw en niet meer in de
         # onderste veertig punten, dus die reden is weg — en elke punt die deze
-        # balk lager staat, is een punt die de indeling erboven overhoudt.
+        # balk lager staat, is een punt die het logo minder hoeft te wijken.
         y = page.height() - h - self._IDLE_TIP_ONDER
         self._idle_wifi_tip.setGeometry(x, y, w, h)
         self._idle_wifi_tip.raise_()
@@ -4140,18 +4140,23 @@ class PhotoboothWindow(QMainWindow):
         return tip.height() + self._IDLE_TIP_ONDER + self._IDLE_TIP_LUCHT
 
     def _idle_ruim_op_voor_melding(self):
-        """Geef de melding onderin zijn plek, en schuif de rest omhoog.
+        """Geef de melding onderin zijn plek, en laat het logo ervoor wijken.
 
         De balk lag over de onderste helft van het logo heen: je zag "MY BOOTH"
         en niet "BOX". Nu krijgt de collage te horen hoeveel er onderaan vrij
-        moet blijven en verlaagt hij de bodem van zijn verdeling — waardoor
-        alles boven de melding evenredig omhoog schuift: de foto's, de
-        instructie, de verhuurvraag met de QR, het logo, en via
-        _position_idle_lock ook het slotje met het serienummer.
+        moet blijven en schuift ALLEEN HET LOGO omhoog — precies zover als het
+        moet en geen punt verder.
+
+        Niet meer dan het logo, want meer is niet nodig: de balk staat
+        gecentreerd onderin en zit alleen het merkbeeld in de weg. De
+        verhuurvraag met de QR linksonder, het slotje met het serienummer
+        rechtsonder, de foto's en de instructie blijven staan waar ze staan.
+        Een eerdere opzet schoof de hele indeling omhoog, en dat was meer dan
+        de bedoeling.
 
         Het is met opzet een AANTAL PUNTEN en geen schakelaar: verandert de balk
-        van maat (langere tekst, andere schermschaal), dan verschuift de
-        indeling mee zonder dat hier iets bijgesteld hoeft te worden.
+        van maat (langere tekst, andere schermschaal), dan wijkt het logo mee
+        zonder dat hier iets bijgesteld hoeft te worden.
         """
         collage = getattr(self, '_idle_collage', None)
         if collage is not None:
@@ -4159,7 +4164,8 @@ class PhotoboothWindow(QMainWindow):
                 collage.zet_onderruimte(self._idle_onderruimte())
             except Exception as e:
                 print(f"[COLLAGE] onderruimte niet gezet: {e}", flush=True)
-        # Het slotje hangt aan de onderbouw en moet dus mee.
+        # Het slotje hangt aan de onderbouw. Die verschuift hier niet van, maar
+        # de balk kan wel bij een hermaten binnenkomen — dus opnieuw plaatsen.
         self._position_idle_lock()
 
     def _on_idle_wifi_setup_clicked(self):
@@ -11905,9 +11911,13 @@ class PhotoboothWindow(QMainWindow):
         In de rechterbenedenhoek van de ONDERBOUW, niet in die van het scherm.
         De onderbouw is de band waar ook de verhuurvraag en het logo in staan
         (zie startscherm.Layout); die band beweegt mee met het rekenmodel, dus
-        ook als er onderin een melding bij komt. Vroeger hing dit hoekje aan de
-        onderrand en brak de band zodra dat gebeurde. Zonder collage is er geen
-        band en valt hij terug op de oude plek.
+        ook als de tegels of de instructie van maat veranderen. Vroeger hing dit
+        hoekje aan de onderrand en brak de band zodra dat gebeurde. Zonder
+        collage is er geen band en valt hij terug op de oude plek.
+
+        Komt de wifi-tip onderin erbij, dan blijft dit hoekje staan. Die balk
+        staat gecentreerd en zit alleen het logo in de weg; alleen dat wijkt
+        ervoor. Zie _idle_ruim_op_voor_melding().
 
         En met de verschuiving tegen inbranden erin. Die werkt op het BLOK en
         niet op de twee onderdelen apart — dat is hetzelfde getal voor allebei,
