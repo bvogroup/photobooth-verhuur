@@ -240,7 +240,7 @@ async function handleGallery(env, sessionId, origin) {
 
   // Pak branding-text uit metadata van het eerste object van deze sessie.
   // De booth-app stuurt deze waarde mee als de QR-toggle + branding-toggle
-  // aan staan. Leeg/ontbrekend = fallback naar "Powered by Bootharoo".
+  // aan staan. Leeg/ontbrekend = fallback naar "Powered by MyBoothBox".
   const brandingText = firstObj.customMetadata?.branding_text || "";
 
   // Sort objects: strip first, then photo_1, photo_2, ..., boomerang last
@@ -307,21 +307,21 @@ function getSlideLabel(filename) {
  * @param slides       Array of slide-objects (filename/label/isGif/src).
  * @param sessionId    R2 session prefix (for safety / future use).
  * @param brandingText Multi-line tekst die in de footer komt te staan.
- *                     Leeg = fallback naar "Powered by Bootharoo".
+ *                     Leeg = fallback naar "Powered by MyBoothBox".
  */
 function buildGalleryHTML(slides, sessionId, brandingText) {
   const slidesJSON = JSON.stringify(slides);
   const total = slides.length;
   const footerHTML = brandingText
     ? formatBranding(brandingText)
-    : 'Powered by <strong>Bootharoo</strong>';
+    : 'Powered by <strong>MyBoothBox</strong>';
 
   return `<!DOCTYPE html>
 <html lang="nl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Jouw Foto's! - Bootharoo</title>
+  <title>Jouw Foto's! - MyBoothBox</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -711,14 +711,14 @@ function buildGalleryHTML(slides, sessionId, brandingText) {
               .then(function(blob) {
                 var file = new File([blob], filename, { type: blob.type });
                 if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                  return navigator.share({ title: label + ' - Bootharoo', files: [file] });
+                  return navigator.share({ title: label + ' - MyBoothBox', files: [file] });
                 } else {
-                  return navigator.share({ title: label + ' - Bootharoo', text: 'Bekijk mijn foto van de photobooth!', url: window.location.href });
+                  return navigator.share({ title: label + ' - MyBoothBox', text: 'Bekijk mijn foto van de photobooth!', url: window.location.href });
                 }
               })
               .catch(function(err) {
                 if (err.name !== 'AbortError') {
-                  navigator.share({ title: 'Mijn foto - Bootharoo', text: 'Bekijk mijn foto van de photobooth!', url: window.location.href }).catch(function() {});
+                  navigator.share({ title: 'Mijn foto - MyBoothBox', text: 'Bekijk mijn foto van de photobooth!', url: window.location.href }).catch(function() {});
                 }
               });
           });

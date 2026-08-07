@@ -264,7 +264,7 @@ function buildGalleryHTML(slides, sessionId) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Jouw Foto's! - Bootharoo</title>
+  <title>Jouw Foto's! - MyBoothBox</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -556,7 +556,7 @@ function buildGalleryHTML(slides, sessionId) {
         <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 4h14v-2H5v2z"/></svg>
         Download alles
       </button>
-      <div class="powered-by">Powered by <strong>Bootharoo</strong></div>
+      <div class="powered-by">Powered by <strong>MyBoothBox</strong></div>
     </div>
   </div>
 
@@ -651,14 +651,14 @@ function buildGalleryHTML(slides, sessionId) {
               .then(function(blob) {
                 var file = new File([blob], filename, { type: blob.type });
                 if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                  return navigator.share({ title: label + ' - Bootharoo', files: [file] });
+                  return navigator.share({ title: label + ' - MyBoothBox', files: [file] });
                 } else {
-                  return navigator.share({ title: label + ' - Bootharoo', text: 'Bekijk mijn foto van de photobooth! 📸', url: window.location.href });
+                  return navigator.share({ title: label + ' - MyBoothBox', text: 'Bekijk mijn foto van de photobooth! 📸', url: window.location.href });
                 }
               })
               .catch(function(err) {
                 if (err.name !== 'AbortError') {
-                  navigator.share({ title: 'Mijn foto - Bootharoo', text: 'Bekijk mijn foto van de photobooth! 📸', url: window.location.href }).catch(function() {});
+                  navigator.share({ title: 'Mijn foto - MyBoothBox', text: 'Bekijk mijn foto van de photobooth! 📸', url: window.location.href }).catch(function() {});
                 }
               });
           });
