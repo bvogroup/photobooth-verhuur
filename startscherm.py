@@ -33,6 +33,29 @@ opnieuw schalen, niet de beweging. Vandaar de opzet hier:
 
 Er wordt per beeldje dus niets geschaald en niets opnieuw samengesteld. Dat
 gebeurt alleen als er een foto bijkomt, en dat is één keer per sessie.
+
+Twee dingen die in beta.5 op de echte booth misgingen
+-----------------------------------------------------
+Allebei onzichtbaar in de bouwstraat, en allebei hier gerepareerd. Ze staan
+erbij omdat ze makkelijk terugkomen.
+
+**De maat komt later dan de foto's.** photobooth.py maakt deze widget aan en
+zet er meteen de foto's in, vóórdat hij in de stapel hangt. Op dat moment is
+een QWidget 640 x 480 — de standaardmaat van Qt — en werden de miniaturen dus
+op 120 x 75 gemaakt. Daarna kreeg de widget zijn echte maat, maar de miniaturen
+en de rijen werden niet opnieuw gemaakt. Het scherm stond vol met tegels van een
+kwart van de bedoelde maat, in rijen die veel te smal waren: rafelige kolommen
+met grote gaten ertussen. Vandaar dat de maatvoering nu op één plek wordt
+bewaakt (_zorg_layout) en dat een maatwijziging de miniaturen en de rijen
+ongeldig maakt.
+
+**De schermschaal telt mee.** Een Windows-tablet staat vrijwel altijd op 150%
+of 200%. Qt rekent dan in LOGISCHE punten en blaast het resultaat daarna op naar
+de echte pixels. Wie een pixmap op de logische maat maakt, laat hem dus door Qt
+uitrekken — en dat is precies waarom de instructie en het logo op de booth wazig
+waren. Elke pixmap hier wordt daarom op logische maat x schermschaal gemaakt,
+met setDevicePixelRatio() erop, zodat Qt hem één op één neerzet. Het tekenen
+zelf blijft in logische punten; alleen het doek is fijner.
 """
 
 import math
@@ -188,6 +211,8 @@ class Collage(QWidget):
         self._achtergrond_bron = QPixmap(achtergrond_pad) if achtergrond_pad else QPixmap()
         self._achtergrond = QPixmap()     # op schermmaat, één keer geschaald
         self._layout = None
+        self._dpr = 1.0           # schermschaal; 2,0 op een tablet die op 200% staat
+        self._beeld_verouderd = False
 
         self._paden = []          # de bronbestanden, op volgorde van aankomst
         self._miniaturen = []     # dezelfde volgorde, op tegelmaat
@@ -196,6 +221,7 @@ class Collage(QWidget):
         self._volgende = 0        # welk vakje als eerstvolgende vervangen wordt
 
         self._logo = QPixmap()
+        self._logo_x = self._logo_y = 0
         self._tekst = QPixmap()
 
         self._klok = QElapsedTimer()
@@ -223,17 +249,16 @@ class Collage(QWidget):
 
     # ── inhoud ─────────────────────────────────────────────────────────────
     def zet_fotos(self, paden):
-        """Vervang de hele lijst. Alleen bij het opbouwen van het scherm."""
-        L = self._zorg_layout()
-        if L is None:
-            self._paden = list(paden)
-            return
-        self._paden = list(paden)[-L.n:]          # bovengrens: het raster
-        self._miniaturen = [self._maak_miniatuur(p) for p in self._paden]
-        self._miniaturen = [m for m in self._miniaturen if m is not None]
-        self._volgende = 0
-        self._oude_stroken.clear()
-        self._bouw_stroken()
+        """Vervang de hele lijst. Alleen bij het opbouwen van het scherm.
+
+        Dit wordt aangeroepen vóórdat de widget zijn maat heeft — photobooth.py
+        maakt hem aan en vult hem meteen. De paden worden daarom altijd
+        bewaard; de miniaturen worden pas gemaakt zodra er een maat is, en
+        opnieuw zodra die maat verandert. Zie _zorg_layout.
+        """
+        self._paden = list(paden)
+        self._beeld_verouderd = True
+        self._zorg_layout()
         self.update()
 
     def nieuwe_foto(self, pad):
@@ -280,16 +305,83 @@ class Collage(QWidget):
         return min(L.rijen, len(self._miniaturen) // L.kolommen)
 
     # ── opbouw ─────────────────────────────────────────────────────────────
+    def resizeEvent(self, event):
+        """De widget krijgt zijn echte maat pas als hij in de stapel hangt.
+
+        Dat is ná zet_fotos(), dus hier moet alles wat aan de maat vastzit
+        opnieuw. Zonder dit bleven de miniaturen op de maat staan die een leeg
+        QWidget toevallig heeft (640 x 480) — de fout van beta.5.
+        """
+        super().resizeEvent(event)
+        self._zorg_layout()
+
     def _zorg_layout(self):
+        """De enige plek waar de maatvoering vandaan komt.
+
+        Verandert de schermmaat of de schermschaal, dan is ALLES wat eraan
+        vastzit ongeldig: de achtergrond, het logo, de instructie, en ook de
+        miniaturen en de rijen. Die laatste twee werden in beta.5 vergeten.
+        """
         if self.width() <= 0 or self.height() <= 0:
             return None
+        dpr = float(self.devicePixelRatioF() or 1.0)
         if (self._layout is None or self._layout.W != self.width()
-                or self._layout.H != self.height()):
+                or self._layout.H != self.height()
+                or abs(dpr - self._dpr) > 1e-6):
+            self._dpr = dpr
             self._layout = Layout(self.width(), self.height())
             self._achtergrond = QPixmap()
             self._logo = QPixmap()
             self._tekst = QPixmap()
+            self._beeld_verouderd = True
+            self._meld_maatvoering()
+        if self._beeld_verouderd:
+            self._beeld_verouderd = False
+            self._herbouw_beeld()
         return self._layout
+
+    def _meld_maatvoering(self):
+        """Eén regel in het logboek: wat er werkelijk gekozen is.
+
+        Anders is de enige manier om erachter te komen dat er iets mis is met
+        de maatvoering, een foto van het scherm. Dat is deze keer de dure weg
+        gebleken.
+        """
+        L = self._layout
+        f = lambda v: int(round(v * self._dpr))
+        print(f"[COLLAGE] scherm {L.W}x{L.H} logisch @ {self._dpr:g}x = "
+              f"{f(L.W)}x{f(L.H)} fysiek | raster {L.kolommen}x{L.rijen} "
+              f"({L.n} tegels) | tegel {L.tw}x{L.th} logisch = "
+              f"{f(L.tw)}x{f(L.th)} fysiek | rasterbreedte {L.raster_b}, "
+              f"zijmarge {L.raster_x}", flush=True)
+
+    def _herbouw_beeld(self):
+        """Miniaturen en rijen opnieuw maken op de maat die nu geldt."""
+        L = self._layout
+        self._oude_stroken.clear()
+        paden = self._paden[-L.n:]           # bovengrens: het raster
+        self._paden, self._miniaturen = [], []
+        for p in paden:
+            mini = self._maak_miniatuur(p)
+            if mini is not None:
+                self._paden.append(p)
+                self._miniaturen.append(mini)
+        self._volgende = 0
+        self._bouw_stroken()
+
+    def _doek(self, b, h, vulling=None):
+        """Een leeg doek op de FYSIEKE maat, met de schermschaal erop gezet.
+
+        Zonder dit wordt er op de logische maat getekend en rekt Qt het
+        resultaat daarna op naar de echte pixels — de waas op de booth. Met de
+        schaal erop tekent Qt hem één op één, en blijven de coördinaten
+        hieronder gewoon logische punten.
+        """
+        pm = QPixmap(max(1, int(round(b * self._dpr))),
+                     max(1, int(round(h * self._dpr))))
+        pm.setDevicePixelRatio(self._dpr)
+        pm.fill(Qt.transparent if vulling is None else vulling)
+        return pm
 
     def _maak_miniatuur(self, pad):
         """Eén keer op tegelmaat brengen en bewaren. Dit is de dure kant."""
@@ -297,18 +389,23 @@ class Collage(QWidget):
         bron = QPixmap(pad)
         if bron.isNull():
             return None
-        geschaald = bron.scaled(L.tw, L.th, Qt.KeepAspectRatioByExpanding,
+        # Op de FYSIEKE tegelmaat schalen. Op de logische maat schalen levert
+        # een tegel op die Qt daarna nog een keer moet oprekken.
+        geschaald = bron.scaled(int(round(L.tw * self._dpr)),
+                                int(round(L.th * self._dpr)),
+                                Qt.KeepAspectRatioByExpanding,
                                 Qt.SmoothTransformation)
+        geschaald.setDevicePixelRatio(self._dpr)
         # midden uitsnijden en de hoeken afronden
-        tegel = QPixmap(L.tw, L.th)
-        tegel.fill(Qt.transparent)
+        tegel = self._doek(L.tw, L.th)
         p = QPainter(tegel)
         p.setRenderHint(QPainter.Antialiasing, True)
         pad_vorm = QPainterPath()
         pad_vorm.addRoundedRect(0, 0, L.tw, L.th, L.ronding, L.ronding)
         p.setClipPath(pad_vorm)
-        p.drawPixmap(-(geschaald.width() - L.tw) // 2,
-                     -(geschaald.height() - L.th) // 2, geschaald)
+        p.drawPixmap(int(round(-(geschaald.width() / self._dpr - L.tw) / 2.0)),
+                     int(round(-(geschaald.height() / self._dpr - L.th) / 2.0)),
+                     geschaald)
         p.end()
         return tegel
 
@@ -333,8 +430,7 @@ class Collage(QWidget):
     def _maak_strook(self, r):
         L = self._layout
         periode = L.raster_b + L.gap
-        strook = QPixmap(periode, L.th)
-        strook.fill(Qt.transparent)
+        strook = self._doek(periode, L.th)
         p = QPainter(strook)
         for c in range(L.kolommen):
             i = r * L.kolommen + c
@@ -355,35 +451,57 @@ class Collage(QWidget):
         if not self._achtergrond.isNull():
             return
         if self._achtergrond_bron.isNull():
-            self._achtergrond = QPixmap(L.W, L.H)
-            self._achtergrond.fill(QColor(merk.INKT))
+            self._achtergrond = self._doek(L.W, L.H, QColor(merk.INKT))
             return
         geschaald = self._achtergrond_bron.scaled(
-            L.W, L.H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        doek = QPixmap(L.W, L.H)
-        doek.fill(QColor(merk.INKT))
+            int(round(L.W * self._dpr)), int(round(L.H * self._dpr)),
+            Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        geschaald.setDevicePixelRatio(self._dpr)
+        doek = self._doek(L.W, L.H, QColor(merk.INKT))
         p = QPainter(doek)
-        p.drawPixmap((L.W - geschaald.width()) // 2,
-                     (L.H - geschaald.height()) // 2, geschaald)
+        p.drawPixmap(int(round((L.W - geschaald.width() / self._dpr) / 2.0)),
+                     int(round((L.H - geschaald.height() / self._dpr) / 2.0)),
+                     geschaald)
         p.end()
         self._achtergrond = doek
 
     def _zorg_logo(self):
+        """Het logo op de fysieke maat rasteren.
+
+        De bron is 1948 x 1407 en dus ruim groter dan waar hij naartoe gaat —
+        er wordt altijd verkleind, nooit vergroot. De waas op de booth kwam
+        niet van de bron maar hiervandaan: hij werd op de LOGISCHE maat
+        geschaald en daarna door Qt weer opgerekt.
+        """
         L = self._layout
         if not self._logo.isNull():
             return
         pad = _asset("logo.png")
         bron = QPixmap(pad) if pad else QPixmap()
-        if not bron.isNull():
-            self._logo = bron.scaled(L.logo_w, L.logo_h, Qt.KeepAspectRatio,
-                                     Qt.SmoothTransformation)
+        if bron.isNull():
+            return
+        self._logo = bron.scaled(int(round(L.logo_w * self._dpr)),
+                                 int(round(L.logo_h * self._dpr)),
+                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._logo.setDevicePixelRatio(self._dpr)
+        # KeepAspectRatio laat aan één kant ruimte over; daar wordt op
+        # gecentreerd, anders staat het logo net niet in het midden.
+        self._logo_x = L.logo_x + int(round(
+            (L.logo_w - self._logo.width() / self._dpr) / 2.0))
+        self._logo_y = L.logo_y + int(round(
+            (L.logo_h - self._logo.height() / self._dpr) / 2.0))
 
     def _zorg_tekst(self):
-        """De instructie één keer rasteren.
+        """De instructie één keer rasteren, op de fysieke maat.
 
         Als tekst en niet als plaatje, zodat hij mee kan met de taalkeuze —
         het huidige startscherm is Engels omdat de tekst in het beeld gebakken
         zit. Twee regels: de eerste wit, de tweede in het merkgroen.
+
+        Het doek staat op de schermschaal, dus Qt rastert de letters op de
+        echte pixels van de tablet. Dat is even scherp als rechtstreeks tekenen
+        en het scheelt het zetwerk van vijfentwintig keer per seconde — en dat
+        laatste was de reden om hem überhaupt te bewaren.
         """
         L = self._layout
         if not self._tekst.isNull():
@@ -397,8 +515,7 @@ class Collage(QWidget):
         except Exception:
             regel1, regel2 = "Druk op het scherm", "om een foto te maken"
 
-        doek = QPixmap(L.txt_w, L.txt_h)
-        doek.fill(Qt.transparent)
+        doek = self._doek(L.txt_w, L.txt_h)
         p = QPainter(doek)
         p.setRenderHint(QPainter.TextAntialiasing, True)
 
@@ -439,8 +556,10 @@ class Collage(QWidget):
 
         # 2. de verschuiving tegen inbranden: de hele opbouw kruipt mee, als
         #    één laag, zodat de onderlinge verhoudingen kloppen blijven.
-        dx = DRIFT_X * math.sin(2 * math.pi * t / DRIFT_PERIODE_X)
-        dy = DRIFT_Y * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y)
+        #    De uitslag schaalt met het scherm, net als in het ontwerp — 56 px
+        #    is gemeten op de ontwerpmaat, niet op logische punten.
+        dx = DRIFT_X * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_X)
+        dy = DRIFT_Y * L.s * math.sin(2 * math.pi * t / DRIFT_PERIODE_Y)
         p.translate(dx, dy)
 
         # 3. de schuivende rijen
@@ -480,7 +599,7 @@ class Collage(QWidget):
 
         # 5. het logo — staat onderaan, gecentreerd, in elke toestand
         if not self._logo.isNull():
-            p.drawPixmap(L.logo_x, L.logo_y, self._logo)
+            p.drawPixmap(self._logo_x, self._logo_y, self._logo)
         p.end()
 
 

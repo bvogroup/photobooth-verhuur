@@ -1190,8 +1190,9 @@ class PhotoboothWindow(QMainWindow):
         self._session_prints_used = 0
         self._qr_ready = False
         self._cloud_url = ''
-        # Loopt er nu een cloud-upload? Bepaalt of het deelscherm een spinner
-        # mag tonen of meteen op de lokale terugval-QR moet overschakelen.
+        # Loopt er nu een cloud-upload? Wordt alleen nog gebruikt om te
+        # melden of het uploaden gelukt is. De QR wacht er niet meer op: die
+        # wordt uit het sjabloon en het sessie-id gebouwd. Zie _toon_qr().
         self._cloud_upload_active = False
 
         self._countdown_phase = None  # "intro" or "counting"
@@ -3820,10 +3821,17 @@ class PhotoboothWindow(QMainWindow):
         # Staat hij uit voor dit event, dan valt het scherm terug op de lege
         # toestand — dat is precies het beeld dat er nu ook staat, dus dat
         # kost niets.
+        #
+        # LET OP welke achtergrond eronder gaat. In beta.5 kreeg de collage
+        # mbb-ready{breedte}.jpg mee, en daar staan de instructie en het logo
+        # AL in — het is de lege toestand voor booths zonder collage. De widget
+        # tekende ze er daarna nog een keer overheen, met de inbrandverschuiving
+        # als tussenruimte, en dan staat alles dubbel op het scherm.
+        # _collage_achtergrond() geeft de kale versie: alleen het verloop.
         self._idle_collage = None
         if startscherm.collage_aan(self.active_event):
             try:
-                page = startscherm.Collage(idle_bg if heeft_bg else "")
+                page = startscherm.Collage(self._collage_achtergrond())
                 self._idle_collage = page
                 page.zet_fotos(startscherm.fotos_van_event(self._get_raw_dir()))
             except Exception as e:
@@ -10490,62 +10498,79 @@ class PhotoboothWindow(QMainWindow):
 
         print(f"[PRINTER] Print voltooid ({self._session_prints_used} totaal deze sessie)")
 
-    def _prepare_qr_code(self):
-        """Prepare QR code data in background so it's ready when user taps QR button."""
+    def _galerij_url(self) -> str:
+        """De URL die in de QR-code komt, gebouwd uit het sjabloon en het
+        sessie-id.
+
+        Hier is geen internet voor nodig en er hoeft niets geüpload te zijn.
+        De booth maakt het sessie-id zelf voordat de eerste foto valt, en de
+        sjabloon-URL staat in de instellingen. De uitkomst is bovendien
+        letterlijk dezelfde URL die de upload teruggeeft (cloud_storage
+        eindigt op gallery_url_for(session_id)) — er valt dus niets te winnen
+        met wachten.
+        """
+        try:
+            from cloud_storage import gallery_url_for
+            return gallery_url_for(self.session_id or "")
+        except Exception as e:
+            print(f"[QR] Kon de galerij-URL niet bouwen: {e}")
+            return ""
+
+    def _toon_qr(self, aanleiding=""):
+        """Zet de QR neer. Altijd, en altijd dezelfde.
+
+        WAAROM DIT NIET MEER OP DE UPLOAD WACHT. Eerst kwam er geen QR als het
+        uploaden mislukte, want de enige terugval was toen het adres van de
+        booth op het plaatselijke netwerk (192.168.x.x) en daar zit op een
+        feest niemand op. Maar de goede URL is lokaal te bouwen: sjabloon plus
+        sessie-id. Een booth zonder wifi levert de gast dus gewoon een
+        werkende code op. Hij scant met zijn eigen mobiele data, en staan zijn
+        foto's er nog niet, dan vraagt de pagina om zijn naam en mailadres en
+        stuurt ze zodra ze binnen zijn — de booth uploadt ze alsnog zodra hij
+        terug is op kantoor.
+
+        Staat de galerij voor dit event uit, dan is delen bewust uitgezet en
+        hoort er ook geen QR te staan. Dat is een knop, geen storing.
+        """
+        ev = self.active_event
+        if ev is not None and not bool(getattr(ev, 'gallery_enabled', True)):
+            self._qr_ready = False
+            self._update_inline_qr(None, "", ready=False)
+            return
+
+        url = self._galerij_url()
+        if not url:
+            # Geen sjabloon én geen sessie-id: dan valt er niets te tonen.
+            print("[QR] Geen galerij-URL beschikbaar — geen QR", flush=True)
+            self._toon_delen_mislukt()
+            return
+
         try:
             from qr_generator import generate_qr_pixmap
-
-            # De lokale webserver en zijn sessie-registratie zijn hier weg.
-            # Die bestonden alleen om de terugval-QR te bedienen, en die QR
-            # wees naar de booth zelf op het plaatselijke netwerk — waar de
-            # gast vrijwel nooit op zit. Zie _toon_delen_mislukt().
-
-            cloud_url = getattr(self, '_cloud_url', '')
-            if cloud_url:
-                # Cloud URL ready — show real QR
-                url = cloud_url
-                qr_pixmap = generate_qr_pixmap(url, size=360)
-                self.qr_label.setPixmap(qr_pixmap)
-                self.qr_url_label.setText(url)
-                self.qr_label.show()
-                self.qr_url_label.show()
-                self._stop_qr_spinner()
-                self._qr_ready = True
-                # Inline-QR ook updaten (nieuwe sharing-screen layout)
-                self._update_inline_qr(qr_pixmap, url, ready=True)
-                print(f"[QR] Voorbereid met cloud URL: {url}")
-            elif not getattr(self, '_cloud_upload_active', False):
-                # Er loopt geen upload (uitgezet, mislukt of nooit gestart) en
-                # er is geen cloud-URL → er komt niets meer. Meteen de
-                # mededeling tonen in plaats van een spinner die eeuwig blijft
-                # draaien.
-                print("[QR] Geen cloud-upload actief — geen QR, wel mededeling")
-                self._toon_delen_mislukt()
-            else:
-                # Cloud upload still in progress — show animated spinner
-                self.qr_label.hide()
-                self.qr_url_label.hide()
-                self._start_qr_spinner()
-                self._qr_ready = False
-                self._update_inline_qr(None, "", ready=False)
-                print("[QR] Cloud upload nog bezig, spinner getoond")
-                # Vangnet-poll: werk de inline QR bij zodra de cloud-URL
-                # binnenkomt. Voorheen startte deze poll alleen via de
-                # (verwijderde) QR-knop — daardoor kon de spinner eeuwig
-                # blijven draaien als de upload trager was dan de gast.
-                if not hasattr(self, '_qr_poll_timer') or self._qr_poll_timer is None \
-                        or not self._qr_poll_timer.isActive():
-                    self._qr_poll_timer = QTimer()
-                    self._qr_poll_timer.timeout.connect(self._poll_qr_cloud_url)
-                    self._qr_poll_timer.start(500)
+            qr_pixmap = generate_qr_pixmap(url, size=360)
+            self.qr_label.setPixmap(qr_pixmap)
+            self.qr_url_label.setText(url)
+            self.qr_label.show()
+            self.qr_url_label.show()
+            self._stop_qr_spinner()
+            self._qr_ready = True
+            self._update_inline_qr(qr_pixmap, url, ready=True)
+            print(f"[QR] Getoond{(' (' + aanleiding + ')') if aanleiding else ''}: "
+                  f"{url}", flush=True)
         except Exception as e:
-            print(f"[QR] Fout bij voorbereiden: {e}")
+            print(f"[QR] Fout bij tonen: {e}", flush=True)
             self._qr_ready = False
-            # Ook hier: nooit een draaiende spinner achterlaten.
             try:
                 self._stop_qr_spinner()
             except Exception:
                 pass
+
+    def _prepare_qr_code(self):
+        """De QR staat er zodra het deelscherm er staat.
+
+        Geen spinner meer en geen poll: de code hangt niet van de upload af.
+        """
+        self._toon_qr("deelscherm")
 
     def _deel_mislukt_tekst(self) -> str:
         """Korte, eerlijke mededeling wanneer delen niet lukt.
@@ -10634,72 +10659,18 @@ class PhotoboothWindow(QMainWindow):
                 pass
 
     def _sharing_show_qr(self):
-        """Show QR code overlay on sharing screen."""
-        # Check if cloud URL arrived
-        cloud_url = getattr(self, '_cloud_url', '')
-        if cloud_url:
-            # Cloud URL available — show real QR
-            if self.qr_url_label.text() != cloud_url or not self._qr_ready:
-                try:
-                    from qr_generator import generate_qr_pixmap
-                    qr_pixmap = generate_qr_pixmap(cloud_url, size=360)
-                    self.qr_label.setPixmap(qr_pixmap)
-                    self.qr_url_label.setText(cloud_url)
-                except Exception:
-                    pass
-            self.qr_label.show()
-            self.qr_url_label.show()
-            self._stop_qr_spinner()
-            self._qr_ready = True
-        elif not getattr(self, '_cloud_upload_active', False):
-            # Geen upload meer onderweg → lokale terugval-QR i.p.v. spinner.
-            self._toon_delen_mislukt()
-        else:
-            # Still uploading — show animated spinner, start polling
-            self.qr_label.hide()
-            self.qr_url_label.hide()
-            self._start_qr_spinner()
-            # Poll every 500ms for cloud URL
-            if not hasattr(self, '_qr_poll_timer') or not self._qr_poll_timer.isActive():
-                self._qr_poll_timer = QTimer()
-                self._qr_poll_timer.timeout.connect(self._poll_qr_cloud_url)
-                self._qr_poll_timer.start(500)
+        """Toon de QR-overlay op het deelscherm.
+
+        De code hangt niet meer van de upload af, dus er valt hier niets te
+        wachten: neerzetten en tonen.
+        """
+        if not self._qr_ready or not self.qr_url_label.text():
+            self._toon_qr("overlay")
 
         # Position and show the QR overlay centered on the left area
         self._position_qr_overlay()
         self._qr_overlay.show()
         self._qr_overlay.raise_()
-
-    def _poll_qr_cloud_url(self):
-        """Poll for cloud URL and update QR when ready."""
-        cloud_url = getattr(self, '_cloud_url', '')
-        if cloud_url:
-            self._qr_poll_timer.stop()
-            try:
-                from qr_generator import generate_qr_pixmap
-                qr_pixmap = generate_qr_pixmap(cloud_url, size=360)
-                self.qr_label.setPixmap(qr_pixmap)
-                self.qr_url_label.setText(cloud_url)
-                self.qr_label.show()
-                self.qr_url_label.show()
-                self._stop_qr_spinner()
-                self._qr_ready = True
-                # Inline QR óók updaten
-                self._update_inline_qr(qr_pixmap, cloud_url, ready=True)
-                print("[QR] Cloud URL ontvangen, QR code getoond")
-            except Exception as e:
-                print(f"[QR] Fout bij updaten QR: {e}")
-        elif self.state != State.REVIEW:
-            # User left sharing screen, stop polling
-            self._qr_poll_timer.stop()
-            self._stop_qr_spinner()
-        elif not getattr(self, '_cloud_upload_active', False):
-            # Vangnet: de upload is geëindigd zonder URL en zonder dat het
-            # signaal ons bereikte (bv. thread gesneuveld). Nooit blijven
-            # pollen op iets dat niet meer komt.
-            print("[QR] Upload niet meer actief zonder cloud-URL — terugval")
-            self._qr_poll_timer.stop()
-            self._toon_delen_mislukt()
 
     def _animate_qr_spinner(self):
         """Animate the QR loading label dots."""
@@ -10708,7 +10679,13 @@ class PhotoboothWindow(QMainWindow):
         self._qr_loading_label.setText(f"\u23f3  {t('uploading')}{dots}")
 
     def _start_qr_spinner(self):
-        """Start the QR loading dot animation."""
+        """Start the QR loading dot animation.
+
+        Wordt sinds beta.6 nergens meer aangeroepen: de QR staat er meteen en
+        er valt niets meer af te wachten. _stop_qr_spinner() blijft wél in
+        gebruik, als vangnet voor een spinner die nog van een oude sessie
+        openstaat.
+        """
         self._qr_spinner_dot_count = 0
         self._qr_loading_label.setText("\u23f3  " + t("uploading") + "...")
         self._qr_loading_label.show()
@@ -10853,27 +10830,25 @@ class PhotoboothWindow(QMainWindow):
     def _start_cloud_upload(self):
         """Upload photo strip to Cloudflare R2 in background.
 
-        BELANGRIJK — geen enkel pad mag hier stil terugkeren.
-        De gast staat te wachten voor een draaiende spinner; als deze functie
-        afhaakt zonder dat _on_cloud_upload_complete() ooit afgaat, blijft die
-        spinner draaien tot de sessie afloopt. Daarom eindigt élke tak die
-        géén upload start met _on_cloud_upload_complete("") — dat schakelt
-        netjes over op de lokale terugval-QR.
+        BELANGRIJK — geen enkel pad mag hier stil terugkeren. Élke tak die
+        géén upload start eindigt met _on_cloud_upload_complete(""), zodat er
+        altijd één plek is waar staat of het gelukt is.
+
+        De QR van de gast hangt hier niet meer aan. Die wordt uit de
+        sjabloon-URL en het sessie-id gebouwd en staat er dus al voordat deze
+        functie iets gedaan heeft. Zie _toon_qr().
 
         Het oude "niet ingelogd"-slot is weg: de verhuur-versie heeft geen
         licentie nodig.
         """
         self._cloud_url = ''  # Reset
-        # Loopt er een upload? Zolang dit True is mag het deelscherm een
-        # spinner tonen; is het False en is er geen URL, dan komt er niets
-        # meer en moet direct de lokale terugval-QR verschijnen.
         self._cloud_upload_active = False
         if not getattr(config, 'CLOUD_UPLOAD_ENABLED', False):
-            print("[CLOUD] Upload staat uit in config — lokale QR")
+            print("[CLOUD] Upload staat uit in de instellingen — niets geüpload")
             self._on_cloud_upload_complete("")
             return
         if not self.strip_path:
-            print("[CLOUD] Geen fotostrip om te uploaden — lokale QR")
+            print("[CLOUD] Geen fotostrip om te uploaden")
             self._on_cloud_upload_complete("")
             return
         try:
@@ -10925,55 +10900,45 @@ class PhotoboothWindow(QMainWindow):
             self._on_cloud_upload_complete("")
 
     def _on_cloud_upload_complete(self, url):
-        """Called when cloud upload finishes."""
-        # Vanaf hier loopt er geen upload meer — het deelscherm mag dus geen
-        # spinner meer tonen, ongeacht of de upload lukte of niet.
+        """Called when cloud upload finishes.
+
+        De QR staat hier allang; die is uit het sjabloon en het sessie-id
+        gebouwd en is letterlijk dezelfde URL als deze. Er valt dus niets meer
+        aan het scherm te doen. Wat hier wél moet gebeuren is EERLIJK MELDEN
+        of het uploaden gelukt is, want de gast ziet dat niet meer aan zijn
+        scherm af — en dan lijkt een avond zonder internet achteraf een avond
+        zonder problemen.
+        """
         self._cloud_upload_active = False
         if url:
             self._cloud_url = url
-            print(f"[CLOUD] Upload voltooid: {url}")
-
-            # Update QR code if sharing screen is showing
-            if self.state == State.REVIEW:
-                try:
-                    from qr_generator import generate_qr_pixmap
-                    qr_pixmap = generate_qr_pixmap(url, size=360)
-                    self.qr_label.setPixmap(qr_pixmap)
-                    self.qr_url_label.setText(url)
-                    self.qr_label.show()
-                    self.qr_url_label.show()
-                    self._stop_qr_spinner()
-                    self._qr_ready = True
-                    # INLINE QR ook updaten — zonder deze call bleef de
-                    # spinner op het deelscherm eeuwig draaien wanneer de
-                    # upload pas klaar was NA _prepare_qr_code (race die
-                    # vrijwel altijd verloren wordt sinds de print-vraag
-                    # wordt overgeslagen bij printen-uit).
-                    self._update_inline_qr(qr_pixmap, url, ready=True)
-                    print("[CLOUD] QR code bijgewerkt naar cloud URL")
-                except Exception as e:
-                    print(f"[CLOUD] Kon QR niet bijwerken: {e}")
+            print(f"[CLOUD] Upload voltooid: {url}", flush=True)
         else:
-            print("[CLOUD] Upload mislukt — geen QR, wel een mededeling")
-            self._toon_delen_mislukt()
+            self._cloud_url = ''
+            print(f"[CLOUD] Upload MISLUKT voor sessie {self.session_id} — de "
+                  f"gast heeft wel een werkende QR gekregen ({self._galerij_url()}), "
+                  f"maar de foto's staan nog NIET in de cloud. Ze moeten alsnog "
+                  f"geüpload worden.", flush=True)
 
     def _toon_delen_mislukt(self):
         """Geen QR tonen, wel eerlijk zijn. Zie ook _deel_mislukt_tekst().
 
-        Wordt aangeroepen zodra vaststaat dat er géén cloud-URL meer komt:
-        upload mislukt, upload uitgeschakeld, of nooit gestart.
+        Dit is nog maar één geval geworden: er is geen URL te BOUWEN. Dus geen
+        sjabloon-URL en geen sessie-id. Dat is een instelfout op de booth, geen
+        avond zonder internet.
 
-        Hier stond een terugval-QR naar de booth zelf. Die wees naar
-        http://192.168.1.x:8080/... — het adres van de booth in het
-        plaatselijke netwerk. Dat werkt alleen als de gast op hetzelfde wifi
-        zit, en op een feest zit vrijwel niemand daarop. De gast scande, kreeg
-        een foutmelding en dacht dat het product stuk was. Een kapotte QR is
-        slechter dan geen QR.
+        Een mislukte upload komt hier niet meer langs. De QR wordt uit de
+        sjabloon-URL en het sessie-id gemaakt en heeft dus geen internet nodig;
+        een booth zonder wifi levert de gast nog steeds een werkende code op.
+        Staan zijn foto's er nog niet, dan vraagt de pagina zijn gegevens en
+        stuurt ze na. Zie _toon_qr().
 
-        Wat wél overeind blijft: er mag geen enkel pad zijn dat stil eindigt
-        met een draaiende spinner. Daarom stopt deze functie altijd de
-        poll-timer en de spinner, ook als er niets te tonen valt omdat de gast
-        nog niet op het deelscherm staat.
+        Hier stond ook een terugval-QR naar de booth zelf, op
+        http://192.168.1.x:8080/... Die is en blijft weg: op een feest zit
+        vrijwel geen gast op hetzelfde wifi, dus die code was altijd stuk.
+
+        Wat overeind blijft: er mag geen enkel pad zijn dat stil eindigt met
+        een draaiende spinner.
         """
         try:
             if hasattr(self, '_qr_poll_timer') and self._qr_poll_timer is not None \
@@ -20841,8 +20806,42 @@ class PhotoboothWindow(QMainWindow):
         # Update preview thumbnail
         self._update_bg_preview()
 
-    def _get_default_idle_path(self):
-        """Find the best default idle screen for current physical screen resolution."""
+    def _collage_achtergrond(self):
+        """De achtergrond waar de collage overheen tekent: ALLEEN het verloop.
+
+        Dit is niet hetzelfde bestand als het gewone startscherm. mbb-ready
+        {breedte}.jpg is de lege toestand — met de instructie en het logo erin
+        gebakken — en is bedoeld voor booths waar de collage uit staat. De
+        collage tekent die twee zelf, dus daar moet een kale ondergrond onder,
+        anders staat alles dubbel. Dat was de fout van beta.5.
+
+        Heeft de verhuurder voor dit event een eigen achtergrond ingesteld,
+        dan gaat die gewoon mee: daar staat onze tekst niet op, en het is zijn
+        keuze. Het gaat hier alleen om ons eigen standaardbestand.
+        """
+        ev = self.active_event
+        if ev and getattr(ev, 'idle_screen_mode', 'default') == "custom":
+            eigen = getattr(ev, 'idle_background', '')
+            if eigen and os.path.isfile(eigen):
+                return eigen
+        pad, _, _ = self._get_default_idle_path(reeks="mbb-collage")
+        if pad and os.path.isfile(pad):
+            return pad
+        # Liever geen achtergrond dan een met tekst erin: de widget vult dan
+        # met de merkkleur en de instructie blijft leesbaar.
+        print("[COLLAGE] geen kale achtergrond (mbb-collage*) gevonden — de "
+              "collage tekent op een egale ondergrond", flush=True)
+        return ""
+
+    def _get_default_idle_path(self, reeks=None):
+        """Find the best default idle screen for current physical screen resolution.
+
+        `reeks` kiest welke reeks bestanden er gezocht wordt. Zonder opgave
+        gaat het om het startscherm zelf, en dan bepaalt de collage-schakelaar
+        of dat de MyBoothBox-reeks is of de oude. Met opgave (bijvoorbeeld
+        "mbb-collage") wordt precies die reeks gezocht en is er geen terugval
+        — de aanroeper beslist dan zelf wat er moet gebeuren als hij er niet is.
+        """
         from PyQt5.QtWidgets import QApplication
         screen = QApplication.primaryScreen()
         if screen:
@@ -20870,7 +20869,10 @@ class PhotoboothWindow(QMainWindow):
         # terug op de oude.
         import re
         mbb = startscherm.collage_aan(self.active_event)
-        patroon = r"mbb-ready(\d+)\." if mbb else r"ready(\d+)\."
+        if reeks:
+            patroon = re.escape(reeks) + r"(\d+)\."
+        else:
+            patroon = r"mbb-ready(\d+)\." if mbb else r"ready(\d+)\."
         candidates = []
         for f in os.listdir(defaults_dir):
             if not f.lower().endswith((".png", ".jpg", ".jpeg")):
@@ -20880,7 +20882,7 @@ class PhotoboothWindow(QMainWindow):
                 file_w = int(m.group(1))
                 candidates.append((file_w, os.path.join(defaults_dir, f)))
 
-        if mbb and not candidates:
+        if not reeks and mbb and not candidates:
             # De MyBoothBox-reeks ontbreekt — dan gewoon de oude.
             for f in os.listdir(defaults_dir):
                 if not f.lower().endswith((".png", ".jpg", ".jpeg")):

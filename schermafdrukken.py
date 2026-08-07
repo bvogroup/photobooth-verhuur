@@ -24,6 +24,15 @@ Wat je krijgt
 Let op wat dit NIET is: het echte scherm uit photobooth.py. Dat scherm hangt aan
 een camera, een printer en een sessie, en is niet los te tekenen. Wat hier staat
 gebruikt dezelfde stijlen uit merk.py, zodat je ziet wat die stijlen doen.
+
+Wat er na beta.5 aan veranderd is
+---------------------------------
+De afdrukken van het startscherm zagen er goed uit terwijl het scherm op de
+booth onbruikbaar was. Dat kwam doordat er drie dingen anders gingen dan echt:
+er ging geen achtergrond onder, er was geen echte mappenstructuur, en de
+schermschaal stond op 1. Alle drie zijn nu wél zoals op de tablet. Zie
+test_startscherm.py — daar wordt het ook gemeten, want een plaatje waar niemand
+naar kijkt houdt niets tegen.
 """
 
 import os
@@ -34,12 +43,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Zonder beeldscherm tekenen. Moet vóór de Qt-import gezet worden.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# De tablet staat op 200%. Qt rekent dan in logische punten en zet het
+# resultaat op de dubbele pixelmaat neer. Zonder dit tekent alles hier op
+# schaal 1 en zie je niet wat er op de booth wazig is.
+os.environ.setdefault("QT_SCALE_FACTOR", "2")
 
 from PyQt5.QtCore import Qt                                    # noqa: E402
 from PyQt5.QtGui import QPixmap, QColor                        # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,    # noqa: E402
                              QPushButton, QLineEdit, QVBoxLayout,
-                             QHBoxLayout, QGridLayout, QProgressBar)
+                             QHBoxLayout, QGridLayout, QProgressBar,
+                             QStackedWidget)
+
+QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 
 import merk                                                    # noqa: E402
 import lettertype                                              # noqa: E402
@@ -67,19 +83,57 @@ def _knop(tekst, stijl, hoogte):
     return k
 
 
-def _nepfotos(aantal, map_naam):
-    """Plaatshouders in zaalkleuren — genoeg om te zien hoe de opbouw valt."""
-    tijdelijk = os.path.join(map_naam, "_nep")
-    os.makedirs(tijdelijk, exist_ok=True)
-    paden = []
-    for i in range(aantal):
-        pm = QPixmap(1800, 1200)
-        pm.fill(QColor.fromHsv((i * 37) % 360, 90, 120 + (i * 11) % 90))
-        # de naam moet op het patroon lijken dat de booth zelf schrijft
-        pad = os.path.join(tijdelijk, f"01-01-2026_12.{i // 60:02d}.{i % 60:02d}_2.jpg")
-        pm.save(pad, "JPG")
-        paden.append(pad)
-    return paden
+def _nepevent(map_naam, sessies=15):
+    """Een echte photos/<event>/{raw,strips}/ met plaatshouders erin.
+
+    Niet een platte map met losse bestanden, want dan wordt er nooit gekozen
+    tussen raw/ en strips/ en toets je juist het ding niet dat op de booth
+    misging. De stroken staan er als lokaas: leest de collage ooit uit de
+    verkeerde map, dan zie je het meteen op de afdruk.
+    """
+    basis = os.path.join(map_naam, "_nepevent")
+    raw = os.path.join(basis, "raw")
+    strips = os.path.join(basis, "strips")
+    os.makedirs(raw, exist_ok=True)
+    os.makedirs(strips, exist_ok=True)
+    for i in range(sessies):
+        stempel = f"01-01-2026_2{i // 60}.{i % 60:02d}.{(i * 7) % 60:02d}"
+        for n in (1, 2, 3):
+            # losse opname: liggend 3:2, zoals een camera hem levert
+            pm = QPixmap(1800, 1200)
+            pm.fill(QColor.fromHsv((i * 37) % 360, 90,
+                                   90 + n * 20 + (i * 11) % 60))
+            pm.save(os.path.join(raw, f"{stempel}_{n}.jpg"), "JPG")
+        # de samengestelde strook: staand 1200 x 1800
+        strook = QPixmap(1200, 1800)
+        strook.fill(QColor(255, 0, 255))
+        strook.save(os.path.join(strips, f"{stempel}.jpg"), "JPG")
+    return raw
+
+
+def _collage_achtergrond(breedte):
+    """Dezelfde kale achtergrond die photobooth.py eronder legt.
+
+    In beta.5 ging hier niets onder, en op de booth een beeld met de
+    instructie en het logo er al in gebakken. Vandaar dat alles dubbel stond
+    en dat de afdrukken er niettemin goed uitzagen.
+    """
+    mapje = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "idle_defaults")
+    import re
+    kandidaten = []
+    if os.path.isdir(mapje):
+        for f in os.listdir(mapje):
+            m = re.match(r"mbb-collage(\d+)\.jpe?g$", f, re.IGNORECASE)
+            if m:
+                kandidaten.append((int(m.group(1)), os.path.join(mapje, f)))
+    if not kandidaten:
+        print("[AFDRUK] LET OP: geen mbb-collage*.jpg gevonden — de afdrukken "
+              "tonen dan een egale ondergrond, niet wat de booth laat zien.",
+              flush=True)
+        return ""
+    kandidaten.sort(key=lambda k: abs(k[0] - breedte))
+    return kandidaten[0][1]
 
 
 def bouw_proefblad():
@@ -264,12 +318,16 @@ def schrijf(widget, pad):
     QApplication.processEvents()
     b = widget.width() or PUNTEN_BREED
     h = widget.height() or PUNTEN_HOOG
-    doek = QPixmap(b * VERGROTING, h * VERGROTING)
-    doek.setDevicePixelRatio(VERGROTING)
+    # De schaal van de widget zelf, niet een vast getal: dan staat er op de
+    # afdruk precies wat de tablet te zien krijgt, inclusief eventuele waas.
+    schaal = float(widget.devicePixelRatioF() or VERGROTING)
+    doek = QPixmap(int(b * schaal), int(h * schaal))
+    doek.setDevicePixelRatio(schaal)
     doek.fill(Qt.transparent)
     widget.render(doek)
     doek.save(pad, "PNG")
-    print(f"[AFDRUK] {pad}  ({doek.width()} x {doek.height()})", flush=True)
+    print(f"[AFDRUK] {pad}  ({doek.width()} x {doek.height()} px, "
+          f"{b} x {h} punten @ {schaal:g}x)", flush=True)
 
 
 def main():
@@ -287,22 +345,35 @@ def main():
     schrijf(bouw_proefblad(), os.path.join(map_naam, "proefblad.png"))
     schrijf(bouw_deelscherm(), os.path.join(map_naam, "deelscherm.png"))
 
-    # Het startscherm in zijn vier toestanden, liggend en staand. Met
-    # nepfoto's, want op een bouwserver staat geen event.
+    # Het startscherm in zijn vier toestanden, liggend en staand. Met een
+    # nagemaakt event, want op een bouwserver staat er geen.
+    raw = _nepevent(map_naam)
+    alle = startscherm.fotos_van_event(raw)
+    print(f"[AFDRUK] {len(alle)} foto's uit {raw}", flush=True)
+
+    bewaar = []
     for stand, (b, h) in (("liggend", (PUNTEN_BREED, PUNTEN_HOOG)),
                           ("staand", (PUNTEN_HOOG, PUNTEN_BREED))):
         vorm = startscherm.Layout(b, h)
+        achtergrond = _collage_achtergrond(int(b * VERGROTING))
         for naam, aantal in (("leeg", 0),
                              ("1-rij", vorm.kolommen),
                              ("2-rijen", vorm.kolommen * 2),
                              ("vol", vorm.n)):
-            def maak(b=b, h=h, aantal=aantal):
-                blad = startscherm.Collage()
-                blad.setFixedSize(b, h)
-                blad.show()
+            def maak(b=b, h=h, aantal=aantal, achtergrond=achtergrond):
+                # PRECIES de volgorde van _build_idle_page(): aanmaken,
+                # meteen vullen, en pas daarna in de stapel — en dán krijgt
+                # hij zijn maat. Wie hem hier eerst op maat zet, tekent een
+                # situatie die op de booth niet bestaat; dat is de reden dat
+                # de afdrukken van beta.5 goed leken.
+                blad = startscherm.Collage(achtergrond)
+                blad.zet_fotos(alle[:aantal])
+                stapel = QStackedWidget()
+                stapel.addWidget(blad)
+                stapel.setFixedSize(b, h)
+                stapel.show()
                 QApplication.processEvents()
-                if aantal:
-                    blad.zet_fotos(_nepfotos(aantal, map_naam))
+                bewaar.append(stapel)      # anders ruimt Python hem meteen op
                 return blad
             blad = veilig(f"startscherm-{stand}-{naam}", maak)
             if blad is not None:

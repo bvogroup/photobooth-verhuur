@@ -84,6 +84,35 @@ jobs:
         shell: pwsh
         run: python test_lettertype.py
 
+      # ── Het startscherm ─────────────────────────────────────────────
+      # Dit MAG de bouw tegenhouden, en dat is met opzet.
+      #
+      # Beta.5 kwam hier langs met schermafdrukken die er goed uitzagen en was
+      # op de booth onbruikbaar: alles stond dubbel, de tegels waren een kwart
+      # van de bedoelde maat en de tekst was wazig. Alle drie onzichtbaar op
+      # een plaatje waar niemand naar meet. Deze stap meet wel: de tegel op
+      # 456 x 285 fysieke pixels, de foto's uit raw/ en niet uit strips/, en
+      # de achtergrond zonder ingebakken tekst en logo.
+      #
+      # QT_SCALE_FACTOR bootst de tablet na, die op 200% staat. Zonder dat
+      # draait de toets op schaal 1 en is precies de fout onzichtbaar die de
+      # tekst en het logo wazig maakte.
+      - name: Startscherm controleren
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          QT_SCALE_FACTOR: "2"
+        run: python test_startscherm.py
+
+      # ── De QR-code van de gast ──────────────────────────────────────
+      # Mag de bouw tegenhouden. De QR wordt uit de sjabloon-URL en het
+      # sessie-id gebouwd en heeft dus geen internet nodig; deze stap toetst
+      # dat hij naar myboothbox.nl wijst en nooit naar een lokaal adres.
+      - name: QR-code controleren
+        timeout-minutes: 5
+        shell: pwsh
+        run: python test_qr.py
+
       # ── Kosten van het schuivende startscherm ───────────────────────
       # De opdrachtgever wil dat de collage doorschuift. Dit meet wat dat kost
       # met de echte Qt-motor, in plaats van erover te gissen. Het mag de bouw
