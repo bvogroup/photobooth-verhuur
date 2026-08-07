@@ -230,6 +230,11 @@ def letter(punten=TEKST_LOPEND, vet=False, kop=False, spatie=None):
 #   transition      — op een aanraakscherm is directe reactie beter
 
 
+def _uitgeschakeld(op_donker):
+    """Het vlak en de inkt van een uitgeschakelde knop, passend bij het scherm."""
+    return (UIT_VLAK, UIT_TEKST) if op_donker else (PAPIER_DIEPER, TEKST_GEDEMPT)
+
+
 def _knop(vlak, tekst, aan, in_, ronding=RONDING_KNOP, rand=None,
           uit_vlak=UIT_VLAK, uit_tekst=UIT_TEKST):
     """De gemeenschappelijke vorm van elke knop. Niet rechtstreeks gebruiken."""
@@ -283,16 +288,22 @@ def knop_tweede(op_donker=True):
     )
 
 
-def knop_inkt():
+def knop_inkt(op_donker=False):
     """Een volle donkere knop. Voor de opbouwschermen, waar geen foto's achter staan."""
-    return _knop(INKT, WIT, INKT_AAN, INKT_IN,
-                 uit_vlak=PAPIER_DIEPER, uit_tekst=TEKST_GEDEMPT)
+    uit_v, uit_t = _uitgeschakeld(op_donker)
+    return _knop(INKT, WIT, INKT_AAN, INKT_IN, uit_vlak=uit_v, uit_tekst=uit_t)
 
 
-def knop_gevaar():
-    """Annuleren, wissen, afbreken. Wit op rood — 5,44:1."""
-    return _knop(FOUT, WIT, "#D0503F", "#A02E22",
-                 uit_vlak=PAPIER_DIEPER, uit_tekst=TEKST_GEDEMPT)
+def knop_gevaar(op_donker=True):
+    """Annuleren, wissen, afbreken. Wit op rood — 5,44:1.
+
+    Let op `op_donker`. De uitgeschakelde toestand moet bij het scherm passen
+    waar de knop op staat: een lichtgrijs vlak op een donker gastscherm leest
+    als een gat in het beeld. Dat was op het proefblad meteen te zien, en het
+    is precies waarom dat proefblad bestaat.
+    """
+    uit_v, uit_t = _uitgeschakeld(op_donker)
+    return _knop(FOUT, WIT, "#D0503F", "#A02E22", uit_vlak=uit_v, uit_tekst=uit_t)
 
 
 def knop_stil(op_donker=True):
@@ -303,12 +314,14 @@ def knop_stil(op_donker=True):
             f" border: none; border-radius: {RONDING_KNOP}px; padding: 10px 18px; }}"
             f"QPushButton:hover {{ background: {INKT_VLAK}; color: {OP_DONKER}; }}"
             f"QPushButton:pressed {{ background: {INKT_HOOG}; }}"
+            f"QPushButton:disabled {{ background: transparent; color: {UIT_TEKST}; }}"
         )
     return (
         f"QPushButton {{ background: transparent; color: {TEKST_GEDEMPT};"
         f" border: none; border-radius: {RONDING_KNOP}px; padding: 10px 18px; }}"
         f"QPushButton:hover {{ background: {HOVER_VLAK}; color: {INKT}; }}"
         f"QPushButton:pressed {{ background: {PAPIER_DIEPER}; }}"
+        f"QPushButton:disabled {{ background: transparent; color: {TEKST_GEDEMPT}; }}"
     )
 
 
