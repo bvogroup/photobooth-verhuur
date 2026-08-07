@@ -95,6 +95,16 @@ def _get_r2_client():
     if not _BOTO3_AVAILABLE:
         raise ImportError("boto3 is niet beschikbaar")
 
+    # Klokcorrectie activeren voordat er iets ondertekend wordt. Op een booth
+    # in het veld liep de systeemklok acht uur achter en weigerde Cloudflare
+    # elke upload met RequestTimeTooSkewed. Zie clock_sync.py.
+    try:
+        import clock_sync
+        if not clock_sync.is_bekend():
+            clock_sync.laad_bewaarde_afwijking()
+    except Exception as e:
+        print(f"[CLOUD] Klokcorrectie niet actief: {e}")
+
     endpoint = getattr(config, 'R2_ENDPOINT_URL', '')
     if not endpoint:
         account_id = getattr(config, 'R2_ACCOUNT_ID', '')
@@ -372,19 +382,47 @@ class CloudUploadThread(QThread):
         self.compress = compress
         self.branding_text = branding_text or ""
 
+    @staticmethod
+    def _is_klokfout(fout) -> bool:
+        """Strandde deze upload op een tijdsverschil met de server?"""
+        tekst = str(fout)
+        if "RequestTimeTooSkewed" in tekst:
+            return True
+        try:
+            code = fout.response.get("Error", {}).get("Code", "")
+            return code == "RequestTimeTooSkewed"
+        except Exception:
+            return False
+
+    def _upload(self):
+        if self.photo_paths and self.session_id:
+            return upload_session_to_r2(
+                self.session_id,
+                self.file_path,
+                self.photo_paths,
+                self.boomerang_path,
+                compress=self.compress,
+                branding_text=self.branding_text,
+            )
+        return upload_to_r2(self.file_path)
+
     def run(self):
         try:
-            if self.photo_paths and self.session_id:
-                url = upload_session_to_r2(
-                    self.session_id,
-                    self.file_path,
-                    self.photo_paths,
-                    self.boomerang_path,
-                    compress=self.compress,
-                    branding_text=self.branding_text,
-                )
-            else:
-                url = upload_to_r2(self.file_path)
+            try:
+                url = self._upload()
+            except Exception as eerste:
+                # Strandde hij op een tijdsverschil, dan is de klok van deze
+                # machine (verder) weggelopen. Opnieuw meten en één keer
+                # overdoen — dat is precies de situatie die anders een hele
+                # avond aan foto's kost.
+                if not self._is_klokfout(eerste):
+                    raise
+                print(f"[CLOUD] Upload geweigerd op tijdsverschil: {eerste}")
+                import clock_sync
+                if not clock_sync.hermeet_na_afwijzing():
+                    raise
+                print("[CLOUD] Klok opnieuw gemeten — upload wordt overgedaan")
+                url = self._upload()
             self.upload_complete.emit(url)
         except Exception as e:
             error_msg = f"[CLOUD] Upload mislukt: {e}"

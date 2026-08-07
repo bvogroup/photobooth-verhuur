@@ -131,6 +131,29 @@ class BoothSettings:
     # kiest dit zelf in Geavanceerd en de keuze moet een herstart overleven.
     update_channel: str = "production"
 
+    # ── Belichtingskalibratie ──────────────────────────────────
+    # "uit"        = niets doen
+    # "meten"      = wel meten en per foto wegschrijven, NIET corrigeren
+    # "corrigeren" = meten en bij de eerste foto van een sessie bijregelen
+    # Standaard "meten": zo verzamelen we vanaf de eerste sessie echte
+    # cijfers zonder dat een verkeerde kalibratie een avond kan verpesten.
+    exposure_mode: str = "meten"
+    # Uitkomst van de eenmalige proef op dit apparaat (zie exposure.py).
+    exposure_probed: bool = False
+    exposure_control: str = ""        # "", "none", "exposure", "brightness", "gain"
+    exposure_sensitivity: float = 0.0  # helderheidsverandering per eenheid
+    exposure_default: float = 0.0     # fabriekswaarde; de marge rekent hiervandaan
+    exposure_value: float = 0.0       # laatst gezette waarde
+
+    # ── Klokafwijking ──────────────────────────────────────────
+    # Laatst gemeten verschil tussen de servertijd en de klok van deze
+    # machine, in seconden (positief = de machine loopt achter). Wordt bij het
+    # opstarten opnieuw gemeten, maar alvast toegepast zodat de eerste upload
+    # van een sessie niet eerst hoeft te mislukken. Booth-wide: het hoort bij
+    # deze machine. Zie clock_sync.py.
+    clock_offset_seconds: float = 0.0
+    clock_offset_measured_at: str = ""
+
     # ── Serienummer ────────────────────────────────────────────
     # Uniek nummer van deze fysieke photobooth (alfanumeriek). Booth-wide
     # want het hoort bij de hardware, niet bij een event. Ingesteld in
@@ -239,6 +262,10 @@ class BoothSettings:
         # updatekanaal leidt.
         if instance.update_channel not in ("production", "beta"):
             instance.update_channel = "production"
+        # Idem voor de belichtingsmodus: een onbekende waarde valt terug op
+        # "meten" — dat verzamelt wel gegevens maar raakt de camera niet aan.
+        if instance.exposure_mode not in ("uit", "meten", "corrigeren"):
+            instance.exposure_mode = "meten"
 
     @classmethod
     def exists(cls) -> bool:
