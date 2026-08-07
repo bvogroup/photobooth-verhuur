@@ -49,8 +49,6 @@ a = Analysis(
         (r'C:\Windows\System32\winspool.drv', '.'),
     ] + cv2_binaries + libusb_binaries,
     datas=[
-        # Flask web templates for QR download page
-        (os.path.join(app_dir, 'web', 'templates'), os.path.join('web', 'templates')),
         # Default idle screens for different resolutions
         (os.path.join(app_dir, 'idle_defaults'), 'idle_defaults'),
         # Sound effects (printer-busy MP3, evt. beeps)
@@ -84,8 +82,6 @@ a = Analysis(
         'PIL', 'PIL.Image', 'PIL.ImageOps', 'PIL.ImageDraw', 'PIL.ImageFont',
         # HTTP
         'requests', 'requests.adapters', 'urllib3',
-        # Flask web server
-        'flask', 'flask.json', 'jinja2', 'markupsafe', 'werkzeug',
         # QR code
         'qrcode', 'qrcode.image.pil',
         # Windows printing (pywin32)

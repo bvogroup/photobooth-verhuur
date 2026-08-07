@@ -172,7 +172,10 @@ def beoordeel(frame):
     """
     leeg = {"onderwerp": None, "bron": "leeg", "gezichten": 0,
             "uitgebeten": 0.0, "dichtgelopen": 0.0,
-            "beeldgemiddelde": None, "doel": DOELWAARDE}
+            "beeldgemiddelde": None, "doel": DOELWAARDE,
+            "p5": None, "p25": None, "p50": None, "p75": None, "p95": None,
+            "spreiding": None, "std": None, "achtergrond": None,
+            "onderwerp_aandeel": None, "resolutie": ""}
     if not _CV2 or frame is None or getattr(frame, "size", 0) == 0:
         return leeg
     try:
@@ -196,10 +199,35 @@ def beoordeel(frame):
             # gemiddelde dat het donker genoeg is.
             doel = DOELWAARDE - DOELVERLAGING_BIJ_UITGEBETEN
 
+        # Percentielen over het ONDERWERP. Dit is de reden dat een gemiddelde
+        # alleen niet genoeg is: 118 kan een gelijkmatig belicht gezicht zijn,
+        # of een wit voorhoofd naast een zwarte schaduw. Die twee vragen een
+        # totaal andere oplossing — de eerste is "te licht", de tweede is "te
+        # veel contrast" — en aan het gemiddelde zijn ze niet te onderscheiden.
+        p5, p25, p50, p75, p95 = (
+            float(x) for x in np.percentile(onderwerp_pixels, [5, 25, 50, 75, 95])
+        )
+
+        # Achtergrond apart: alles wat NIET tot het onderwerp is gerekend.
+        # Hiermee is straks te zien of een hoge meting door een fel gezicht
+        # kwam of door een felle zaal erachter.
+        achtergrond = grijs[~masker]
+        achtergrond_gem = float(achtergrond.mean()) if achtergrond.size else None
+
+        hoogte, breedte = grijs.shape[:2]
+
         return {"onderwerp": float(onderwerp), "bron": bron,
                 "gezichten": int(aantal),
                 "uitgebeten": uitgebeten, "dichtgelopen": dichtgelopen,
-                "beeldgemiddelde": float(grijs.mean()), "doel": float(doel)}
+                "beeldgemiddelde": float(grijs.mean()), "doel": float(doel),
+                # Verdeling over het onderwerp
+                "p5": p5, "p25": p25, "p50": p50, "p75": p75, "p95": p95,
+                "spreiding": p95 - p5,          # contrast binnen het onderwerp
+                "std": float(onderwerp_pixels.std()),
+                # Omstandigheden
+                "achtergrond": achtergrond_gem,
+                "onderwerp_aandeel": float(masker.mean()),
+                "resolutie": f"{breedte}x{hoogte}"}
     except Exception as e:
         print(f"[BELICHTING] Beoordelen mislukt: {e}")
         return leeg
@@ -395,8 +423,22 @@ def bereken_correctie(gemeten, huidige_waarde, gevoeligheid,
                    f"ongedempt={ruwe_stap:+.2f}{begrensd})")
 
 
+# CORRECTIE: BEWUST NOG NIET GEBOUWD
+# ==================================
+# Er stond hier een digitale correctie klaar (gammakromme via opzoektabel).
+# Die is er op verzoek weer uit: eerst meten, dan pas beslissen. Op acht
+# foto's weten we dat de spreiding groot is (84 tot 147) en dat de camera
+# geen enkele instelling accepteert, maar niet of dat aan het licht in die
+# ene ruimte lag of dat het overal zo is. Een correctie bouwen op acht
+# metingen uit een zaal is raden met extra stappen.
+#
+# Daarom is de meting nu het hele product, en meet deze module royaler dan
+# nodig zou zijn als er meteen gecorrigeerd werd: opnieuw data verzamelen
+# kost de opdrachtgever een avond, een kolom extra kost niets.
+
 def logregel(sessie_id, volgnummer, bestandsnaam, oordeel, modus,
-             besluit="", instelling="", van=None, naar=None, gezet=None):
+             besluit="", instelling="", van=None, naar=None, gezet=None,
+             omstandigheden=None):
     """Bouw één regel per foto voor het logboek dat de booth doorstuurt.
 
     Bewust één regel met naam=waarde-paren: makkelijk te lezen, makkelijk te
@@ -411,21 +453,46 @@ def logregel(sessie_id, volgnummer, bestandsnaam, oordeel, modus,
     def g(sleutel, standaard=None):
         return oordeel.get(sleutel, standaard) if oordeel else standaard
 
-    onderwerp = g("onderwerp")
-    beeldgem = g("beeldgemiddelde")
+    def getal(naam, sleutel, cijfers=0):
+        waarde = g(sleutel)
+        if waarde is None:
+            return f"{naam}=-"
+        return f"{naam}={waarde:.{cijfers}f}"
+
     delen = [
         f"sessie={sessie_id or '-'}",
         f"nr={volgnummer}",
         f"bestand={bestandsnaam or '-'}",
-        f"onderwerp={onderwerp:.0f}" if onderwerp is not None else "onderwerp=-",
-        f"beeldgemiddelde={beeldgem:.0f}" if beeldgem is not None else "beeldgemiddelde=-",
+        # Wat we meten
+        getal("onderwerp", "onderwerp"),
+        getal("beeldgemiddelde", "beeldgemiddelde"),
+        getal("achtergrond", "achtergrond"),
         f"bron={g('bron', '-')}",
         f"gezichten={g('gezichten', 0)}",
+        # Hoe de helderheid over het onderwerp verdeeld is. Zonder deze vijf
+        # is "te licht" niet te onderscheiden van "te veel contrast", en die
+        # twee vragen een andere oplossing.
+        getal("p5", "p5"), getal("p25", "p25"), getal("p50", "p50"),
+        getal("p75", "p75"), getal("p95", "p95"),
+        getal("spreiding", "spreiding"),
+        getal("std", "std", 1),
         f"uitgebeten={g('uitgebeten', 0.0) * 100:.1f}%",
         f"dichtgelopen={g('dichtgelopen', 0.0) * 100:.1f}%",
         f"doel={g('doel', DOELWAARDE):.0f}",
         f"modus={modus}",
     ]
+    aandeel = g("onderwerp_aandeel")
+    if aandeel is not None:
+        delen.append(f"onderwerpdeel={aandeel * 100:.0f}%")
+    if g("resolutie"):
+        delen.append(f"resolutie={g('resolutie')}")
+    # Omstandigheden: wat stond de camera zelf te doen, en flitste hij?
+    if omstandigheden:
+        for sleutel in ("flits", "flitsrelais", "cam_exposure", "cam_auto_exposure",
+                        "cam_brightness", "cam_gain", "cam_contrast",
+                        "cam_saturation", "cam_wb", "cam_backlight"):
+            if sleutel in omstandigheden and omstandigheden[sleutel] is not None:
+                delen.append(f"{sleutel}={omstandigheden[sleutel]}")
     if besluit:
         delen.append(f"besluit={besluit}")
     if instelling:

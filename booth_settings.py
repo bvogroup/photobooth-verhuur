@@ -132,11 +132,13 @@ class BoothSettings:
     update_channel: str = "production"
 
     # ── Belichtingskalibratie ──────────────────────────────────
-    # "uit"        = niets doen
-    # "meten"      = wel meten en per foto wegschrijven, NIET corrigeren
-    # "corrigeren" = meten en bij de eerste foto van een sessie bijregelen
-    # Standaard "meten": zo verzamelen we vanaf de eerste sessie echte
-    # cijfers zonder dat een verkeerde kalibratie een avond kan verpesten.
+    # "uit"   = niets doen
+    # "meten" = per foto meten en wegschrijven (standaard)
+    #
+    # Er is bewust GEEN stand "corrigeren". De hardwareweg viel af — de proef
+    # liet zien dat de camera geen enkele belichtingsinstelling accepteert — en
+    # een digitale correctie bouwen we pas als er genoeg metingen liggen om er
+    # een op te baseren. Acht foto's uit een zaal is daarvoor te weinig.
     exposure_mode: str = "meten"
     # Uitkomst van de eenmalige proef op dit apparaat (zie exposure.py).
     exposure_probed: bool = False
@@ -264,7 +266,8 @@ class BoothSettings:
             instance.update_channel = "production"
         # Idem voor de belichtingsmodus: een onbekende waarde valt terug op
         # "meten" — dat verzamelt wel gegevens maar raakt de camera niet aan.
-        if instance.exposure_mode not in ("uit", "meten", "corrigeren"):
+        # Oudere waarden ("corrigeren", "digitaal") vallen terug op meten.
+        if instance.exposure_mode not in ("uit", "meten"):
             instance.exposure_mode = "meten"
 
     @classmethod

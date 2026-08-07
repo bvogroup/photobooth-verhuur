@@ -251,15 +251,13 @@ def main():
     from photobooth import PhotoboothWindow
     window = PhotoboothWindow()
 
-    # Start web server AFTER window is shown (non-blocking)
-    def _start_web():
-        try:
-            from web_server import start_server
-            start_server(config.WEB_SERVER_PORT)
-        except Exception as e:
-            print(f"[WEB] Kon webserver niet starten: {e}")
-
-    QTimer.singleShot(500, _start_web)
+    # De lokale webserver is verwijderd. Hij luisterde op 0.0.0.0:8080 en
+    # bestond uitsluitend om de terugval-QR te bedienen: een QR naar het adres
+    # van de booth in het plaatselijke netwerk. Die werkte alleen als de gast
+    # op hetzelfde wifi zat, wat op een feest vrijwel nooit zo is. Nu die QR
+    # weg is, heeft de server geen enkele taak meer — en staat er een
+    # luisterende poort minder open op een machine die bij klanten in de zaal
+    # staat.
 
     if windowed:
         window.showMaximized()
