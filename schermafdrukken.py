@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt                                    # noqa: E402
-from PyQt5.QtGui import QPixmap                                # noqa: E402
+from PyQt5.QtGui import QPixmap, QColor                        # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,    # noqa: E402
                              QPushButton, QLineEdit, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QProgressBar)
@@ -237,6 +237,21 @@ def bouw_deelscherm():
     return blad
 
 
+def veilig(naam, maker):
+    """Maak één blad; klapt het om, meld dat en ga door met de rest.
+
+    Zonder dit stopte het hele script bij het eerste probleem en kwam er één
+    plaatje uit een reeks van tien — terwijl de stap in de bouwstraat
+    "geslaagd" meldde, want hij mag de bouw niet tegenhouden. Nu staat er in
+    het logboek wat er misging en komt de rest er gewoon uit.
+    """
+    try:
+        return maker()
+    except Exception as exc:
+        print(f"[AFDRUK] MISLUKT: {naam} — {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+
 def schrijf(widget, pad):
     """Teken het scherm op de echte resolutie van de tablet en sla het op."""
     widget.show()  # nodig zodat Qt de indeling uitrekent
@@ -273,14 +288,18 @@ def main():
                              ("1-rij", vorm.kolommen),
                              ("2-rijen", vorm.kolommen * 2),
                              ("vol", vorm.n)):
-            blad = startscherm.Collage()
-            blad.setFixedSize(b, h)
-            blad.show()
-            QApplication.processEvents()
-            if aantal:
-                blad.zet_fotos(_nepfotos(aantal, map_naam))
-            schrijf(blad, os.path.join(map_naam,
-                                       f"startscherm-{stand}-{naam}.png"))
+            def maak(b=b, h=h, aantal=aantal):
+                blad = startscherm.Collage()
+                blad.setFixedSize(b, h)
+                blad.show()
+                QApplication.processEvents()
+                if aantal:
+                    blad.zet_fotos(_nepfotos(aantal, map_naam))
+                return blad
+            blad = veilig(f"startscherm-{stand}-{naam}", maak)
+            if blad is not None:
+                schrijf(blad, os.path.join(map_naam,
+                                           f"startscherm-{stand}-{naam}.png"))
     app.quit()
     return 0
 
