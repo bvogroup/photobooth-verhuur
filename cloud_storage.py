@@ -28,6 +28,68 @@ from PyQt5.QtCore import QThread, pyqtSignal
 import config
 
 
+# Laatste terugval als álles leeg is. Dit is de waarde die vóór deze
+# wijziging hardgecodeerd in cloud_storage stond, zodat een booth met een
+# lege config nooit een kapotte QR-code toont.
+_DEFAULT_WORKER_URL = "https://qr.bootharoo.com"
+
+
+def _gallery_url_template() -> str:
+    """Zoek de sjabloon-URL voor de fotopagina van de gast.
+
+    Volgorde (de eerste niet-lege waarde wint):
+      1. omgevingsvariabele BOOTHAROO_GALLERY_URL
+      2. gallery_url_template in booth_settings.json (per booth instelbaar)
+      3. config.CLOUD_GALLERY_URL_TEMPLATE (meegeleverd in de build)
+
+    Leeg resultaat = de aanroeper valt terug op het oude
+    {CLOUD_WORKER_URL}/gallery/{session_id}.
+
+    Faalt er iets (kapotte json, module ontbreekt), dan wordt die bron
+    stilzwijgend overgeslagen: een niet te lezen instelling mag nooit de
+    upload van een gast tegenhouden.
+    """
+    env = (os.environ.get("BOOTHAROO_GALLERY_URL") or "").strip()
+    if env:
+        return env
+
+    try:
+        from booth_settings import BoothSettings
+        if BoothSettings.exists():
+            stored = (BoothSettings.load().gallery_url_template or "").strip()
+            if stored:
+                return stored
+    except Exception as e:
+        print(f"[CLOUD] Kon gallery-URL uit booth_settings niet lezen: {e}")
+
+    return (getattr(config, "CLOUD_GALLERY_URL_TEMPLATE", "") or "").strip()
+
+
+def gallery_url_for(session_id: str) -> str:
+    """Bouw de URL die in de QR-code komt voor deze sessie.
+
+    Zonder instelling levert dit exact dezelfde URL als vóór deze wijziging:
+    {CLOUD_WORKER_URL}/gallery/{session_id}. Een booth die niet is bijgewerkt
+    of niets heeft ingesteld, blijft dus werken zoals hij nu werkt.
+    """
+    try:
+        template = _gallery_url_template()
+    except Exception as e:
+        print(f"[CLOUD] Gallery-URL instelling onleesbaar ({e}) — terugval")
+        template = ""
+
+    if not template:
+        worker = (getattr(config, "CLOUD_WORKER_URL", "") or "").strip()
+        worker = worker or _DEFAULT_WORKER_URL
+        return f"{worker.rstrip('/')}/gallery/{session_id}"
+
+    if "{session_id}" in template:
+        return template.replace("{session_id}", session_id)
+
+    # Sjabloon zonder plaatshouder = alleen een basis-URL.
+    return f"{template.rstrip('/')}/{session_id}"
+
+
 def _get_r2_client():
     """Create a boto3 S3 client configured for Cloudflare R2."""
     if not _BOTO3_AVAILABLE:
@@ -194,12 +256,12 @@ def upload_session_to_r2(session_id: str, strip_path: str,
                        "Powered by Bootharoo"). Leeg = default-fallback.
 
     Returns:
-        The gallery URL: ``{CLOUD_WORKER_URL}/gallery/{session_id}``.
+        De fotopagina-URL voor de gast, zie ``gallery_url_for()``. Zonder
+        instelling is dat ``{CLOUD_WORKER_URL}/gallery/{session_id}``.
 
     Raises:
         Exception on upload failure.
     """
-    worker_url = getattr(config, 'CLOUD_WORKER_URL', '')
     bucket = getattr(config, 'R2_BUCKET_NAME', 'photobooth-photos')
     uploaded_at = str(int(time.time()))
     client = _get_r2_client()
@@ -275,7 +337,7 @@ def upload_session_to_r2(session_id: str, strip_path: str,
         except Exception:
             pass
 
-    gallery_url = f"{worker_url.rstrip('/')}/gallery/{session_id}"
+    gallery_url = gallery_url_for(session_id)
     print(f"[CLOUD] Sessie upload voltooid: {gallery_url}")
     return gallery_url
 

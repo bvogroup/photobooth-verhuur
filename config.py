@@ -4,7 +4,7 @@ import sys
 # === App Version ===
 # updater.py vergelijkt deze waarde met de tag van de release op GitHub. Stijgt
 # hij niet mee met een nieuwe release, dan ziet geen enkele booth de update.
-VERSION = "v1.99.148"
+VERSION = "v1.99.149-beta.1"
 
 # === Base Directory (must be first - used by other paths) ===
 # BASE_DIR = where the .exe lives (for runtime data like photos, events)
@@ -63,6 +63,28 @@ R2_BUCKET_NAME = "photobooth-photos"
 R2_ENDPOINT_URL = "https://8ecc7aea7cfd3cfe405501ec7e7a75c5.r2.cloudflarestorage.com"
 CLOUD_WORKER_URL = "https://qr.bootharoo.com"
 CLOUD_PHOTO_EXPIRY_MIN = 30    # Auto-delete after N minutes
+
+# === Waar de QR-code van de gast naartoe wijst ===
+# Vroeger hardgecodeerd als {CLOUD_WORKER_URL}/gallery/{session_id}. De
+# fotopagina verhuist naar MyBoothBox, dus is dit instelbaar gemaakt.
+#
+# {session_id} in de sjabloon wordt vervangen door het sessie-id. Staat er
+# geen {session_id} in, dan wordt het id er met een schuine streep achter
+# geplakt — "https://myboothbox.com/fotos" wordt dan
+# "https://myboothbox.com/fotos/<sessie-id>".
+#
+# LEEG LATEN = precies het oude gedrag ({CLOUD_WORKER_URL}/gallery/<id>).
+# Booths die niet zijn bijgewerkt blijven daardoor werken zoals nu.
+#
+# Volgorde waarin de waarde wordt gezocht (zie cloud_storage.gallery_url_for):
+#   1. omgevingsvariabele BOOTHAROO_GALLERY_URL   (handig om te testen)
+#   2. gallery_url_template in booth_settings.json (per booth instelbaar,
+#      zonder nieuwe build — Documents\Bootharoo\booth_settings.json)
+#   3. deze constante                              (meegeleverd in de build)
+#   4. terugval {CLOUD_WORKER_URL}/gallery/{session_id}
+#
+# De foto's blijven naar dezelfde R2-emmer gaan; alleen de link verandert.
+CLOUD_GALLERY_URL_TEMPLATE = ""
 
 # === Google Drive ===
 GDRIVE_ENABLED = False  # Set to True after configuring client_secrets.json

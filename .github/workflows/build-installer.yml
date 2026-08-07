@@ -39,6 +39,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # Vangnet: hangt er iets (een venster dat op invoer wacht, een installer
+    # die niet afsluit), dan faalt de bouw na 45 minuten in plaats van uren
+    # door te draaien.
+    timeout-minutes: 45
 
     steps:
       - name: Code ophalen
@@ -125,6 +129,7 @@ jobs:
       # controleren DAT er een bestand uitkomt is dus niet genoeg; hij moet
       # ook echt overeind komen.
       - name: Rookproef op de gebouwde map
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $exe = "dist\Bootharoo\Bootharoo.exe"
@@ -157,21 +162,38 @@ jobs:
       # niet alleen de exe maar ook het Inno-script: komt alles op zijn plek
       # in Program Files terecht, en start dat wat er is geinstalleerd?
       - name: Installer stil installeren en starten
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $inst = "${{ steps.installer.outputs.pad }}"
           Write-Host "Installeren: $inst"
+          # BEWUST GEEN -Wait. De installer start na een stille installatie
+          # zelf de applicatie (Check: WizardSilent in installer.iss), en die
+          # blijft draaien — het is een photobooth, die hoort niet af te
+          # sluiten. Start-Process -Wait wacht op de hele procesboom en bleef
+          # daardoor hangen tot de bouw werd afgekapt. Wait-Process wacht
+          # alleen op de installer zelf, met een harde grens erop.
           $p = Start-Process -FilePath $inst `
                -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
-               -PassThru -Wait
+               -PassThru
+          try {
+            Wait-Process -Id $p.Id -Timeout 300 -ErrorAction Stop
+          } catch {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "Installatie liep vast (langer dan 5 minuten)"
+          }
           if ($p.ExitCode -ne 0) { throw "Installatie faalde met code $($p.ExitCode)" }
+          Write-Host "Installatie klaar (code $($p.ExitCode))."
 
-          # De installer start de app zelf na een stille installatie
-          # (Check: WizardSilent). Die instantie hier afsluiten, anders staat
-          # er een venster te wachten terwijl wij de zelftest draaien.
-          Start-Sleep -Seconds 5
-          Get-Process Bootharoo -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 2
+          # De door de installer gestarte applicatie afsluiten, anders staat
+          # die het bestandsslot op de exe vast te houden tijdens onze test.
+          Start-Sleep -Seconds 8
+          $draaiend = Get-Process Bootharoo -ErrorAction SilentlyContinue
+          if ($draaiend) {
+            Write-Host "De installer heeft de applicatie gestart — die sluit ik nu af."
+            $draaiend | Stop-Process -Force
+          }
+          Start-Sleep -Seconds 3
 
           $geinstalleerd = "C:\Program Files (x86)\Bootharoo\Bootharoo.exe"
           if (-not (Test-Path $geinstalleerd)) {
