@@ -16,14 +16,22 @@ Gebruik
 
 Wat je krijgt
 -------------
-    proefblad.png    alle knoppen, kaarten, velden en tekstmaten naast elkaar,
-                     met hun toestanden (rust, aangeraakt, uitgeschakeld)
-    deelscherm.png   het paneel van het deelscherm, opgebouwd met exact dezelfde
-                     merk-aanroepen als het echte scherm in photobooth.py
+    proefblad.png       alle knoppen, kaarten, velden en tekstmaten naast
+                        elkaar, met hun toestanden (rust, aangeraakt,
+                        uitgeschakeld)
+    deelpaneel.png      het paneel van het deelscherm, opgebouwd met exact
+                        dezelfde merk-aanroepen als het echte scherm
+    gast-*.png          DE ECHTE gastschermen uit photobooth.py: het
+                        filterscherm, "zijn de foto's goed gelukt?", "wil je ze
+                        geprint?" en het deelscherm
+    startscherm-*.png   het startscherm in zijn vier toestanden
 
-Let op wat dit NIET is: het echte scherm uit photobooth.py. Dat scherm hangt aan
-een camera, een printer en een sessie, en is niet los te tekenen. Wat hier staat
-gebruikt dezelfde stijlen uit merk.py, zodat je ziet wat die stijlen doen.
+Hier stond tot beta.6: "Let op wat dit NIET is: het echte scherm uit
+photobooth.py. Dat scherm hangt aan een camera, een printer en een sessie, en is
+niet los te tekenen." Dat bleek niet te kloppen — zie proefvenster.py. De
+gast-*.png hieronder zijn wél de echte schermen, met de echte bouwmethodes. Wat
+eraan ontbreekt is alleen wat er zonder booth niet kan zijn: het livebeeld, de
+gemaakte foto en de fotostrook. Plaats, maat en opmaak zijn echt.
 
 Wat er na beta.5 aan veranderd is
 ---------------------------------
@@ -60,6 +68,7 @@ QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 import merk                                                    # noqa: E402
 import lettertype                                              # noqa: E402
 import startscherm                                             # noqa: E402
+import proefvenster                                            # noqa: E402
 
 # De Surface Pro 7: 2736 x 1824 op 12,3 inch. Bij 200% vergroting is dat 1368 x
 # 912 aan punten, en dat is de maat waarin de code rekent.
@@ -343,7 +352,28 @@ def main():
               "tonen dan de systeemletter, niet het merk.", flush=True)
 
     schrijf(bouw_proefblad(), os.path.join(map_naam, "proefblad.png"))
-    schrijf(bouw_deelscherm(), os.path.join(map_naam, "deelscherm.png"))
+    schrijf(bouw_deelscherm(), os.path.join(map_naam, "deelpaneel.png"))
+
+    # De echte gastschermen uit photobooth.py. Dit is waar de opdrachtgever naar
+    # kijkt: staat de bediening onderin het midden, en zijn de kleurstalen te
+    # onderscheiden?
+    def gastschermen():
+        pb = proefvenster.leen_photobooth()
+        bewaar = []
+        for naam, venster, _widget, hoofd in proefvenster.gastschermen(
+                pb, PUNTEN_BREED, PUNTEN_HOOG):
+            bewaar.append(venster)
+            knop = getattr(venster, hoofd)
+            midden = knop.mapTo(venster, knop.rect().center())
+            print(f"[AFDRUK] gast-{naam}: hoofdknop “{knop.text()}” op "
+                  f"{midden.x()}x{midden.y()} van {PUNTEN_BREED}x{PUNTEN_HOOG} "
+                  f"punten ({midden.x() / PUNTEN_BREED * 100:.0f}% breed, "
+                  f"{midden.y() / PUNTEN_HOOG * 100:.0f}% hoog)", flush=True)
+            schrijf(venster.stack.currentWidget(),
+                    os.path.join(map_naam, f"gast-{naam}.png"))
+        return bewaar
+
+    _gasten = veilig("gastschermen", gastschermen)  # noqa: F841
 
     # Het startscherm in zijn vier toestanden, liggend en staand. Met een
     # nagemaakt event, want op een bouwserver staat er geen.

@@ -104,6 +104,24 @@ jobs:
           QT_SCALE_FACTOR: "2"
         run: python test_startscherm.py
 
+      # ── De bediening van de gast ────────────────────────────────────
+      # Mag de bouw tegenhouden, en dat is met opzet.
+      #
+      # De booth staat op een luidsprekerstatief. Een tik rechts op het scherm
+      # draait hem weg, en dan staat de volgende foto scheef. Deze stap meet op
+      # de ECHTE schermen uit photobooth.py — niet op een nabootsing — hoe ver
+      # elke gastknop uit het midden staat, in millimeters op het glas, en of
+      # hij groot genoeg is om met een glas in je hand te raken. Hij rekent het
+      # liggend én staand door.
+      #
+      # QT_SCALE_FACTOR bootst de tablet na, die op 200% staat.
+      - name: Bediening controleren
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          QT_SCALE_FACTOR: "2"
+        run: python test_bediening.py
+
       # ── De QR-code van de gast ──────────────────────────────────────
       # Mag de bouw tegenhouden. De QR wordt uit de sjabloon-URL en het
       # sessie-id gebouwd en heeft dus geen internet nodig; deze stap toetst

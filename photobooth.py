@@ -4414,53 +4414,62 @@ class PhotoboothWindow(QMainWindow):
         self.pages["countdown"] = self.pages["preview"]
 
     # --- REVIEW (strip) ---
+    # De QR-code op het deelscherm, in punten. 200 punten is op de Surface Pro
+    # 7 (267 ppi, 200% vergroting) 38 millimeter — ruim genoeg om vanaf een
+    # halve meter te scannen. De kaart eromheen is de code plus de kantlijn aan
+    # weerszijden; dat getal bepaalt hoe hoog de band onderin wordt, en dus
+    # hoeveel er van de fotostrook overblijft.
+    _REVIEW_QR_HOOG = 200
+    _REVIEW_QR_KAART_HOOG = _REVIEW_QR_HOOG + 2 * merk.RUIMTE
+    # De kolom met meldingen naast de QR ("Foto wordt geprint...", "nog 8
+    # prints over"). Vaste breedte, met een even breed leeg vak aan de andere
+    # kant, zodat de QR-kaart in het midden blijft of er nu een melding staat
+    # of niet.
+    _REVIEW_MELDING_BREED = 300
+
     def _build_review_confirm_panel(self) -> "QWidget":
-        """Panel 1 op review-pagina rechts: 'Zijn de foto's goed gelukt?'
+        """Paneel 1 van de band onderin: 'Zijn de foto's goed gelukt?'
 
         Twee knoppen:
           - Ja                → naar print-vraag panel
           - Nee, begin opnieuw → reset sessie + terug naar preview
+
+        Stond tot beta.6 bovenin het rechterpaneel. De vraag zelf blijft
+        boven de knoppen staan, maar de knoppen staan nu onderin op de
+        hartlijn — op precies dezelfde hoogte als op de print-vraag en het
+        deelscherm die erna komen, zodat de duim niet hoeft te verhuizen.
         """
         panel = QWidget()
         panel.setStyleSheet(f"QWidget {{ background: {merk.INKT_VLAK}; }}")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
-                               merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
-        lay.setSpacing(merk.RUIMTE)
+        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP,
+                               merk.RUIMTE_KANTLIJN, 0)
+        lay.setSpacing(merk.RUIMTE_KRAP)
         lay.addStretch()
 
         title = QLabel("Zijn de foto's goed gelukt?")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        title.setFont(merk.letter(merk.TEKST_KOP, vet=True, kop=True))
         title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         title.setWordWrap(True)
         lay.addWidget(title)
-
-        lay.addSpacing(16)
+        lay.addStretch()
 
         yes_btn = QPushButton("Ja")
-        yes_btn.setCursor(Qt.PointingHandCursor)
-        yes_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        yes_btn.setMinimumHeight(merk.KNOP_HOOG)
-        yes_btn.setStyleSheet(merk.knop_hoofd())
         yes_btn.clicked.connect(self._on_review_photos_ok)
-        lay.addWidget(yes_btn)
+        bediening.zet_hoofdknop(yes_btn)
         self._review_confirm_yes_btn = yes_btn
 
         no_btn = QPushButton("Nee, begin opnieuw")
-        no_btn.setCursor(Qt.PointingHandCursor)
-        no_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        no_btn.setMinimumHeight(merk.KNOP_NORMAAL)
-        no_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         no_btn.clicked.connect(self._on_review_photos_redo)
-        lay.addWidget(no_btn)
+        bediening.zet_zijknop(no_btn)
         self._review_confirm_no_btn = no_btn
 
-        lay.addStretch()
+        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn))
         return panel
 
     def _build_review_print_question_panel(self) -> "QWidget":
-        """Panel 2 op review-pagina rechts: 'Wil je de foto's geprint hebben?'
+        """Paneel 2 van de band onderin: 'Wil je de foto's geprint hebben?'
 
         Twee knoppen:
           - Ja      → print + naar standaard action panel (met QR)
@@ -4469,39 +4478,30 @@ class PhotoboothWindow(QMainWindow):
         panel = QWidget()
         panel.setStyleSheet(f"QWidget {{ background: {merk.INKT_VLAK}; }}")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
-                               merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
-        lay.setSpacing(merk.RUIMTE)
+        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP,
+                               merk.RUIMTE_KANTLIJN, 0)
+        lay.setSpacing(merk.RUIMTE_KRAP)
         lay.addStretch()
 
         title = QLabel("Wil je de foto's geprint hebben?")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        title.setFont(merk.letter(merk.TEKST_KOP, vet=True, kop=True))
         title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         title.setWordWrap(True)
         lay.addWidget(title)
-
-        lay.addSpacing(16)
+        lay.addStretch()
 
         yes_btn = QPushButton("Ja, print")
-        yes_btn.setCursor(Qt.PointingHandCursor)
-        yes_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        yes_btn.setMinimumHeight(merk.KNOP_HOOG)
-        yes_btn.setStyleSheet(merk.knop_hoofd())
         yes_btn.clicked.connect(self._on_review_print_yes)
-        lay.addWidget(yes_btn)
+        bediening.zet_hoofdknop(yes_btn)
         self._review_print_yes_btn = yes_btn
 
         no_btn = QPushButton("Nee, geen print")
-        no_btn.setCursor(Qt.PointingHandCursor)
-        no_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        no_btn.setMinimumHeight(merk.KNOP_NORMAAL)
-        no_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         no_btn.clicked.connect(self._on_review_print_no)
-        lay.addWidget(no_btn)
+        bediening.zet_zijknop(no_btn)
         self._review_print_no_btn = no_btn
 
-        lay.addStretch()
+        lay.addWidget(bediening.gastbalk(hoofd=yes_btn, links=no_btn))
         return panel
 
     def _build_review_page(self):
@@ -4546,14 +4546,46 @@ class PhotoboothWindow(QMainWindow):
         photo_lay.addWidget(self.review_strip_label)
 
         # === Action panel (buttons) ===
+        #
+        # Dit paneel stond tot beta.6 als kolom van 35% aan de RECHTERkant van
+        # het scherm. Dat is precies de plek waar een tik de booth van zijn
+        # statief draait. Het is nu een band onderin: bovenin de band de dingen
+        # die de gast alleen leest of scant (de QR, de printmelding), onderin de
+        # knoppen, met de belangrijkste op de hartlijn — zie bediening.py.
         self._review_action_panel = QWidget()
         self._review_action_panel.setStyleSheet(
             f"QWidget {{ background: {merk.INKT_VLAK}; }}"
         )
-        right_lay = QVBoxLayout(self._review_action_panel)
-        right_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
-                                     merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
-        right_lay.setSpacing(merk.RUIMTE)
+        paneel_lay = QVBoxLayout(self._review_action_panel)
+        paneel_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_KRAP,
+                                      merk.RUIMTE_KANTLIJN, 0)
+        paneel_lay.setSpacing(merk.RUIMTE_KRAP)
+
+        # De leesbare helft van de band: QR links, meldingen rechts, samen
+        # gecentreerd. right_lay bestaat nog onder deze naam omdat er verderop
+        # in dit blok nog naar verwezen wordt.
+        self._review_info = QWidget()
+        self._review_info.setStyleSheet("background: transparent;")
+        info_lay = QHBoxLayout(self._review_info)
+        info_lay.setContentsMargins(0, 0, 0, 0)
+        info_lay.setSpacing(merk.RUIMTE)
+        info_lay.addStretch()
+        # Een leeg vak links, even breed als de meldingenkolom rechts. Zonder
+        # dit staat de QR-kaart uit het midden zodra er een melding naast komt
+        # — en de kaart hoort recht boven de knop te staan waar de gast naar
+        # kijkt.
+        _tegenwicht = QWidget()
+        _tegenwicht.setFixedWidth(self._REVIEW_MELDING_BREED)
+        _tegenwicht.setStyleSheet("background: transparent;")
+        info_lay.addWidget(_tegenwicht)
+
+        # De meldingenkolom rechts naast de QR.
+        _tekstkolom = QWidget()
+        _tekstkolom.setFixedWidth(self._REVIEW_MELDING_BREED)
+        _tekstkolom.setStyleSheet("background: transparent;")
+        right_lay = QVBoxLayout(_tekstkolom)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(merk.RUIMTE_KRAP)
 
         right_lay.addStretch()
 
@@ -4572,17 +4604,19 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addWidget(self._sharing_print_status)
 
         # --- PRINT button ---
-        # De hoofdactie van dit scherm, en de enige groene knop erop: merkgroen
-        # met donkere letters (9,29:1). Stond hier als gedempt groen met witte
-        # letters op 3,38:1, en de emoji ervoor werd door Windows in zijn eigen
-        # kleurenletter getekend — een blauwgrijs printertje naast een groene knop.
+        # Deze knop was tot beta.6 de groene hoofdknop van dit scherm. Dat is
+        # hij niet meer, en dat is geen willekeurige smaakwijziging: op dít
+        # scherm is de printvraag al gesteld en beantwoord op het vorige. Loopt
+        # de printer, dan is "Printen" hier een tweede afdruk; zei de gast nee,
+        # dan is het een bedenking. In allebei de gevallen is het niet wat de
+        # gast hierna hoort te doen — dat is afronden, zodat de volgende groep
+        # kan. "Klaar" staat daarom in het midden en is groen.
+        #
+        # Twee groene knoppen naast elkaar zou sowieso niet kunnen: het merk
+        # staat er één per scherm toe, anders valt er niets meer op.
         self._sharing_print_btn = QPushButton(t("btn_print"))
-        self._sharing_print_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
-        self._sharing_print_btn.setMinimumHeight(merk.KNOP_HOOG)
-        self._sharing_print_btn.setStyleSheet(merk.knop_hoofd())
         self._sharing_print_btn.clicked.connect(self._sharing_do_print)
-        right_lay.addWidget(self._sharing_print_btn)
+        bediening.zet_zijknop(self._sharing_print_btn)
 
         # ── Inline print-delay knoppen (verborgen tot 'Ja print' klik) ──
         # Tijdens de pakket-afhankelijke afkoelperiode (5s premium / 30s
@@ -4599,7 +4633,6 @@ class PhotoboothWindow(QMainWindow):
         _spcp.setRetainSizeWhenHidden(False)
         self._sharing_cancel_print_btn.setSizePolicy(_spcp)
         self._sharing_cancel_print_btn.hide()
-        right_lay.addWidget(self._sharing_cancel_print_btn)
 
         self._sharing_redo_print_btn = QPushButton("Foto's opnieuw maken")
         self._sharing_redo_print_btn.setCursor(Qt.PointingHandCursor)
@@ -4611,7 +4644,20 @@ class PhotoboothWindow(QMainWindow):
         _sprp.setRetainSizeWhenHidden(False)
         self._sharing_redo_print_btn.setSizePolicy(_sprp)
         self._sharing_redo_print_btn.hide()
-        right_lay.addWidget(self._sharing_redo_print_btn)
+
+        # De twee knoppen die alleen tijdens de afkoelperiode van de printer
+        # verschijnen, staan bewust NIET in de balk onderin. Zouden ze dat wel
+        # doen, dan werd de balk hoger op het moment dat ze opkomen en
+        # verspringt "Klaar" onder de vinger van de gast. Ze horen ook
+        # inhoudelijk bij de melding ernaast ("Foto wordt geprint...").
+        _printrij = QHBoxLayout()
+        _printrij.setContentsMargins(0, 0, 0, 0)
+        _printrij.setSpacing(merk.RUIMTE_KRAP)
+        for _k in (self._sharing_redo_print_btn, self._sharing_cancel_print_btn):
+            _k.setMinimumHeight(merk.KNOP_MIN)
+            _k.setMaximumHeight(merk.KNOP_NORMAAL)
+            _printrij.addWidget(_k)
+        right_lay.addLayout(_printrij)
 
         # Print remaining indicator
         self._sharing_prints_remaining = QLabel("")
@@ -4632,17 +4678,27 @@ class PhotoboothWindow(QMainWindow):
             f"QWidget {{ background: {merk.WIT};"
             f" border-radius: {merk.RONDING_VLAK}px; }}"
         )
-        qr_box_lay = QVBoxLayout(self._inline_qr_box)
+        # De kaart is breed geworden in plaats van hoog: de code links, de
+        # tekst rechts ernaast. In een band onderin het scherm is hoogte het
+        # schaarse goed — elke punt die deze kaart hoger is, gaat van de
+        # fotostrook af. De code zelf blijft ruim genoeg om te scannen: 200
+        # punten is op dit scherm 38 millimeter.
+        qr_box_lay = QHBoxLayout(self._inline_qr_box)
         qr_box_lay.setContentsMargins(merk.RUIMTE, merk.RUIMTE, merk.RUIMTE, merk.RUIMTE)
-        qr_box_lay.setSpacing(merk.RUIMTE_KRAP)
+        qr_box_lay.setSpacing(merk.RUIMTE)
 
         self._inline_qr_label = QLabel()
         self._inline_qr_label.setAlignment(Qt.AlignCenter)
-        self._inline_qr_label.setMinimumSize(220, 220)
-        self._inline_qr_label.setMaximumSize(320, 320)
+        self._inline_qr_label.setFixedSize(self._REVIEW_QR_HOOG,
+                                           self._REVIEW_QR_HOOG)
         self._inline_qr_label.setScaledContents(True)
         self._inline_qr_label.setStyleSheet(f"background: {merk.WIT};")
         qr_box_lay.addWidget(self._inline_qr_label, alignment=Qt.AlignCenter)
+
+        _qr_tekst = QVBoxLayout()
+        _qr_tekst.setContentsMargins(0, 0, 0, 0)
+        _qr_tekst.setSpacing(merk.RUIMTE_KRAP)
+        _qr_tekst.addStretch()
 
         # Animated 'uploading...' fallback (zichtbaar tot QR-pixmap er is)
         self._inline_qr_loading = QLabel(t("uploading"))
@@ -4650,7 +4706,7 @@ class PhotoboothWindow(QMainWindow):
         self._inline_qr_loading.setFont(merk.letter(merk.TEKST_KLEIN))
         self._inline_qr_loading.setStyleSheet(merk.tekst(merk.TEKST_GEDEMPT))
         self._inline_qr_loading.hide()
-        qr_box_lay.addWidget(self._inline_qr_loading)
+        _qr_tekst.addWidget(self._inline_qr_loading)
 
         # "Download op telefoon" prompt onder de QR
         self._inline_qr_prompt = QLabel("Download je foto's op je telefoon")
@@ -4658,8 +4714,11 @@ class PhotoboothWindow(QMainWindow):
         self._inline_qr_prompt.setFont(merk.letter(merk.TEKST_KLEIN, vet=True))
         self._inline_qr_prompt.setStyleSheet(merk.tekst(merk.INKT))
         self._inline_qr_prompt.setWordWrap(True)
-        qr_box_lay.addWidget(self._inline_qr_prompt)
-        right_lay.addWidget(self._inline_qr_box)
+        self._inline_qr_prompt.setMaximumWidth(280)
+        _qr_tekst.addWidget(self._inline_qr_prompt)
+        _qr_tekst.addStretch()
+        qr_box_lay.addLayout(_qr_tekst)
+        info_lay.addWidget(self._inline_qr_box)
 
         # Alternatieve TIP-box voor wanneer er geen wifi is. Tonen we
         # ipv de QR-box. Compact paneel met de instructie.
@@ -4674,8 +4733,9 @@ class PhotoboothWindow(QMainWindow):
             f"QLabel {{ {merk.kaart(op_donker=True, ronding=merk.RONDING_VLAK)}"
             f" color: {merk.OP_DONKER_ZACHT}; padding: 22px 18px; }}"
         )
+        self._inline_no_wifi_tip.setMaximumWidth(560)
         self._inline_no_wifi_tip.hide()
-        right_lay.addWidget(self._inline_no_wifi_tip)
+        info_lay.addWidget(self._inline_no_wifi_tip)
 
         # Derde stand: delen is niet gelukt. Tonen we in plaats van de QR-box.
         #
@@ -4698,8 +4758,9 @@ class PhotoboothWindow(QMainWindow):
             f"QLabel {{ {merk.kaart(op_donker=True, ronding=merk.RONDING_VLAK)}"
             f" color: {merk.OP_DONKER_ZACHT}; padding: 22px 18px; }}"
         )
+        self._inline_deel_mislukt.setMaximumWidth(560)
         self._inline_deel_mislukt.hide()
-        right_lay.addWidget(self._inline_deel_mislukt)
+        info_lay.addWidget(self._inline_deel_mislukt)
 
         # Oude '📱 QR-code'-knop is volledig vervangen door de inline QR-box
         # hierboven. We houden de attribute voor backwards-compat van legacy
@@ -4728,7 +4789,7 @@ class PhotoboothWindow(QMainWindow):
         _sp3 = self._sharing_email_btn.sizePolicy()
         _sp3.setRetainSizeWhenHidden(True)
         self._sharing_email_btn.setSizePolicy(_sp3)
-        right_lay.addWidget(self._sharing_email_btn)
+        bediening.zet_zijknop(self._sharing_email_btn)
 
         # --- No WiFi label (hidden by default) ---
         self._no_wifi_label = QLabel(t("no_internet"))
@@ -4743,16 +4804,31 @@ class PhotoboothWindow(QMainWindow):
         self._no_wifi_label.hide()
         right_lay.addWidget(self._no_wifi_label)
 
-        right_lay.addStretch()
-
-        # --- KLAAR button (always at bottom) ---
+        # --- KLAAR button ---
         self._sharing_done_btn = QPushButton(t("btn_done"))
         self._sharing_done_btn.setCursor(Qt.PointingHandCursor)
         self._sharing_done_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
         self._sharing_done_btn.setMinimumHeight(merk.KNOP_NORMAAL)
         self._sharing_done_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         self._sharing_done_btn.clicked.connect(self._go_done)
-        right_lay.addWidget(self._sharing_done_btn)
+        bediening.zet_hoofdknop(self._sharing_done_btn)
+
+        # De band is af: meldingen boven, knoppen onder.
+        #
+        # "Klaar" staat op de hartlijn en niet "Printen". Dat is de wens van de
+        # opdrachtgever, en het klopt met wat er op dit scherm gebeurt: is er
+        # geprint, dan is dat op de vorige vraag al beslist en loopt de printer
+        # allang. Wat de gast hier nog doet is afronden zodat de volgende groep
+        # kan. Printen en e-mail zijn de uitzonderingen, en die staan ernaast.
+        right_lay.addStretch()
+        info_lay.addWidget(_tekstkolom)
+        info_lay.addStretch()
+        paneel_lay.addWidget(self._review_info, stretch=1)
+        paneel_lay.addWidget(bediening.gastbalk(
+            hoofd=self._sharing_done_btn,
+            links=self._sharing_print_btn,
+            rechts=self._sharing_email_btn,
+        ))
 
         # ── Tussen-scherm 1: "Zijn de foto's goed gelukt?" ──
         self._review_confirm_panel = self._build_review_confirm_panel()
@@ -4779,7 +4855,6 @@ class PhotoboothWindow(QMainWindow):
         wrap_lay.addWidget(self._review_photo_container, stretch=3)
         wrap_lay.addWidget(self._review_panel_stack, stretch=0)
         main_lay.addWidget(self._review_wrapper)
-        self._review_is_portrait = True
 
         # === QR overlay (shown when QR button is pressed) ===
         self._qr_overlay = QWidget(page)
@@ -8265,6 +8340,8 @@ class PhotoboothWindow(QMainWindow):
         self._filter_thumbs_layout.setContentsMargins(0, 0, 0, 0)
         self._filter_thumbs_layout.setHorizontalSpacing(merk.RUIMTE_KRAP)
         self._filter_thumbs_layout.setVerticalSpacing(0)
+        # De kolomstretch wordt in _bouw_filterstalen op de gekozen indeling
+        # gezet; hier alvast ruim genoeg voor alle filters op één rij.
         for c in range(len(_filters.FILTERS)):
             self._filter_thumbs_layout.setColumnStretch(c, 1)
         bar_lay.addWidget(grid_holder)
@@ -8454,11 +8531,16 @@ class PhotoboothWindow(QMainWindow):
     )
 
     def _filterstaal_maat(self):
-        """De maat van één filtertegel, in punten, uit de werkelijke balk.
+        """De maat en de indeling van de filtertegels, in punten.
 
         Zestien tegels naast elkaar over de volle breedte. Wat overblijft na de
         kantlijnen en de tussenruimte wordt gelijk verdeeld. De ondergrens van
         48 punten is de aanraaknorm: 9 millimeter op dit scherm.
+
+        Past zestien naast elkaar niet meer boven die ondergrens — dat gebeurt
+        op een smal scherm, bijvoorbeeld een booth die staand gemonteerd is —
+        dan worden het twee rijen van acht. Liever een rij erbij dan tegels
+        waar niemand met een glas in zijn hand op kan mikken.
 
         De balk kan bij het bouwen nog geen maat hebben — dat is precies de
         fout die beta.5 op de booth onbruikbaar maakte. Daarom wordt hier, als
@@ -8471,12 +8553,21 @@ class PhotoboothWindow(QMainWindow):
         if breed < 200:
             scherm = QApplication.primaryScreen()
             breed = scherm.geometry().width() if scherm else self.width()
-        vrij = breed - 2 * merk.RUIMTE_KANTLIJN - (n - 1) * merk.RUIMTE_KRAP
-        tegel_b = max(merk.KNOP_MIN, int(vrij / n))
+
+        kolommen = n
+        for kandidaat in (n, (n + 1) // 2, (n + 3) // 4):
+            vrij = breed - 2 * merk.RUIMTE_KANTLIJN - (kandidaat - 1) * merk.RUIMTE_KRAP
+            if int(vrij / kandidaat) >= merk.KNOP_MIN:
+                kolommen = kandidaat
+                break
+            kolommen = kandidaat
+
+        vrij = breed - 2 * merk.RUIMTE_KANTLIJN - (kolommen - 1) * merk.RUIMTE_KRAP
+        tegel_b = max(merk.KNOP_MIN, int(vrij / kolommen))
         # Het monster is 3:2, net als de opnames zelf.
         staal_b = tegel_b - 8
         staal_h = max(24, int(staal_b * 2 / 3))
-        return tegel_b, staal_b, staal_h
+        return kolommen, tegel_b, staal_b, staal_h
 
     def _zorg_filterstalen(self, current_fid):
         """Zorg dat de rij kleurstalen er staat, en markeer de gekozen.
@@ -8487,17 +8578,18 @@ class PhotoboothWindow(QMainWindow):
         terug tussen twee foto's door, dus een gast die net op een filter
         richt tikt niet ineast.
         """
-        tegel_b, staal_b, staal_h = self._filterstaal_maat()
-        maat = (tegel_b, staal_b, staal_h, round(self.devicePixelRatioF(), 3))
+        kolommen, tegel_b, staal_b, staal_h = self._filterstaal_maat()
+        maat = (kolommen, tegel_b, staal_b, staal_h,
+                round(self.devicePixelRatioF(), 3))
         if getattr(self, '_filter_staal_maat', None) != maat or not self._filter_thumb_btns:
             self._clear_filter_thumbs()
-            self._bouw_filterstalen(tegel_b, staal_b, staal_h)
+            self._bouw_filterstalen(kolommen, tegel_b, staal_b, staal_h)
             self._filter_staal_maat = maat
         for fid, btn in self._filter_thumb_btns.items():
             btn.setChecked(fid == current_fid)
 
-    def _bouw_filterstalen(self, tegel_b, staal_b, staal_h):
-        """Zet de zestien tegels neer, één rij, over de volle breedte."""
+    def _bouw_filterstalen(self, kolommen, tegel_b, staal_b, staal_h):
+        """Zet de zestien tegels neer, over de volle breedte."""
         # Op de fysieke pixelmaat rasteren en de schaal aan de pixmap hangen.
         # Zonder dit tekent Qt het staal op de halve maat en laat Windows het
         # oprekken: wazig. Zelfde fout als bij de miniaturen van beta.5.
@@ -8519,10 +8611,13 @@ class PhotoboothWindow(QMainWindow):
             btn.setStyleSheet(self._FILTER_TEGEL_STIJL)
             btn.setFixedSize(tegel_b, hoogte)
             btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
-            self._filter_thumbs_layout.addWidget(btn, 0, i, alignment=Qt.AlignCenter)
+            rij, kolom = divmod(i, kolommen)
+            self._filter_thumbs_layout.addWidget(btn, rij, kolom,
+                                                 alignment=Qt.AlignCenter)
             self._filter_thumb_btns[fid] = btn
-        print(f"[FILTER] {len(stalen)} kleurstalen op {tegel_b}x{hoogte} punten "
-              f"(staal {staal_b}x{staal_h} @ {dpr:g}x)")
+        rijen = (len(stalen) + kolommen - 1) // kolommen
+        print(f"[FILTER] {len(stalen)} kleurstalen in {rijen}x{kolommen} op "
+              f"{tegel_b}x{hoogte} punten (staal {staal_b}x{staal_h} @ {dpr:g}x)")
 
     def _set_filter_preview(self, pil_img):
         """Toon de grote preview met het huidige filter. Het zelf-schalende
@@ -9618,7 +9713,6 @@ class PhotoboothWindow(QMainWindow):
             self._review_panel_stack.setCurrentIndex(0)
 
         # Adapt layout for current orientation
-        self._review_is_portrait = None  # Force re-evaluation
         self._adapt_review_layout()
 
         self.stack.setCurrentIndex(self.pages["review"])
@@ -9738,7 +9832,7 @@ class PhotoboothWindow(QMainWindow):
             sg = screen.geometry()
             sw, sh = sg.width(), sg.height()
         else:
-            sw, sh = 912, 1368  # Safe fallback
+            sw, sh = 1368, 912  # Terugval: de booth staat liggend
         # Clamp all review widgets to screen width so they never exceed
         # the visible area even if the window geometry is corrupted
         self._review_wrapper.setMaximumWidth(sw)
@@ -10717,127 +10811,97 @@ class PhotoboothWindow(QMainWindow):
         self._qr_overlay.raise_()
 
     def _adapt_review_layout(self):
-        """Adjust review page styling for current orientation.
+        """Zet de band met de bediening onderin, en houd hem daar.
 
-        No widget reparenting — layout is fixed VBoxLayout built once.
-        Only adjusts margins, font sizes and button heights."""
-        portrait = self._is_portrait()
+        Hier stonden twee takken: staand zette de knoppen ONDER de foto,
+        liggend zette ze RECHTS ernaast, in een kolom van 35% van de breedte.
+        Die liggende tak is de reden dat de knoppen van dit scherm aan de
+        rechterkant stonden — in een gedraaide stand ís rechts namelijk
+        onderin, en de software rekende nog met een booth die kon draaien.
 
-        # Stack die de 3 panelen bevat (confirm / print-vraag / action).
-        # Krijgt zelfde size-constraints als het oude action panel kreeg.
+        De booth draait niet meer, en een tik rechts op het scherm draait hem
+        van zijn statief. Er is daarom nog één tak: de band staat altijd
+        onderin, precies zoals de staande stand hem al zette. Een booth die
+        wél staand gemonteerd is werkt daardoor gewoon door; hij krijgt nu
+        hetzelfde scherm als een liggende.
+
+        Er wordt geen enkele widget verhangen — de opbouw is één keer gemaakt
+        in _build_review_page(). Hier wordt alleen de hoogte van de band
+        vastgezet, zodat hij op alle drie de panelen (goed gelukt? / printen? /
+        delen) even hoog is en de knoppen tussen die schermen niet
+        verspringen.
+        """
         _stack = getattr(self, '_review_panel_stack', None)
 
-        if portrait:
-            # Clamp all widgets to screen width — window geometry can be
-            # corrupted by Windows DPI scaling (912→1237px).
-            screen = self.screen()
-            max_w = screen.geometry().width() if screen else 912
-            self._review_action_panel.setMinimumSize(0, 0)
-            self._review_action_panel.setMaximumWidth(max_w)
-            if _stack:
-                _stack.setMinimumSize(0, 0)
-                _stack.setMaximumWidth(max_w)
-            self._review_photo_container.setMinimumSize(0, 0)
-            self._review_photo_container.setMaximumWidth(max_w)
-            self._review_wrapper.setMaximumWidth(max_w)
-            self.review_strip_label.setMaximumWidth(max_w)
-            # Margins to keep buttons narrower and centered
-            side_margin = max(20, (max_w - 480) // 2) if max_w > 520 else 20
-            self._review_photo_container.layout().setContentsMargins(0, 0, 0, 0)
-            self._review_action_panel.layout().setContentsMargins(side_margin, 8, side_margin, 12)
-            self._review_action_panel.layout().setSpacing(8)
-            # Confirm + print-vraag panels: ook side-margins
-            for p in (getattr(self, '_review_confirm_panel', None),
-                      getattr(self, '_review_print_question_panel', None)):
-                if p and p.layout():
-                    p.layout().setContentsMargins(side_margin, 8, side_margin, 12)
-                    p.layout().setSpacing(10)
-            # Ensure vertical layout for portrait
-            wrap_lay = self._review_wrapper.layout()
-            if wrap_lay:
-                wrap_lay.setDirection(wrap_lay.TopToBottom)
-                wrap_lay.setStretch(0, 3)  # photo container
-                wrap_lay.setStretch(1, 0)  # panel stack
-            self._review_action_panel.setMaximumWidth(16777215)  # reset landscape constraint
-            if _stack:
-                _stack.setMaximumWidth(16777215)
-            for btn in [self._sharing_print_btn, self._sharing_qr_btn,
-                        self._sharing_email_btn, self._sharing_done_btn,
-                        getattr(self, '_review_confirm_yes_btn', None),
-                        getattr(self, '_review_confirm_no_btn', None),
-                        getattr(self, '_review_print_yes_btn', None),
-                        getattr(self, '_review_print_no_btn', None)]:
-                if btn is None:
-                    continue
-                btn.setMinimumHeight(48)
-                btn.setMaximumHeight(56)
-                btn.setFont(QFont("DM Sans", 14, QFont.Bold))
-        else:
-            # Landscape — buttons on the RIGHT side, photo on LEFT
-            screen = self.screen()
-            max_w = screen.geometry().width() if screen else 1920
-            max_h = screen.geometry().height() if screen else 1080
-            self._review_photo_container.setMinimumSize(0, 0)
-            self._review_photo_container.setMaximumSize(16777215, 16777215)
-            self._review_action_panel.setMinimumSize(0, 0)
-            self._review_action_panel.setMaximumWidth(int(max_w * 0.35))
-            self._review_action_panel.setMaximumHeight(16777215)
-            if _stack:
-                _stack.setMinimumSize(0, 0)
-                _stack.setMaximumWidth(int(max_w * 0.35))
-                _stack.setMaximumHeight(16777215)
-            self._review_photo_container.layout().setContentsMargins(10, 10, 0, 10)
-            self._review_action_panel.layout().setContentsMargins(16, 12, 16, 12)
-            self._review_action_panel.layout().setSpacing(8)
-            for p in (getattr(self, '_review_confirm_panel', None),
-                      getattr(self, '_review_print_question_panel', None)):
-                if p and p.layout():
-                    p.layout().setContentsMargins(16, 12, 16, 12)
-                    p.layout().setSpacing(10)
-            # Change wrapper to horizontal layout
-            wrap_lay = self._review_wrapper.layout()
-            if wrap_lay:
-                wrap_lay.setDirection(wrap_lay.LeftToRight)
-                wrap_lay.setStretch(0, 3)  # photo container (left)
-                wrap_lay.setStretch(1, 1)  # panel stack (right)
-            for btn in [self._sharing_print_btn, self._sharing_qr_btn,
-                        self._sharing_email_btn, self._sharing_done_btn,
-                        getattr(self, '_review_confirm_yes_btn', None),
-                        getattr(self, '_review_confirm_no_btn', None),
-                        getattr(self, '_review_print_yes_btn', None),
-                        getattr(self, '_review_print_no_btn', None)]:
-                if btn is None:
-                    continue
-                btn.setMinimumHeight(48)
-                btn.setMaximumHeight(60)
-                btn.setFont(QFont("DM Sans", 14, QFont.Bold))
+        scherm = self.screen()
+        max_w = scherm.geometry().width() if scherm else self.width()
+        max_h = scherm.geometry().height() if scherm else self.height()
+
+        # De band: bovenin de QR-kaart (of de melding die ervoor in de plaats
+        # komt), onderin de knopbalk. De hoogte staat vast zodat er niets
+        # springt; op een ongebruikelijk laag scherm wint de bovengrens.
+        band = (merk.RUIMTE_KRAP + self._REVIEW_QR_KAART_HOOG
+                + merk.RUIMTE_KRAP + bediening.BALK_HOOG)
+        band = min(band, int(max_h * 0.45))
+
+        self._review_photo_container.setMinimumSize(0, 0)
+        self._review_photo_container.setMaximumSize(16777215, 16777215)
+        self._review_photo_container.layout().setContentsMargins(
+            merk.RUIMTE, merk.RUIMTE, merk.RUIMTE, merk.RUIMTE_KRAP)
+        self._review_wrapper.setMaximumWidth(max_w)
+        self.review_strip_label.setMaximumWidth(max_w)
+
+        for paneel in (self._review_action_panel,
+                       getattr(self, '_review_confirm_panel', None),
+                       getattr(self, '_review_print_question_panel', None)):
+            if paneel is None:
+                continue
+            paneel.setMinimumSize(0, 0)
+            paneel.setMaximumWidth(16777215)
+
+        if _stack:
+            _stack.setMinimumSize(0, 0)
+            _stack.setMaximumWidth(16777215)
+            _stack.setFixedHeight(band)
+
+        wrap_lay = self._review_wrapper.layout()
+        if wrap_lay:
+            wrap_lay.setDirection(wrap_lay.TopToBottom)
+            wrap_lay.setStretch(0, 1)   # de foto krijgt wat overblijft
+            wrap_lay.setStretch(1, 0)   # de band houdt zijn vaste hoogte
+
+        # De knophoogtes stonden hier op 48-60 punten en het lettertype op
+        # QFont("DM Sans", 14) — dat laatste rekent in typografische punten en
+        # botst met de beeldpunten uit het stijlblad, waardoor de tekst kleiner
+        # uitkwam dan bedoeld. Allebei weg: maat en letter komen nu uit
+        # bediening.py, één keer, bij het bouwen. Zo kan een hoofdknop van 88
+        # punten hier niet meer stiekem tot 60 worden geknepen.
 
         # Ensure overlays stay on top
         self._sharing_countdown_bar.raise_()
         self._qr_overlay.raise_()
 
-        print(f"[UI] Review layout adjusted: {'portrait' if portrait else 'landscape'}")
+        print(f"[UI] Review-band onderin: {band} punten hoog "
+              f"(scherm {max_w}x{max_h})")
         # Re-scale strip after margins settle
         QTimer.singleShot(50, self._display_review_strip)
 
     def _position_qr_overlay(self):
-        """Position the QR overlay centered, adapts to orientation."""
+        """Zet de QR-overlay midden op het scherm.
+
+        Hier stond een liggende tak die de overlay in het fotogebied
+        centreerde door 360 punten voor het rechterpaneel af te trekken. Dat
+        paneel staat er niet meer — het is de band onderin geworden — dus die
+        aftrek zette de overlay juist scheef.
+        """
         page = self.stack.widget(self.pages["review"])
         pw = page.width()
         ph = page.height()
 
-        if self._is_portrait():
-            # Portrait: center on full width
-            ow = min(460, pw - 30)
-            oh = min(580, ph - 30)
-            x = (pw - ow) // 2
-            y = (ph - oh) // 2
-        else:
-            # Landscape: center in photo area (exclude right panel)
-            photo_w = pw - 360
-            ow, oh = min(480, photo_w - 30), min(580, ph - 30)
-            x = (photo_w - ow) // 2
-            y = (ph - oh) // 2
+        ow = min(480, pw - 30)
+        oh = min(580, ph - 30)
+        x = (pw - ow) // 2
+        y = (ph - oh) // 2
 
         self._qr_overlay.setGeometry(max(0, x), max(0, y), ow, oh)
 
