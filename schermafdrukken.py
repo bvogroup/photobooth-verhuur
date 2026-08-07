@@ -253,10 +253,18 @@ def veilig(naam, maker):
 
 
 def schrijf(widget, pad):
-    """Teken het scherm op de echte resolutie van de tablet en sla het op."""
+    """Teken het scherm op de echte resolutie van de tablet en sla het op.
+
+    Het doek volgt de maat van de widget zelf en niet een vaste liggende maat:
+    het startscherm wordt ook staand getekend, en dan is 2736 x 1824 juist de
+    verkeerde kant op. Stond hier eerst wel vast, en dan viel het logo buiten
+    beeld en bleef er een derde van het doek leeg.
+    """
     widget.show()  # nodig zodat Qt de indeling uitrekent
     QApplication.processEvents()
-    doek = QPixmap(PUNTEN_BREED * VERGROTING, PUNTEN_HOOG * VERGROTING)
+    b = widget.width() or PUNTEN_BREED
+    h = widget.height() or PUNTEN_HOOG
+    doek = QPixmap(b * VERGROTING, h * VERGROTING)
     doek.setDevicePixelRatio(VERGROTING)
     doek.fill(Qt.transparent)
     widget.render(doek)
