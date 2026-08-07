@@ -415,6 +415,15 @@ def main():
                 stapel.show()
                 QApplication.processEvents()
                 bewaar.append(stapel)      # anders ruimt Python hem meteen op
+                # De tegels worden sinds beta.10 in stukjes gemaakt, zodat het
+                # scherm er meteen staat. Voor een AFDRUK moet daar wel op
+                # gewacht worden — anders zie je hier de halve collage die de
+                # gast op de booth maar een paar honderd milliseconde ziet.
+                from PyQt5.QtCore import QElapsedTimer
+                klok = QElapsedTimer()
+                klok.start()
+                while blad._wachtrij and klok.elapsed() < 10000:
+                    QApplication.processEvents()
                 return blad
             blad = veilig(f"startscherm-{stand}-{naam}", maak)
             if blad is not None:
