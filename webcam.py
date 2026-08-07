@@ -73,12 +73,44 @@ class WebcamWorker(QThread):
                 self.frame_ready.emit(buf.tobytes())
             self.msleep(self._LV_SLEEP_MS)
 
+    # JPEG bewaart standaard maar een kwart van de kleurinformatie (4:2:0):
+    # het helderheidskanaal blijft op volle resolutie, maar de twee
+    # kleurkanalen worden gehalveerd in breedte én hoogte. Op een foto van een
+    # gezicht valt dat nauwelijks op, maar op harde kleurovergangen wel — de
+    # rand van een gekleurd overlay-kader, een logo, gekleurde tekst op de
+    # strip. Daar ontstaan dan uitgelopen randjes, en die worden zichtbaarder
+    # naarmate de strip verder wordt bewerkt: de opname wordt geschaald,
+    # geplakt in een sjabloon en nog een keer als JPEG opgeslagen.
+    #
+    # 4:4:4 bewaart de kleur op volle resolutie. De kwaliteit blijft 98 — dit
+    # staat daar los van; kwaliteit regelt hoe grof er wordt afgerond, de
+    # bemonstering regelt hoeveel kleur er überhaupt wordt bewaard.
+    #
+    # Gemeten op de beelden in deze repo (kwaliteit 98):
+    #   1920x1280   219 KB -> 293 KB   (+34%)
+    #   2763x1842   328 KB -> 449 KB   (+37%)
+    #   1080x1920   171 KB -> 246 KB   (+44%)
+    # gemiddeld ongeveer +37%. Op een beeld dat alleen uit kleurruis bestaat —
+    # de theoretische bovengrens — verdubbelt het bestand. In de praktijk komt
+    # dat niet voor.
+    #
+    # Die groei geldt alleen voor de ruwe opname op de schijf van de booth. Wat
+    # naar de cloud gaat wordt apart gecomprimeerd (zie compress_photo in
+    # cloud_storage.py), dus de upload en de wachttijd voor de gast veranderen
+    # hier niet door.
+    _JPEG_PARAMS_CAPTURE = [cv2.IMWRITE_JPEG_QUALITY, 98] if _CV2_AVAILABLE else []
+    if _CV2_AVAILABLE and hasattr(cv2, 'IMWRITE_JPEG_SAMPLING_FACTOR_444'):
+        _JPEG_PARAMS_CAPTURE = _JPEG_PARAMS_CAPTURE + [
+            cv2.IMWRITE_JPEG_SAMPLING_FACTOR,
+            cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444,
+        ]
+
     def get_capture_frame(self):
         """Get the latest full-resolution frame as high-quality JPEG bytes."""
         with self._frame_lock:
             if self._last_raw_frame is not None:
                 _, buf = cv2.imencode('.jpg', self._last_raw_frame,
-                                     [cv2.IMWRITE_JPEG_QUALITY, 98])
+                                      self._JPEG_PARAMS_CAPTURE)
                 return buf.tobytes()
         return None
 
