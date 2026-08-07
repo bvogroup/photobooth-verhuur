@@ -1188,6 +1188,9 @@ class PhotoboothWindow(QMainWindow):
         self._session_prints_used = 0
         self._qr_ready = False
         self._cloud_url = ''
+        # Loopt er nu een cloud-upload? Bepaalt of het deelscherm een spinner
+        # mag tonen of meteen op de lokale terugval-QR moet overschakelen.
+        self._cloud_upload_active = False
 
         self._countdown_phase = None  # "intro" or "counting"
 
@@ -2512,7 +2515,9 @@ class PhotoboothWindow(QMainWindow):
             return
         auth.clear_session()
         self._auth_plan = ""
-        print("[AUTH] Uitgelogd — watermerk geactiveerd")
+        # Geen watermerk of blokkade meer: de verhuur-versie heeft geen
+        # licentie nodig. Uitloggen wist alleen de opgeslagen sessie.
+        print("[AUTH] Uitgelogd — sessie gewist (geen invloed op delen/printen)")
         # Update settings UI immediately (account card)
         self._update_account_info()
         # Rebuild idle page with license banner
@@ -2525,8 +2530,18 @@ class PhotoboothWindow(QMainWindow):
         return True
 
     def _is_logged_in(self):
-        """Check if user is logged in with a valid plan."""
-        return bool(self._auth_plan)
+        """Verhuur-versie: er is geen licentie, dus altijd 'ingelogd'.
+
+        Deze software heeft geen licentie nodig. Vroeger keek deze methode
+        naar self._auth_plan; stond die leeg (bv. nadat iemand op Uitloggen
+        had gedrukt), dan werd de cloud-upload voor de QR-code stilzwijgend
+        overgeslagen en bleef de spinner op het deelscherm eeuwig draaien.
+
+        De methode blijft bestaan — het inlogscherm, de account-kaart en de
+        licentiebanner gebruiken 'm nog — maar hij blokkeert niets meer.
+        Zie ook _is_pro_feature(), dat om dezelfde reden altijd True geeft.
+        """
+        return True
 
     def _build_login_page(self):
         """Build the login / authentication page."""
@@ -8734,8 +8749,12 @@ class PhotoboothWindow(QMainWindow):
         self._maybe_enqueue_linked(gif_path, kind='gif')
 
     def _upload_boomerang_to_cloud(self, gif_path):
-        """Upload boomerang GIF to R2 after it's created (separate from main upload)."""
-        if not self._is_logged_in() or not getattr(config, 'CLOUD_UPLOAD_ENABLED', False):
+        """Upload boomerang GIF to R2 after it's created (separate from main upload).
+
+        Licentiecheck verwijderd: de verhuur-versie heeft geen licentie nodig.
+        Alleen de config-schakelaar bepaalt nog of er geüpload wordt.
+        """
+        if not getattr(config, 'CLOUD_UPLOAD_ENABLED', False):
             return
         if not self.session_id or not gif_path or not os.path.exists(gif_path):
             return
@@ -9045,37 +9064,13 @@ class PhotoboothWindow(QMainWindow):
                     strip.paste(img, (frame.x, frame.y))
                     strip.paste(img, (frame.x + STRIP_W, frame.y))
 
-            # Add watermark if not logged in
-            if not self._is_logged_in():
-                try:
-                    from PIL import ImageDraw, ImageFont
-                    watermark_text = "BOOTHAROO.COM"
-                    overlay = Image.new("RGBA", strip.size, (0, 0, 0, 0))
-                    draw = ImageDraw.Draw(overlay)
-                    # Try to use a large bold font, fall back to default
-                    font_size = 72
-                    try:
-                        font = ImageFont.truetype("arialbd.ttf", font_size)
-                    except (OSError, IOError):
-                        try:
-                            font = ImageFont.truetype("arial.ttf", font_size)
-                        except (OSError, IOError):
-                            font = ImageFont.load_default()
-                    # Draw watermark diagonally across the strip, repeated
-                    tw = draw.textlength(watermark_text, font=font) if hasattr(draw, 'textlength') else font_size * len(watermark_text) * 0.6
-                    for y_pos in range(0, PRINT_H, 300):
-                        for x_pos in range(-200, PRINT_W, int(tw) + 100):
-                            draw.text((x_pos, y_pos), watermark_text,
-                                      fill=(255, 255, 255, 100), font=font)
-                    # Rotate overlay for diagonal effect
-                    overlay = overlay.rotate(30, expand=False, center=(PRINT_W // 2, PRINT_H // 2))
-                    # Composite onto strip
-                    strip = strip.convert("RGBA")
-                    strip = Image.alpha_composite(strip, overlay)
-                    strip = strip.convert("RGB")
-                    print("[STRIP] Watermerk toegevoegd (niet ingelogd)")
-                except Exception as wm_err:
-                    print(f"[STRIP] Watermerk fout: {wm_err}")
+            # Het licentie-watermerk ("BOOTHAROO.COM" diagonaal over de hele
+            # strip) is hier verwijderd. Het hoorde bij het licentieslot en
+            # de verhuur-versie heeft geen licentie nodig. Het stond alleen
+            # aan wanneer _is_logged_in() False gaf — precies de toestand die
+            # ook de QR-upload blokkeerde. Zonder deze verwijdering zou een
+            # booth waarop iemand had uitgelogd de foto's van echte gasten
+            # onbruikbaar maken.
 
             # Landscape canvas (bv. 1800x1200) → bewaar 2 versies:
             #   - display-versie (landscape, voor sharing-screen)
@@ -10486,6 +10481,14 @@ class PhotoboothWindow(QMainWindow):
                 # Inline-QR ook updaten (nieuwe sharing-screen layout)
                 self._update_inline_qr(qr_pixmap, url, ready=True)
                 print(f"[QR] Voorbereid met cloud URL: {url}")
+            elif not getattr(self, '_cloud_upload_active', False):
+                # Er loopt geen upload (uitgezet, mislukt of nooit gestart) en
+                # er is geen cloud-URL → er komt niets meer. Meteen de lokale
+                # terugval-QR tonen in plaats van een spinner die eeuwig
+                # blijft draaien.
+                print("[QR] Geen cloud-upload actief — lokale terugval-QR")
+                generate_session_url(session_id, config.WEB_SERVER_PORT)
+                self._show_local_fallback_qr()
             else:
                 # Cloud upload still in progress — show animated spinner
                 self.qr_label.hide()
@@ -10508,6 +10511,11 @@ class PhotoboothWindow(QMainWindow):
         except Exception as e:
             print(f"[QR] Fout bij voorbereiden: {e}")
             self._qr_ready = False
+            # Ook hier: nooit een draaiende spinner achterlaten.
+            try:
+                self._stop_qr_spinner()
+            except Exception:
+                pass
 
     def _update_inline_qr(self, pixmap, url, ready: bool):
         """Werk de INLINE QR-display bij. Toont of de pixmap of de
@@ -10575,6 +10583,9 @@ class PhotoboothWindow(QMainWindow):
             self.qr_url_label.show()
             self._stop_qr_spinner()
             self._qr_ready = True
+        elif not getattr(self, '_cloud_upload_active', False):
+            # Geen upload meer onderweg → lokale terugval-QR i.p.v. spinner.
+            self._show_local_fallback_qr()
         else:
             # Still uploading — show animated spinner, start polling
             self.qr_label.hide()
@@ -10614,6 +10625,13 @@ class PhotoboothWindow(QMainWindow):
             # User left sharing screen, stop polling
             self._qr_poll_timer.stop()
             self._stop_qr_spinner()
+        elif not getattr(self, '_cloud_upload_active', False):
+            # Vangnet: de upload is geëindigd zonder URL en zonder dat het
+            # signaal ons bereikte (bv. thread gesneuveld). Nooit blijven
+            # pollen op iets dat niet meer komt.
+            print("[QR] Upload niet meer actief zonder cloud-URL — terugval")
+            self._qr_poll_timer.stop()
+            self._show_local_fallback_qr()
 
     def _animate_qr_spinner(self):
         """Animate the QR loading label dots."""
@@ -10765,14 +10783,30 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_show_qr()
 
     def _start_cloud_upload(self):
-        """Upload photo strip to Cloudflare R2 in background."""
+        """Upload photo strip to Cloudflare R2 in background.
+
+        BELANGRIJK — geen enkel pad mag hier stil terugkeren.
+        De gast staat te wachten voor een draaiende spinner; als deze functie
+        afhaakt zonder dat _on_cloud_upload_complete() ooit afgaat, blijft die
+        spinner draaien tot de sessie afloopt. Daarom eindigt élke tak die
+        géén upload start met _on_cloud_upload_complete("") — dat schakelt
+        netjes over op de lokale terugval-QR.
+
+        Het oude "niet ingelogd"-slot is weg: de verhuur-versie heeft geen
+        licentie nodig.
+        """
         self._cloud_url = ''  # Reset
-        if not self._is_logged_in():
-            print("[CLOUD] Overgeslagen — niet ingelogd")
-            return
+        # Loopt er een upload? Zolang dit True is mag het deelscherm een
+        # spinner tonen; is het False en is er geen URL, dan komt er niets
+        # meer en moet direct de lokale terugval-QR verschijnen.
+        self._cloud_upload_active = False
         if not getattr(config, 'CLOUD_UPLOAD_ENABLED', False):
+            print("[CLOUD] Upload staat uit in config — lokale QR")
+            self._on_cloud_upload_complete("")
             return
         if not self.strip_path:
+            print("[CLOUD] Geen fotostrip om te uploaden — lokale QR")
+            self._on_cloud_upload_complete("")
             return
         try:
             from cloud_storage import CloudUploadThread
@@ -10810,17 +10844,23 @@ class PhotoboothWindow(QMainWindow):
             self._cloud_upload_thread.upload_complete.connect(
                 self._on_cloud_upload_complete
             )
+            self._cloud_upload_active = True
             self._cloud_upload_thread.start()
             print("[CLOUD] Upload gestart in achtergrond")
         except ImportError as ie:
             print(f"[CLOUD] Import fout: {ie}")
             import traceback
             traceback.print_exc()
+            self._on_cloud_upload_complete("")
         except Exception as e:
             print(f"[CLOUD] Fout bij starten upload: {e}")
+            self._on_cloud_upload_complete("")
 
     def _on_cloud_upload_complete(self, url):
         """Called when cloud upload finishes."""
+        # Vanaf hier loopt er geen upload meer — het deelscherm mag dus geen
+        # spinner meer tonen, ongeacht of de upload lukte of niet.
+        self._cloud_upload_active = False
         if url:
             self._cloud_url = url
             print(f"[CLOUD] Upload voltooid: {url}")
@@ -10846,38 +10886,54 @@ class PhotoboothWindow(QMainWindow):
                 except Exception as e:
                     print(f"[CLOUD] Kon QR niet bijwerken: {e}")
         else:
-            # Upload mislukt → stop poll-timer + spinner, val terug op lokale URL
-            # (web_server is al geregistreerd in _prepare_qr_code), zodat de QR
-            # niet eeuwig blijft hangen op "uploaden...".
             print("[CLOUD] Upload mislukt, fallback naar lokale QR")
-            try:
-                if hasattr(self, '_qr_poll_timer') and self._qr_poll_timer.isActive():
-                    self._qr_poll_timer.stop()
-            except Exception:
-                pass
-            try:
-                from qr_generator import generate_session_url, generate_qr_pixmap
-                if self.session_id:
-                    local_url = generate_session_url(
-                        self.session_id, config.WEB_SERVER_PORT
-                    )
-                    if local_url and self.state == State.REVIEW:
-                        qr_pixmap = generate_qr_pixmap(local_url, size=360)
-                        self.qr_label.setPixmap(qr_pixmap)
-                        self.qr_url_label.setText(local_url)
-                        self.qr_label.show()
-                        self.qr_url_label.show()
-                        self._stop_qr_spinner()
-                        self._qr_ready = True
-                        # Inline QR ook naar de lokale fallback-URL
-                        self._update_inline_qr(qr_pixmap, local_url, ready=True)
-                        print(f"[CLOUD] Fallback QR (lokaal) getoond: {local_url}")
-            except Exception as e:
-                print(f"[CLOUD] Fallback QR mislukt: {e}")
-                try:
+            self._show_local_fallback_qr()
+
+    def _show_local_fallback_qr(self):
+        """Toon de lokale terugval-QR (booth-webserver op het wifi-netwerk).
+
+        Wordt gebruikt zodra vaststaat dat er géén cloud-URL meer komt:
+        upload mislukt, upload uitgeschakeld, of hij is nooit gestart.
+        Stopt de poll-timer en de spinner, zodat de gast nooit voor een
+        eeuwig draaiend rondje staat.
+
+        Staat de gast nog niet op het deelscherm, dan wordt hier alleen de
+        spinner-state opgeruimd; _prepare_qr_code() roept deze functie
+        opnieuw aan zodra het deelscherm verschijnt (het ziet dan dat
+        _cloud_upload_active False is).
+        """
+        try:
+            if hasattr(self, '_qr_poll_timer') and self._qr_poll_timer is not None \
+                    and self._qr_poll_timer.isActive():
+                self._qr_poll_timer.stop()
+        except Exception:
+            pass
+        try:
+            from qr_generator import generate_session_url, generate_qr_pixmap
+            if self.session_id:
+                local_url = generate_session_url(
+                    self.session_id, config.WEB_SERVER_PORT
+                )
+                if local_url and self.state == State.REVIEW:
+                    qr_pixmap = generate_qr_pixmap(local_url, size=360)
+                    self.qr_label.setPixmap(qr_pixmap)
+                    self.qr_url_label.setText(local_url)
+                    self.qr_label.show()
+                    self.qr_url_label.show()
                     self._stop_qr_spinner()
-                except Exception:
-                    pass
+                    self._qr_ready = True
+                    # Inline QR ook naar de lokale fallback-URL
+                    self._update_inline_qr(qr_pixmap, local_url, ready=True)
+                    print(f"[CLOUD] Fallback QR (lokaal) getoond: {local_url}")
+                    return
+        except Exception as e:
+            print(f"[CLOUD] Fallback QR mislukt: {e}")
+        # Geen QR gelukt (of gast staat niet op het deelscherm): hoe dan ook
+        # de spinner stoppen — beter geen QR dan een eeuwig rondje.
+        try:
+            self._stop_qr_spinner()
+        except Exception:
+            pass
 
     def _start_gdrive_upload(self):
         """Upload photos to Google Drive in the background (if enabled)."""

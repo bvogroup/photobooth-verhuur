@@ -69,6 +69,13 @@ class BoothSettings:
     # "Powered by Bootharoo"). Booth-wide want representeert jouw zaak.
     qr_branding_enabled: bool = False
     qr_branding_text: str = ""
+    # Waar de QR-code van de gast naartoe wijst. Leeg = de waarde uit
+    # config.CLOUD_GALLERY_URL_TEMPLATE, en is die ook leeg dan het oude
+    # {CLOUD_WORKER_URL}/gallery/<sessie-id>. Zo kan één booth als proef naar
+    # de MyBoothBox-pagina wijzen zonder dat er een nieuwe build nodig is.
+    # {session_id} wordt vervangen; zonder plaatshouder wordt het id
+    # achteraan geplakt. Zie cloud_storage.gallery_url_for().
+    gallery_url_template: str = ""
 
     # ── Camera ─────────────────────────────────────────────────
     countdown_seconds: int = 3
@@ -225,10 +232,11 @@ class BoothSettings:
         instance.save_photos_locally = True
         # Verhuur-versie is ALTIJD Linked-modus — geen Standalone-flow meer.
         instance.booth_mode = "linked"
-        # update_channel staat hier BEWUST niet tussen: die stelt de operator
-        # zelf in en de keuze moet een herstart overleven. Wel een onbekende
-        # waarde terugzetten naar productie, zodat een typefout in het
-        # json-bestand nooit tot een onbekend updatekanaal leidt.
+        # update_channel en gallery_url_template staan hier BEWUST niet
+        # tussen: die stelt de operator zelf in en ze moeten een herstart
+        # overleven. Wel een onbekende waarde terugzetten naar productie,
+        # zodat een typefout in het json-bestand nooit tot een onbekend
+        # updatekanaal leidt.
         if instance.update_channel not in ("production", "beta"):
             instance.update_channel = "production"
 
