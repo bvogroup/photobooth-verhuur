@@ -9916,6 +9916,10 @@ class PhotoboothWindow(QMainWindow):
         self._review_pending_qr = bool(qr_on)
         if hasattr(self, '_review_panel_stack'):
             self._review_panel_stack.setCurrentIndex(0)
+        # Stond de stapel al op 0 — en dat is bij elke sessie na de eerste zo —
+        # dan vuurt currentChanged niet en zou de QR van de vorige groep blijven
+        # staan. Daarom hier hoe dan ook één keer expliciet.
+        self._werk_zijkolom_bij()
 
         # Adapt layout for current orientation
         self._adapt_review_layout()
