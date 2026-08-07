@@ -382,6 +382,25 @@ def main():
 
     _gasten = veilig("gastschermen", gastschermen)  # noqa: F841
 
+    # De afsluit-/overdrachtflow (code 2718). "voor-" is de flow zoals hij
+    # was, "na-" is de uploadpoort die er tussen de printgoedkeuring en de
+    # updatecheck bij is gekomen. Naast elkaar leggen dus.
+    def overdrachtschermen():
+        pb = proefvenster.leen_photobooth()
+        bewaar = []
+        for naam, venster, overlay in proefvenster.overdrachtschermen(
+                pb, PUNTEN_BREED, PUNTEN_HOOG):
+            bewaar.append(venster)
+            hoek = getattr(overlay, 'hoekknop', None)
+            if hoek is not None:
+                print(f"[AFDRUK] overdracht-{naam}: overslaan-knopje op "
+                      f"{hoek.x()}x{hoek.y()} van {PUNTEN_BREED}x{PUNTEN_HOOG} "
+                      f"punten ({hoek.width()}x{hoek.height()} groot)", flush=True)
+            schrijf(overlay, os.path.join(map_naam, f"overdracht-{naam}.png"))
+        return bewaar
+
+    _overdracht = veilig("overdrachtschermen", overdrachtschermen)  # noqa: F841
+
     # Het startscherm in zijn vier toestanden, liggend en staand. Met een
     # nagemaakt event, want op een bouwserver staat er geen.
     raw = _nepevent(map_naam)

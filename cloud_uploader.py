@@ -788,6 +788,78 @@ def clear_uploaded(booking_id: str) -> int:
     return n
 
 
+def last_errors(booking_id: str, limit: int = 2) -> list:
+    """De laatste foutmeldingen uit de wachtrij, ontdubbeld.
+
+    Voor het overdrachtsscherm: als een upload blijft hangen wil de
+    verhuurder zien WAAROM, niet alleen dát het niet lukt. Alleen entries
+    die nog niet klaar zijn tellen mee — een oude fout bij een inmiddels
+    geüploade foto is geen nieuws.
+    """
+    with _get_queue_lock(booking_id):
+        q = _read_queue(booking_id)
+    fouten = []
+    for meta in q.get("files", {}).values():
+        if meta.get("state") == "uploaded":
+            continue
+        err = (meta.get("last_error") or "").strip()
+        if err and err not in fouten:
+            fouten.append(err)
+        if len(fouten) >= limit:
+            break
+    return fouten
+
+
+def uploaded_filenames(booking_id: str) -> set:
+    """Bestandsnamen die AANTOONBAAR in de cloud staan (state == 'uploaded').
+
+    Dit is de enige toestemming om een foto lokaal te wissen: staat een
+    naam hier niet in, dan blijft het bestand op de booth. Zie opruimen.py.
+    """
+    with _get_queue_lock(booking_id):
+        q = _read_queue(booking_id)
+    return {naam for naam, meta in q.get("files", {}).items()
+            if meta.get("state") == "uploaded"}
+
+
+def purge_queue(booking_id: str) -> dict:
+    """Gooi de hele wachtrij van één booking weg: pending/, uploaded/, manifest.
+
+    Onherroepelijk (os.remove, niet naar de prullenbak) — er mogen geen
+    gastfoto's op het apparaat achterblijven. token.json blijft staan: dat
+    is geen foto en houdt de booking herkenbaar mocht er later alsnog iets
+    voor deze boeking langskomen.
+
+    Returns {"bestanden": n, "bytes": n, "fouten": [...]}.
+    """
+    qd = queue_dir(booking_id)
+    n = 0
+    bytes_vrij = 0
+    fouten = []
+    with _get_queue_lock(booking_id):
+        for sub in ("pending", "uploaded"):
+            d = os.path.join(qd, sub)
+            if not os.path.isdir(d):
+                continue
+            for naam in os.listdir(d):
+                pad = os.path.join(d, naam)
+                if not os.path.isfile(pad):
+                    continue
+                try:
+                    maat = os.path.getsize(pad)
+                except OSError:
+                    maat = 0
+                try:
+                    os.remove(pad)
+                    n += 1
+                    bytes_vrij += maat
+                except Exception as e:
+                    fouten.append(f"{naam}: {e}")
+        _write_queue(booking_id, {"files": {}})
+    print(f"[QUEUE] Wachtrij geleegd voor {booking_id}: {n} bestand(en)")
+    return {"bestanden": n, "bytes": bytes_vrij, "fouten": fouten}
+
+
 # ── Token-registry: vindt tokens uit events JSONs ────────────────────
 
 def discover_pending_uploads(events_dir: str) -> dict:

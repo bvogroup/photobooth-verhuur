@@ -139,6 +139,125 @@ class Proefvenster(QMainWindow):
     _on_sharing_countdown_tick = _niets
 
 
+class Overdrachtvenster(QMainWindow):
+    """De overdrachtsschermen (code 2718 bij Loskoppelen) los kunnen tekenen.
+
+    Diezelfde truc als hierboven: _handover_overlay wordt ONVERANDERD van
+    PhotoboothWindow geleend en op een kaal venster van de werkelijke maat
+    aangeroepen. Wat eruit komt is dus het scherm dat de verhuurder na afloop
+    van een event te zien krijgt, niet een nabootsing ervan.
+
+    Gebruikt door test_overdracht.py en schermafdrukken.py.
+    """
+
+    GELEEND = ("_handover_overlay", "_handover_clear_overlay",
+               "_handover_upload_tekst", "_handover_openstaand")
+    # Een staticmethod hoort niet aan een instantie gebonden te worden: dan
+    # zou self als eerste argument meegaan en klopt de aanroep niet meer.
+    OVERGENOMEN = ("_handover_uploads_klaar",)
+
+    def __init__(self, pb, breedte, hoogte):
+        super().__init__()
+        self._nepscherm = Nepscherm(breedte, hoogte)
+        for naam in self.GELEEND:
+            setattr(self, naam, getattr(pb.PhotoboothWindow, naam).__get__(self))
+        for naam in self.OVERGENOMEN:
+            setattr(self, naam, getattr(pb.PhotoboothWindow, naam))
+        self._handover_overlay_widget = None
+        self.setCentralWidget(QWidget())
+        self.resize(breedte, hoogte)
+        self.show()
+        QApplication.processEvents()
+
+    def screen(self):
+        return self._nepscherm
+
+
+def overdrachtschermen(pb, breedte, hoogte):
+    """De schermen van de afsluitflow, vóór en ná de uploadstap.
+
+    Geeft [(naam, venster, overlay)]. De vensters moeten door de aanroeper
+    bewaard worden, anders ruimt Python ze meteen op.
+
+    De "voor"-schermen zijn de flow zoals hij was: printgoedkeuring, wifi,
+    update. Ze staan hier zodat er iets is om de nieuwe schermen naast te
+    leggen — ze worden door dezelfde methode getekend, dus wat je ziet is
+    precies wat er stond.
+    """
+    import config
+
+    uit = []
+
+    def scherm(naam, *args, **kwargs):
+        v = Overdrachtvenster(pb, breedte, hoogte)
+        ov = v._handover_overlay(*args, **kwargs)
+        QApplication.processEvents()
+        uit.append((naam, v, ov))
+        return v, ov
+
+    # ── Zoals het was ────────────────────────────────────────────────
+    scherm("voor-print-goed", "Ziet de print er goed uit?",
+           buttons=[("Ja", config.COLOR_SUCCESS, lambda: None),
+                    ("Nee", config.COLOR_DANGER, lambda: None)])
+    scherm("voor-geen-wifi", "Geen wifi",
+           subtitle="Zet de photobooth terug op wifi en probeer opnieuw.",
+           buttons=[("Wifi instellen", config.COLOR_PRIMARY, lambda: None),
+                    ("Doorgaan", config.COLOR_SECONDARY, lambda: None),
+                    ("Overslaan", config.COLOR_DANGER, lambda: None)])
+    scherm("voor-up-to-date", "Je bent up-to-date",
+           subtitle="Versie 1.99.149 (kanaal beta)",
+           buttons=[("Doorgaan", config.COLOR_SUCCESS, lambda: None)])
+
+    # ── Zoals het nu is: de uploadpoort ───────────────────────────────
+    scherm("na-geen-wifi-uploaden", "Er moeten nog foto's geüpload worden",
+           subtitle=("48 van 132 foto's staan nog op de booth en ik zie geen "
+                     "wifi. Zet de booth op wifi en ga daarna verder."),
+           buttons=[("Wifi instellen", config.COLOR_PRIMARY, lambda: None),
+                    ("Doorgaan", config.COLOR_SUCCESS, lambda: None)],
+           corner_button=("uploaden overslaan", lambda: None))
+
+    v = Overdrachtvenster(pb, breedte, hoogte)
+    ov = v._handover_overlay(
+        "Foto's uploaden…",
+        subtitle=v._handover_upload_tekst(
+            {"total": 132, "uploaded": 84, "pending": 48, "uploading": 0,
+             "failed": 0, "missing": 0}),
+        progress=(84, 132),
+        corner_button=("uploaden overslaan", lambda: None))
+    QApplication.processEvents()
+    uit.append(("na-uploaden", v, ov))
+
+    scherm("na-uploaden-stilgevallen", "Foto's uploaden…",
+           subtitle=("84 van 132 foto's geüpload  ·  nog 48 te gaan\n"
+                     "Er komt al even niets binnen. Staat de booth nog op wifi?"),
+           progress=(84, 132),
+           buttons=[("Wifi instellen", config.COLOR_PRIMARY, lambda: None),
+                    ("Opnieuw proberen", config.COLOR_SECONDARY, lambda: None)],
+           corner_button=("uploaden overslaan", lambda: None))
+
+    scherm("na-uploaden-vastgelopen", "Uploaden lukt niet",
+           subtitle=("129 van 132 foto's geüpload  ·  3 niet meer op de booth\n"
+                     "Die bestanden zijn van de booth verdwenen en komen er "
+                     "niet meer bij. Er wordt niets gewist."),
+           progress=(129, 132),
+           buttons=[("Opnieuw proberen", config.COLOR_PRIMARY, lambda: None),
+                    ("Wifi instellen", config.COLOR_SECONDARY, lambda: None)],
+           corner_button=("uploaden overslaan", lambda: None))
+
+    scherm("na-booth-leeg", "Booth is leeg",
+           subtitle=("132 foto('s) en 132 wachtrijbestand(en) gewist  ·  "
+                     "1,4 GB vrijgemaakt.\n4 bestand(en) blijven staan: die "
+                     "zijn nooit geüpload, dus die gooit de booth niet weg."),
+           buttons=[("Doorgaan", config.COLOR_SUCCESS, lambda: None)])
+
+    scherm("na-niets-gewist", "Foto's blijven op de booth staan",
+           subtitle=("Nog niet alles staat in de cloud (7 pending) — er is "
+                     "niets gewist."),
+           buttons=[("Doorgaan", config.COLOR_SUCCESS, lambda: None)])
+
+    return uit
+
+
 def nepsessie(map_naam):
     """Een fotostrook en een boemerang op schijf, zoals een sessie ze achterlaat.
 

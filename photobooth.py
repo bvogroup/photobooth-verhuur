@@ -983,6 +983,10 @@ class PhotoboothWindow(QMainWindow):
     # Overdracht/afsluit-testflow (bg-thread → main thread)
     _handover_wifi_signal = pyqtSignal(bool)    # heeft internet ja/nee
     _handover_update_signal = pyqtSignal(object) # dict van updater.check_for_update
+    # Uploadpoort in diezelfde flow: eigen signalen, want de wifi-check van de
+    # uploadpoort loopt naar een ander scherm dan die vóór de updatecheck.
+    _handover_upload_net_signal = pyqtSignal(bool)  # internet ja/nee
+    _handover_wipe_signal = pyqtSignal(object)      # dict van opruimen.ruim_op
 
     def __init__(self):
         super().__init__()
@@ -1135,6 +1139,8 @@ class PhotoboothWindow(QMainWindow):
         self._filter_ready_signal.connect(self._on_filter_thumbs_ready)
         self._handover_wifi_signal.connect(self._on_handover_wifi)
         self._handover_update_signal.connect(self._on_handover_update)
+        self._handover_upload_net_signal.connect(self._on_handover_upload_net)
+        self._handover_wipe_signal.connect(self._on_handover_wiped)
         # Timer voor 2-sec wifi-check op idle scherm (zelf gestart in _go_idle)
         self._idle_wifi_check_timer = QTimer(self)
         self._idle_wifi_check_timer.setInterval(2000)
@@ -14599,6 +14605,17 @@ class PhotoboothWindow(QMainWindow):
             self._handover_active = True
             self._handover_photo_path = None
             self._handover_pending_update = None
+            # Uploadpoort: schone lei. _handover_booking_id wordt pas bij de
+            # poort zelf gevuld en blijft daarna staan — na _do_uncouple_event()
+            # is het event leeg en is dit de enige bron van de booking.
+            self._handover_booking_id = ''
+            self._handover_token = ''
+            self._handover_brand = ''
+            self._handover_fotomap = ''
+            self._handover_upload_status = {}
+            self._handover_upload_skipped = False
+            self._handover_wifi_gedaan = False
+            self._handover_stop_upload_timer()
             self.current_photo_num = 0
             # num_photos is read-only (afgeleid van de template) en hoeft niet
             # gezet te worden: _on_capture_complete vertakt ná de 1e foto al
@@ -14655,9 +14672,21 @@ class PhotoboothWindow(QMainWindow):
                 pass
         self._handover_overlay_widget = None
 
-    def _handover_overlay(self, title, subtitle="", image_path=None, buttons=None):
-        """Fullscreen vraag-/melding-overlay met 1-3 knoppen."""
-        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+    def _handover_overlay(self, title, subtitle="", image_path=None, buttons=None,
+                          progress=None, corner_button=None):
+        """Fullscreen vraag-/melding-overlay met 1-3 knoppen.
+
+        progress = (klaar, totaal) legt er een dunne voortgangsbalk onder.
+        corner_button = (tekst, functie) zet een piepklein knopje linksonder
+        in de hoek. Dat is de nooduitgang bij het uploaden: hij hoort er te
+        zijn, maar hij hoort niet uit te nodigen — het moet gewoon goed komen.
+
+        Het resultaat hangt als ov.titel_label / ov.subtitel_label /
+        ov.balk aan de overlay, zodat een lopende voortgang bijgewerkt kan
+        worden zonder het hele scherm opnieuw op te bouwen (dat knippert).
+        """
+        from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                                     QPushButton, QProgressBar)
         self._handover_clear_overlay()
         ov = QWidget(self)
         ov.setGeometry(0, 0, self.width(), self.height())
@@ -14673,14 +14702,42 @@ class PhotoboothWindow(QMainWindow):
         t.setStyleSheet("color: white; background: transparent;")
         t.setWordWrap(True)
         lay.addWidget(t)
+        ov.titel_label = t
 
+        ov.subtitel_label = None
         if subtitle:
             s = QLabel(subtitle)
             s.setAlignment(Qt.AlignCenter)
             s.setFont(QFont("DM Sans", 16))
             s.setStyleSheet("color: #aaa; background: transparent;")
             s.setWordWrap(True)
+            # Vaste hoogte: de tekst verandert elke seconde tijdens het
+            # uploaden en mag de knoppen eronder niet laten verspringen.
+            s.setMinimumHeight(64)
             lay.addWidget(s)
+            ov.subtitel_label = s
+
+        ov.balk = None
+        if progress is not None:
+            klaar, totaal = progress
+            balk = QProgressBar()
+            balk.setTextVisible(False)
+            balk.setFixedHeight(14)
+            balk.setMaximumWidth(720)
+            balk.setRange(0, max(1, int(totaal)))
+            balk.setValue(max(0, int(klaar)))
+            balk.setStyleSheet(
+                "QProgressBar { background: #24242e; border: none; "
+                "border-radius: 7px; }"
+                f"QProgressBar::chunk {{ background: {config.COLOR_BRAND_GREEN}; "
+                "border-radius: 7px; }"
+            )
+            balkrij = QHBoxLayout()
+            balkrij.addStretch()
+            balkrij.addWidget(balk)
+            balkrij.addStretch()
+            lay.addLayout(balkrij)
+            ov.balk = balk
 
         if image_path:
             img = _FitLabel()
@@ -14713,9 +14770,29 @@ class PhotoboothWindow(QMainWindow):
         lay.addLayout(row)
         lay.addStretch()
 
+        # Het overslaan-knopje. Los van de opmaak neergezet, helemaal in de
+        # hoek linksonder: niet in de rij met de echte knoppen, want dan gaat
+        # het meetellen als keuze. Grijs op bijna-zwart, kleine letter.
+        ov.hoekknop = None
+        if corner_button:
+            hoek_tekst, hoek_cb = corner_button
+            h = QPushButton(hoek_tekst, ov)
+            h.setCursor(Qt.PointingHandCursor)
+            h.setFont(QFont("DM Sans", 10))
+            h.setStyleSheet(
+                "QPushButton { background: transparent; color: #43434f; "
+                "border: none; padding: 6px 10px; text-align: left; }"
+                "QPushButton:hover { color: #6b6b7a; }"
+            )
+            h.adjustSize()
+            h.move(20, max(0, ov.height() - h.height() - 16))
+            h.clicked.connect(lambda _=False, f=hoek_cb: f())
+            ov.hoekknop = h
+
         ov.show()
         ov.raise_()
         self._handover_overlay_widget = ov
+        return ov
 
     def _handover_photo_ok(self):
         """Foto goedgekeurd → losse foto direct printen (geen vertraging).
@@ -14764,8 +14841,401 @@ class PhotoboothWindow(QMainWindow):
                      ("Nee", config.COLOR_DANGER, self._handover_abort)])
 
     def _handover_print_confirmed(self):
-        """Print goedgekeurd → wifi + update-check."""
-        self._handover_check_wifi()
+        """Print goedgekeurd → eerst de uploadpoort, dan pas de updatecheck."""
+        self._handover_check_uploads()
+
+    # ── Uploadpoort ───────────────────────────────────────────────────
+    # Tussen de printgoedkeuring en de updatecheck: staan alle foto's van het
+    # gekoppelde event in de cloud? Zo ja → de booth wordt leeggemaakt. Zo nee
+    # → uploaden, met de voortgang in beeld. Er is één nooduitgang: het
+    # piepkleine knopje linksonder. Wie dat gebruikt, wist niets.
+    #
+    # De uploadpoort neemt de wifi-vraag over van _handover_check_wifi zodra
+    # hij er zelf één gesteld heeft (_handover_wifi_gedaan), zodat de
+    # verhuurder niet twee keer achter elkaar hetzelfde wifi-verhaal krijgt.
+
+    def _handover_upload_context(self):
+        """(booking_id, token, brand, fotomap) van het nu gekoppelde event.
+
+        Wordt aan het begin van de poort vastgelegd in self._handover_*, want
+        _do_uncouple_event() gooit linked_booking_id later leeg en dan is er
+        niets meer te uploaden of te wissen.
+        """
+        ev = self.active_event
+        booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
+        token = getattr(ev, 'linked_token', '') if ev else ''
+        try:
+            fotomap = self._get_event_photo_dir() if ev else ''
+        except Exception as e:
+            print(f"[HANDOVER] Fotomap onbekend: {e}")
+            fotomap = ''
+        return booking_id, token, (getattr(self, 'backend_brand', '') or 'hippe'), fotomap
+
+    def _handover_check_uploads(self):
+        """Poortwachter: is alles van dit event al geüpload?"""
+        self._handover_upload_skipped = False
+        self._handover_wifi_gedaan = False
+        self._handover_upload_status = {}
+        booking_id, token, brand, fotomap = self._handover_upload_context()
+        self._handover_booking_id = booking_id
+        self._handover_token = token
+        self._handover_brand = brand
+        self._handover_fotomap = fotomap
+
+        if not booking_id:
+            # Booth staat los — niets te uploaden, niets te wissen.
+            print("[HANDOVER] Geen gekoppeld event — uploadstap overgeslagen")
+            self._handover_check_wifi()
+            return
+        try:
+            from cloud_uploader import get_status, save_queue_token
+            status = get_status(booking_id)
+            # Vangnet: token bij de wachtrij bewaren zodat een overgeslagen
+            # wachtrij ook ná het loskoppelen door de watchdog opgepakt wordt.
+            if token:
+                save_queue_token(booking_id, token, brand=brand)
+        except Exception as e:
+            print(f"[HANDOVER] Uploadstatus onbekend: {e}")
+            self._handover_check_wifi()
+            return
+
+        self._handover_upload_status = status
+        if status.get("total", 0) <= 0:
+            print("[HANDOVER] Geen foto's in de wachtrij — uploadstap overgeslagen")
+            self._handover_check_wifi()
+            return
+        if self._handover_uploads_klaar(status):
+            self._handover_start_wipe()
+            return
+        self._handover_upload_check_net()
+
+    @staticmethod
+    def _handover_uploads_klaar(status) -> bool:
+        """Alles in de cloud? Alleen dan mag er straks gewist worden."""
+        status = status or {}
+        rest = sum(int(status.get(k, 0) or 0)
+                   for k in ("pending", "uploading", "failed", "missing"))
+        totaal = int(status.get("total", 0) or 0)
+        return totaal > 0 and rest == 0 and int(status.get("uploaded", 0) or 0) == totaal
+
+    def _handover_openstaand(self, status) -> int:
+        status = status or {}
+        return sum(int(status.get(k, 0) or 0)
+                   for k in ("pending", "uploading", "failed", "missing"))
+
+    def _handover_upload_check_net(self):
+        """Wifi-check die bij de uploadpoort hoort (eigen scherm, eigen tekst)."""
+        openstaand = self._handover_openstaand(self._handover_upload_status)
+        self._handover_overlay(
+            "Verbinding controleren…",
+            subtitle=f"Er staan nog {openstaand} foto('s) klaar om te uploaden.")
+
+        def _work():
+            ok = self._handover_has_internet()
+            self._handover_upload_net_signal.emit(ok)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_handover_upload_net(self, ok):
+        if not getattr(self, '_handover_active', False):
+            return
+        # Vanaf hier is het wifi-verhaal verteld; de losse wifi-check vóór de
+        # updatecheck hoeft het niet nog eens te doen.
+        self._handover_wifi_gedaan = True
+        if not ok:
+            status = self._handover_upload_status or {}
+            openstaand = self._handover_openstaand(status)
+            self._handover_overlay(
+                "Er moeten nog foto's geüpload worden",
+                subtitle=(f"{openstaand} van {status.get('total', 0)} foto's staan "
+                          f"nog op de booth en ik zie geen wifi. Zet de booth op "
+                          f"wifi en ga daarna verder."),
+                buttons=[("Wifi instellen", config.COLOR_PRIMARY, self._handover_open_wifi),
+                         ("Doorgaan", config.COLOR_SUCCESS, self._handover_upload_check_net)],
+                corner_button=("uploaden overslaan", self._handover_skip_uploads))
+            return
+        self._handover_start_uploads()
+
+    def _handover_start_uploads(self):
+        """Zet de uploader aan en toon de voortgang tot het klaar is."""
+        booking_id = getattr(self, '_handover_booking_id', '')
+        token = getattr(self, '_handover_token', '')
+        brand = getattr(self, '_handover_brand', 'hippe')
+        if not booking_id:
+            self._handover_after_uploads()
+            return
+        try:
+            from cloud_uploader import start_worker, force_retry_all
+            if token:
+                start_worker(booking_id, token, brand=brand)
+            else:
+                print("[HANDOVER] Geen token — wachtrij kan niet uploaden")
+            # Alles wat op een backoff-timer stond mag nu direct: de
+            # verhuurder staat ernaast te wachten.
+            force_retry_all(booking_id)
+        except Exception as e:
+            print(f"[HANDOVER] Uploader starten mislukt: {e}")
+
+        import time as _time
+        status = self._handover_upload_status or {}
+        # Stilstand-bewaking: valt het netwerk halverwege weg, dan blijft de
+        # teller staan terwijl het scherm vrolijk "uploaden…" zegt. Na
+        # _HANDOVER_STIL_NA seconden zonder een enkele nieuwe foto vraagt het
+        # scherm zelf of de wifi er nog is.
+        self._handover_upload_laatste = int(status.get("uploaded", 0) or 0)
+        self._handover_upload_stil_sinds = _time.time()
+        self._handover_upload_stil = False
+        self._handover_toon_uploadscherm(status)
+        self._handover_start_upload_timer()
+
+    # Zoveel seconden zonder één nieuwe foto en het scherm gaat het vragen.
+    _HANDOVER_STIL_NA = 45
+
+    def _handover_toon_uploadscherm(self, status, stil=False):
+        """Het uploadscherm opbouwen. stil=True → er komt al even niets binnen."""
+        status = dict(status or {})
+        tekst = self._handover_upload_tekst(status)
+        knoppen = None
+        if stil:
+            tekst += ("\nEr komt al even niets binnen. Staat de booth nog op wifi?")
+            knoppen = [("Wifi instellen", config.COLOR_PRIMARY, self._handover_open_wifi),
+                       ("Opnieuw proberen", config.COLOR_SECONDARY,
+                        self._handover_start_uploads)]
+        return self._handover_overlay(
+            "Foto's uploaden…",
+            subtitle=tekst,
+            progress=(status.get("uploaded", 0), status.get("total", 1)),
+            buttons=knoppen,
+            corner_button=("uploaden overslaan", self._handover_skip_uploads))
+
+    def _handover_start_upload_timer(self):
+        """Ververs de voortgang elke seconde. Leest alleen een klein JSON —
+        het uploaden zelf gebeurt in de worker-thread, niet hier."""
+        self._handover_stop_upload_timer()
+        tmr = QTimer(self)
+        tmr.setInterval(1000)
+        tmr.timeout.connect(self._handover_upload_tick)
+        self._handover_upload_timer = tmr
+        tmr.start()
+
+    def _handover_stop_upload_timer(self):
+        tmr = getattr(self, '_handover_upload_timer', None)
+        if tmr is not None:
+            try:
+                tmr.stop()
+                tmr.deleteLater()
+            except Exception:
+                pass
+        self._handover_upload_timer = None
+
+    def _handover_upload_tekst(self, status) -> str:
+        """De regel onder de titel tijdens het uploaden."""
+        import time as _time
+        status = status or {}
+        totaal = int(status.get("total", 0) or 0)
+        klaar = int(status.get("uploaded", 0) or 0)
+        regels = [f"{klaar} van {totaal} foto's geüpload"]
+        wacht = int(status.get("pending", 0) or 0) + int(status.get("uploading", 0) or 0)
+        if wacht:
+            regels.append(f"nog {wacht} te gaan")
+        if status.get("failed"):
+            regels.append(f"{status['failed']} mislukt")
+        if status.get("missing"):
+            regels.append(f"{status['missing']} niet meer op de booth")
+        tekst = "  ·  ".join(regels)
+        nra = status.get("next_retry_at") or 0
+        if nra:
+            over = int(nra - _time.time())
+            if over > 1:
+                tekst += f"\nVolgende poging over {over} seconden."
+        fout = (status.get("_fout") or "").strip()
+        if fout:
+            tekst += f"\n{fout[:140]}"
+        return tekst
+
+    def _handover_upload_tick(self):
+        """Elke seconde: status ophalen, scherm bijwerken, klaar? dan door."""
+        if not getattr(self, '_handover_active', False):
+            self._handover_stop_upload_timer()
+            return
+        booking_id = getattr(self, '_handover_booking_id', '')
+        if not booking_id:
+            self._handover_stop_upload_timer()
+            self._handover_after_uploads()
+            return
+        try:
+            from cloud_uploader import get_status, last_errors
+            status = get_status(booking_id)
+        except Exception as e:
+            print(f"[HANDOVER] Status ophalen mislukt: {e}")
+            return
+        self._handover_upload_status = status
+
+        if self._handover_uploads_klaar(status):
+            self._handover_stop_upload_timer()
+            self._handover_start_wipe()
+            return
+
+        bezig = int(status.get("pending", 0) or 0) + int(status.get("uploading", 0) or 0)
+        if bezig == 0:
+            # Niets meer te proberen, maar ook niet alles binnen: mislukt of
+            # het bronbestand is weg. Doorgaan heeft geen zin zonder ingrijpen.
+            self._handover_stop_upload_timer()
+            self._handover_upload_vastgelopen(status)
+            return
+
+        try:
+            fouten = last_errors(booking_id, limit=1)
+        except Exception:
+            fouten = []
+        status = dict(status)
+        status["_fout"] = fouten[0] if fouten else ""
+
+        # Stilstand: schuift de teller, dan loopt het. Schuift hij een tijd
+        # lang niet, dan is er waarschijnlijk geen netwerk meer en hoort het
+        # scherm dat te zeggen in plaats van eeuwig "uploaden…" te melden.
+        import time as _time
+        klaar = int(status.get("uploaded", 0) or 0)
+        nu = _time.time()
+        if klaar != getattr(self, '_handover_upload_laatste', -1):
+            self._handover_upload_laatste = klaar
+            self._handover_upload_stil_sinds = nu
+            if getattr(self, '_handover_upload_stil', False):
+                self._handover_upload_stil = False
+                self._handover_toon_uploadscherm(status)
+                return
+        elif (not getattr(self, '_handover_upload_stil', False)
+              and nu - getattr(self, '_handover_upload_stil_sinds', nu)
+              > self._HANDOVER_STIL_NA):
+            self._handover_upload_stil = True
+            self._handover_toon_uploadscherm(status, stil=True)
+            return
+
+        ov = getattr(self, '_handover_overlay_widget', None)
+        sub = getattr(ov, 'subtitel_label', None) if ov is not None else None
+        balk = getattr(ov, 'balk', None) if ov is not None else None
+        if sub is None:
+            # Scherm is tussendoor vervangen — bouw het opnieuw op.
+            self._handover_start_uploads()
+            return
+        stil_extra = ""
+        if getattr(self, '_handover_upload_stil', False):
+            stil_extra = "\nEr komt al even niets binnen. Staat de booth nog op wifi?"
+        sub.setText(self._handover_upload_tekst(status) + stil_extra)
+        if balk is not None:
+            balk.setRange(0, max(1, int(status.get("total", 1) or 1)))
+            balk.setValue(int(status.get("uploaded", 0) or 0))
+
+    def _handover_upload_vastgelopen(self, status):
+        """Uploaden komt niet verder — laat zien waarom en bied een uitweg."""
+        booking_id = getattr(self, '_handover_booking_id', '')
+        try:
+            from cloud_uploader import last_errors
+            fouten = last_errors(booking_id, limit=1)
+        except Exception:
+            fouten = []
+        status = dict(status or {})
+        status["_fout"] = fouten[0] if fouten else ""
+        tekst = self._handover_upload_tekst(status)
+        if status.get("missing"):
+            # 'missing' = het bronbestand is uit pending/ verdwenen. Daar helpt
+            # opnieuw proberen niet aan; zeg dat dan ook.
+            tekst += ("\nDie bestanden zijn van de booth verdwenen en komen er "
+                      "niet meer bij. Er wordt niets gewist.")
+        self._handover_overlay(
+            "Uploaden lukt niet",
+            subtitle=tekst,
+            progress=(status.get("uploaded", 0), status.get("total", 1)),
+            buttons=[("Opnieuw proberen", config.COLOR_PRIMARY, self._handover_start_uploads),
+                     ("Wifi instellen", config.COLOR_SECONDARY, self._handover_open_wifi)],
+            corner_button=("uploaden overslaan", self._handover_skip_uploads))
+
+    def _handover_skip_uploads(self):
+        """Het knopje linksonder: verder zonder uploaden en ZONDER wissen."""
+        print("[HANDOVER] Uploaden overgeslagen — er wordt niets gewist")
+        self._handover_upload_skipped = True
+        self._handover_stop_upload_timer()
+        # Rechtstreeks naar de updatecheck: de wifi-vraag is hier al gesteld.
+        self._handover_check_updates()
+
+    # ── Opruimen: de foto's van de booth af ───────────────────────────
+
+    def _handover_start_wipe(self):
+        """Alles staat in de cloud → de booth leegmaken (onherroepelijk)."""
+        booking_id = getattr(self, '_handover_booking_id', '')
+        fotomap = getattr(self, '_handover_fotomap', '')
+        overgeslagen = bool(getattr(self, '_handover_upload_skipped', False))
+        self._handover_overlay(
+            "Alle foto's staan in de cloud",
+            subtitle="Bezig met opruimen van de booth…")
+
+        def _work():
+            try:
+                import opruimen
+                res = opruimen.ruim_op(booking_id, fotomap,
+                                       overgeslagen=overgeslagen)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                res = {"gewist": 0, "bytes": 0, "blijven": 0, "wachtrij": 0,
+                       "reden": f"Opruimen mislukt: {e}", "fouten": []}
+            self._handover_wipe_signal.emit(res)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_handover_wiped(self, res):
+        if not getattr(self, '_handover_active', False):
+            return
+        import opruimen
+        res = res or {}
+        if res.get("reden"):
+            titel = "Foto's blijven op de booth staan"
+            sub = res["reden"]
+        else:
+            titel = "Booth is leeg"
+            sub = (f"{res.get('gewist', 0)} foto('s) en "
+                   f"{res.get('wachtrij', 0)} wachtrijbestand(en) gewist  ·  "
+                   f"{opruimen.leesbaar(res.get('bytes', 0))} vrijgemaakt.")
+            if res.get("blijven"):
+                sub += (f"\n{res['blijven']} bestand(en) blijven staan: die zijn "
+                        f"nooit geüpload, dus die gooit de booth niet weg.")
+        if res.get("fouten"):
+            sub += f"\nNiet gelukt: {'; '.join(res['fouten'][:2])[:180]}"
+        rest = self._handover_andere_wachtrijen()
+        if rest:
+            sub += f"\n{rest}"
+        self._handover_overlay(
+            titel, subtitle=sub,
+            buttons=[("Doorgaan", config.COLOR_SUCCESS, self._handover_after_uploads)])
+
+    def _handover_andere_wachtrijen(self) -> str:
+        """Melding over wachtrijen van ANDERE (oudere) events.
+
+        Die tellen bewust niet mee in de poort en worden ook niet gewist: dit
+        scherm gaat over het event dat nu op de booth staat. De watchdog blijft
+        ze op de achtergrond uploaden. Wel benoemen, want anders zou "Booth is
+        leeg" een halve waarheid zijn.
+        """
+        eigen = getattr(self, '_handover_booking_id', '')
+        try:
+            from cloud_uploader import discover_pending_uploads
+            snapshots = discover_pending_uploads(config.EVENTS_DIR)
+        except Exception:
+            return ""
+        n = 0
+        for bid, info in (snapshots or {}).items():
+            if bid == eigen:
+                continue
+            n += self._handover_openstaand(info)
+        if not n:
+            return ""
+        return (f"Let op: er staan nog {n} foto('s) van eerdere events in de "
+                f"wachtrij. Die uploadt de booth zelf op de achtergrond.")
+
+    def _handover_after_uploads(self):
+        """Na de uploadpoort door naar de updatecheck."""
+        if getattr(self, '_handover_wifi_gedaan', False):
+            self._handover_check_updates()
+        else:
+            self._handover_check_wifi()
 
     def _handover_check_wifi(self):
         self._handover_overlay("Verbinding controleren…")
@@ -14946,6 +15416,7 @@ class PhotoboothWindow(QMainWindow):
 
     def _handover_cleanup(self):
         self._handover_active = False
+        self._handover_stop_upload_timer()
         self._handover_clear_overlay()
         try:
             self._stop_live_view(blocking=False)
