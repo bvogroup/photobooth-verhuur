@@ -62,6 +62,13 @@ a = Analysis(
         (os.path.join(app_dir, 'print_worker.py'), '.'),
         # Camera logo (no text version, used in login screen and splash)
         (os.path.join(app_dir, 'bootharoo-camera.png'), '.'),
+        # De merkletters (DM Sans en Plus Jakarta Sans). Zonder deze map valt de
+        # software terug op Segoe UI en ziet de bediening er generiek uit — zie
+        # lettertype.py. Ze worden bij het opstarten ingelezen, niet op Windows
+        # geïnstalleerd. Beide staan onder de SIL Open Font License 1.1, die
+        # meeleveren met software uitdrukkelijk toestaat; het licentiebestand
+        # gaat daarom mee in dezelfde map.
+        (os.path.join(app_dir, 'fonts'), 'fonts'),
     # boto3/botocore data files (required for S3/R2 cloud upload) — zie de
     # toelichting bovenaan; opgehaald bij de pakketten zelf i.p.v. via een
     # hardgecodeerd Python-pad.

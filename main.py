@@ -224,12 +224,18 @@ def main():
     # Schermhelderheid vastzetten (warmte/leesbaarheid op de fanless Surface)
     _set_display_brightness()
 
-    # Load fonts
-    preferred_font = "DM Sans"
-    available = QFontDatabase().families()
-    if preferred_font not in available:
-        preferred_font = "Segoe UI"
-    app.setFont(QFont(preferred_font, 14))
+    # De merkletters inladen uit de meegeleverde map fonts/ — zie lettertype.py.
+    #
+    # Hier stond eerder alleen een terugval: vraag om "DM Sans" en pak "Segoe UI"
+    # als die er niet is. Er werd echter nooit een lettertypebestand meegeleverd,
+    # dus die terugval trad altijd op en elke gast keek naar de Windows-letter.
+    # Nu gaan de bestanden mee in de build en worden ze hier ingelezen; er hoeft
+    # niets geïnstalleerd te worden op de tablet.
+    import lettertype
+    import merk
+
+    lettertype.laad_merkletters()
+    app.setFont(merk.letter(merk.TEKST_LOPEND))
 
     windowed = "--windowed" in sys.argv
 
