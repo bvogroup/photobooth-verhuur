@@ -74,6 +74,9 @@ a = Analysis(
     # hardgecodeerd Python-pad.
     ] + boto3_datas + botocore_datas + cv2_datas + libusb_datas,
     hiddenimports=[
+        # Eigen modules die pas binnen een functie geimporteerd worden en die
+        # PyInstaller daardoor kan missen.
+        'merk', 'lettertype',
         # Qt5
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',
         'PyQt5.QtPrintSupport',

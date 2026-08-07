@@ -30,6 +30,8 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QFontDatabase
 
 import config
+import merk
+import lettertype
 
 
 def _check_single_instance():
@@ -231,11 +233,17 @@ def main():
     # dus die terugval trad altijd op en elke gast keek naar de Windows-letter.
     # Nu gaan de bestanden mee in de build en worden ze hier ingelezen; er hoeft
     # niets geïnstalleerd te worden op de tablet.
-    import lettertype
-    import merk
-
-    lettertype.laad_merkletters()
-    app.setFont(merk.letter(merk.TEKST_LOPEND))
+    #
+    # Dit staat in een try/except omdat het cosmetisch is: een photobooth op een
+    # feest moet altijd opkomen, ook als er iets mis is met een lettertype. Zonder
+    # dit vangnet bleef de app hangen op een foutmelding die niemand zag — de
+    # bouwstraat liep er in de installatie-rookproef op vast.
+    try:
+        lettertype.laad_merkletters()
+        app.setFont(merk.letter(merk.TEKST_LOPEND))
+    except Exception as _e:
+        print(f"[LETTER] inladen mislukt, we gaan door zonder: {_e}", flush=True)
+        app.setFont(QFont("Segoe UI", 14))
 
     windowed = "--windowed" in sys.argv
 
