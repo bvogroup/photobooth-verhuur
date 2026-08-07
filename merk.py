@@ -188,7 +188,7 @@ TEKST_KLEIN = 15            # bijschrift
 TEKST_FIJN = 13             # het kleinste dat nog mag
 
 
-def letter(punten=TEKST_LOPEND, vet=False, kop=False):
+def letter(punten=TEKST_LOPEND, vet=False, kop=False, spatie=None):
     """Geef een QFont in de merkletter, op maat in beeldpunten.
 
     Gebruik dit in plaats van QFont("DM Sans", 18) — dat laatste rekent in
@@ -205,10 +205,14 @@ def letter(punten=TEKST_LOPEND, vet=False, kop=False):
     f.setPixelSize(int(punten))
     if vet:
         f.setWeight(QFont.Bold)
-    if kop:
-        # Het merk zet koppen op -0,02 em. Qt-stijlbladen kennen letter-spacing
-        # niet — er staan zes van die regels in photobooth.py die stilzwijgend
-        # niets doen. Via de letter zelf werkt het wel.
+    # Het merk zet koppen op -0,02 em. Qt-stijlbladen kennen letter-spacing niet
+    # — er staan zes van die regels in photobooth.py die stilzwijgend niets doen.
+    # Via de letter zelf werkt het wel. Geef `spatie` mee (in procenten, 100 =
+    # normaal) voor een label dat juist uit elkaar moet staan, zoals een klein
+    # kopje in hoofdletters.
+    if spatie is not None:
+        f.setLetterSpacing(QFont.PercentageSpacing, float(spatie))
+    elif kop:
         f.setLetterSpacing(QFont.PercentageSpacing, 98.0)
     return f
 

@@ -8061,7 +8061,7 @@ class PhotoboothWindow(QMainWindow):
         Compact gehouden zodat alles op één schermhoogte past; de foto schaalt
         altijd mee binnen z'n vak (zie _FitLabel)."""
         page = QWidget()
-        page.setStyleSheet("background: #15151b;")
+        page.setStyleSheet(merk.pagina(op_donker=True))
         self._filter_page = page
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
@@ -8082,15 +8082,13 @@ class PhotoboothWindow(QMainWindow):
         left_lay.setSpacing(2)
 
         self._filter_title = QLabel("Kies een filter")
-        self._filter_title.setFont(QFont("DM Sans", 19, QFont.Bold))
-        self._filter_title.setStyleSheet("color: #ffffff; background: transparent;")
+        self._filter_title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        self._filter_title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         left_lay.addWidget(self._filter_title)
 
         self._filter_subtitle = QLabel("Tik onderin op een filter")
-        self._filter_subtitle.setFont(QFont("DM Sans", 12))
-        self._filter_subtitle.setStyleSheet(
-            f"color: {config.COLOR_PRIMARY}; background: transparent;"
-        )
+        self._filter_subtitle.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._filter_subtitle.setStyleSheet(merk.tekst(merk.OP_DONKER_ZACHT))
         left_lay.addWidget(self._filter_subtitle)
         left_lay.addSpacing(6)
 
@@ -8098,9 +8096,10 @@ class PhotoboothWindow(QMainWindow):
         # niet op).
         self._filter_preview_label = _FitLabel("Foto laden…")
         self._filter_preview_label.setAlignment(Qt.AlignCenter)
+        self._filter_preview_label.setFont(merk.letter(merk.TEKST_LOPEND))
         self._filter_preview_label.setStyleSheet(
-            "color: #777; background: rgba(255,255,255,0.03); "
-            "border-radius: 14px; font-size: 16px;"
+            f"color: {merk.OP_DONKER_FIJN}; background: {merk.INKT_VLAK};"
+            f" border-radius: {merk.RONDING_KAART}px;"
         )
         left_lay.addWidget(self._filter_preview_label, stretch=1)
         top_lay.addWidget(left, stretch=1)
@@ -8108,52 +8107,37 @@ class PhotoboothWindow(QMainWindow):
         # — Rechts: knoppenpaneel (kaart) —
         right = QWidget()
         right.setFixedWidth(340)
-        right.setStyleSheet(
-            "QWidget { background: rgba(255,255,255,0.05); border-radius: 18px; }"
-        )
+        right.setStyleSheet(f"QWidget {{ {merk.kaart(op_donker=True)} }}")
         right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(20, 22, 20, 22)
-        right_lay.setSpacing(12)
+        right_lay.setContentsMargins(merk.RUIMTE_RUIM, merk.RUIMTE_RUIM,
+                                     merk.RUIMTE_RUIM, merk.RUIMTE_RUIM)
+        right_lay.setSpacing(merk.RUIMTE)
         right_lay.addStretch()
 
         # Volgende foto maken — GROEN (2 regels zodat 'ie nooit afkapt)
         self._filter_next_btn = QPushButton("Volgende\nfoto maken")
         self._filter_next_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_next_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
+        self._filter_next_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
         self._filter_next_btn.setMinimumHeight(96)
-        self._filter_next_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 10px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
-            f"QPushButton:pressed {{ background: #3A8B5E; }}"
-        )
+        self._filter_next_btn.setStyleSheet(merk.knop_hoofd())
         self._filter_next_btn.clicked.connect(self._filter_next)
         right_lay.addWidget(self._filter_next_btn)
 
         # Foto opnieuw nemen — neutraal (2 regels)
         self._filter_retake_btn = QPushButton("Foto opnieuw\nnemen")
         self._filter_retake_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_retake_btn.setFont(QFont("DM Sans", 15))
-        self._filter_retake_btn.setMinimumHeight(74)
-        self._filter_retake_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.10); color: white; "
-            "border: 1px solid rgba(255,255,255,0.22); border-radius: 14px; "
-            "padding: 8px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.20); }"
-        )
+        self._filter_retake_btn.setFont(merk.letter(merk.TEKST_KNOP))
+        self._filter_retake_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        self._filter_retake_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         self._filter_retake_btn.clicked.connect(self._filter_retake)
         right_lay.addWidget(self._filter_retake_btn)
 
         # Stoppen — rood
         self._filter_stop_btn = QPushButton("Stoppen")
         self._filter_stop_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_stop_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
-        self._filter_stop_btn.setMinimumHeight(54)
-        self._filter_stop_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
-            f"border: none; border-radius: 14px; padding: 6px; }}"
-            f"QPushButton:hover {{ background: #A93223; }}"
-        )
+        self._filter_stop_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._filter_stop_btn.setMinimumHeight(merk.KNOP_MIN)
+        self._filter_stop_btn.setStyleSheet(merk.knop_stil(op_donker=True))
         self._filter_stop_btn.clicked.connect(self._filter_stop)
         right_lay.addWidget(self._filter_stop_btn)
 
@@ -8166,8 +8150,8 @@ class PhotoboothWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("filterbar")
         bar.setStyleSheet(
-            "QWidget#filterbar { background: rgba(255,255,255,0.04); "
-            "border-top: 1px solid rgba(255,255,255,0.08); }"
+            f"QWidget#filterbar {{ background: {merk.INKT_VLAK};"
+            f" border-top: 1px solid {merk.INKT_RAND}; }}"
         )
         bar_lay = QVBoxLayout(bar)
         bar_lay.setContentsMargins(24, 8, 24, 12)
@@ -8175,11 +8159,11 @@ class PhotoboothWindow(QMainWindow):
 
         self._filter_bar_header = QLabel("FILTERS")
         self._filter_bar_header.setAlignment(Qt.AlignCenter)
-        self._filter_bar_header.setFont(QFont("DM Sans", 10, QFont.Bold))
-        self._filter_bar_header.setStyleSheet(
-            "color: rgba(255,255,255,0.40); background: transparent; "
-            "letter-spacing: 2px;"
-        )
+        # De spatiëring stond hier als `letter-spacing: 2px` in het stijlblad,
+        # en Qt negeert dat stilzwijgend. Via de letter zelf werkt het wel.
+        self._filter_bar_header.setFont(
+            merk.letter(merk.TEKST_FIJN, vet=True, spatie=118))
+        self._filter_bar_header.setStyleSheet(merk.tekst(merk.OP_DONKER_FIJN))
         bar_lay.addWidget(self._filter_bar_header)
 
         grid_holder = QWidget()
@@ -8344,13 +8328,17 @@ class PhotoboothWindow(QMainWindow):
     def _populate_filter_thumbs(self, thumbs, current_fid):
         """Vul de filterbalk met klikbare thumbnails — 2 rijen × 8 kolommen."""
         self._clear_filter_thumbs()
+        # De gekozen tegel krijgt het merkgroen — dat is precies waar het merk
+        # groen voor bedoelt: een actieve toestand. Hier stond COLOR_PRIMARY, dat
+        # sinds stap 0 de merkinkt is en op dit donkere scherm dus onzichtbaar
+        # zou zijn.
         style = (
-            "QToolButton { background: rgba(255,255,255,0.05); color: #cfcfcf; "
-            "border: 3px solid transparent; border-radius: 14px; padding: 4px; "
-            "font-size: 12px; }"
-            "QToolButton:hover { background: rgba(255,255,255,0.12); color: #fff; }"
-            "QToolButton:checked { border: 3px solid " + config.COLOR_PRIMARY + "; "
-            "color: #fff; background: rgba(214,194,155,0.16); font-weight: bold; }"
+            f"QToolButton {{ background: {merk.INKT_HOOG}; color: {merk.OP_DONKER_ZACHT};"
+            f" border: 3px solid transparent; border-radius: {merk.RONDING_KAART}px;"
+            f" padding: 4px; }}"
+            f"QToolButton:hover {{ background: {merk.INKT_RAND}; color: {merk.OP_DONKER}; }}"
+            f"QToolButton:checked {{ border: 3px solid {merk.GROEN};"
+            f" color: {merk.OP_DONKER}; background: {merk.INKT_RAND}; font-weight: bold; }}"
         )
         cols = 8
         for i, (fid, label, pil_im) in enumerate(thumbs):
@@ -8363,6 +8351,7 @@ class PhotoboothWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setChecked(fid == current_fid)
             btn.setCursor(Qt.PointingHandCursor)
+            btn.setFont(merk.letter(merk.TEKST_FIJN))
             btn.setStyleSheet(style)
             btn.setFixedSize(150, 122)
             btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
