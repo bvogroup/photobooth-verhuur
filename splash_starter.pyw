@@ -162,15 +162,31 @@ if "--selftest" in sys.argv:
         import win32print  # noqa: F401
         return "flask, qrcode, requests, pyserial, pywin32"
 
+    def _config_is_van_ons():
+        # Tweede regressietest. cv2 bevat ook een cv2/config.py; kwam die map
+        # op sys.path, dan haalde `import config` OpenCV's bestand op in plaats
+        # van dat van deze applicatie, en viel de app om met
+        # "NameError: name 'LOADER_DIR' is not defined". Zie rthook_cv2.py.
+        import config
+        bestand = (getattr(config, "__file__", "") or "").replace("\\", "/")
+        if "/cv2/" in bestand:
+            raise RuntimeError(f"'config' komt uit cv2: {bestand}")
+        versie = getattr(config, "VERSION", "")
+        if not versie.startswith("v"):
+            raise RuntimeError(
+                f"'config' heeft geen geldige VERSION ({versie!r}) — "
+                f"verkeerde module geladen? {bestand}"
+            )
+        return f"VERSION {versie}"
+
     def _eigen_modules():
         # De echte app-modules. photobooth.py is het grote bestand; als daar
         # iets in staat dat bij het importeren al struikelt, valt dat hier op.
-        import config  # noqa: F401
         import photobooth  # noqa: F401
         import main  # noqa: F401
         import updater, cloud_storage, booth_settings, webcam  # noqa: F401
         import printer, camera, qr_generator, web_server  # noqa: F401
-        return "config, photobooth, main en de rest"
+        return "photobooth, main en de rest"
 
     _log(f"Bootharoo zelftest — frozen={getattr(sys, 'frozen', False)}")
     _log(f"Python {sys.version.split()[0]}")
@@ -183,6 +199,7 @@ if "--selftest" in sys.argv:
     _controleer("Pillow", _pillow)
     _controleer("boto3 / botocore", _boto3)
     _controleer("overige pakketten", _overige_pakketten)
+    _controleer("config is die van de applicatie", _config_is_van_ons)
     _controleer("eigen modules", _eigen_modules)
 
     _log("")

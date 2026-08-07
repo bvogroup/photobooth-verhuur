@@ -1,80 +1,71 @@
 """Runtime hook for OpenCV (cv2) in PyInstaller frozen apps.
 
-Problem: cv2's bootstrap pops itself from sys.modules and re-imports to load
-the native cv2.pyd extension. If cv2 is in PyInstaller's PKG archive
-(FrozenImporter), the second import is intercepted and triggers recursion
-detection, causing ImportError.
+Probleem dat deze hook oorspronkelijk oploste
+=============================================
+cv2's bootstrap haalt zichzelf uit sys.modules en importeert opnieuw om de
+native cv2-extensie te laden. Zit cv2 in het PKG-archief van PyInstaller
+(FrozenImporter), dan wordt die tweede import onderschept en slaat de
+recursiedetectie toe met een ImportError. Daarom staat cv2 NIET in
+hiddenimports maar als gewone bestanden op schijf, zodat Python's eigen
+FileFinder het pakket laadt.
 
-Solution: cv2 is NOT added to hiddenimports (so FrozenImporter never knows
-about it). Instead, cv2 files are on disk as datas/binaries. This hook ensures
-_MEIPASS/cv2/ is in sys.path so Python's standard FileFinder loads cv2
-directly from disk on both the first and second import.
+
+WAAROM DEZE HOOK NIETS MEER OP sys.path ZET
+===========================================
+De oude versie deed `sys.path.insert(0, _MEIPASS/cv2)`. Dat was het
+probleem, niet de oplossing.
+
+Het cv2-pakket heeft op zijn hoogste niveau bestanden en mappen met namen die
+al bezet zijn:
+
+    cv2/typing/     botst met de standaardbibliotheek
+    cv2/config.py   botst met config.py van deze applicatie
+    cv2/misc/, cv2/utils/, cv2/data/ ...
+
+Zolang die map vooraan op sys.path staat, wint hij van alles. Dat leverde
+achter elkaar twee storingen op:
+
+    v1.99.147, bij het opstarten:
+        cannot import name 'Any' from partially initialized module 'typing'
+        (...\\_internal\\cv2\\typing\\__init__.py)
+
+    en direct daarna, toen alleen 'typing' was afgeschermd:
+        NameError: name 'LOADER_DIR' is not defined
+        (...\\_internal\\cv2\\config.py)
+
+Dat tweede is `import config` van deze applicatie, die bij OpenCV uitkwam.
+
+Per naam een uitzondering maken is dweilen: elke nieuwe OpenCV-versie kan er
+een toevoegen. De map hoort er gewoon niet te staan.
+
+En dat kan ook, want cv2 wordt prima gevonden zonder: _MEIPASS staat al op
+sys.path en bevat de map cv2/, dus `import cv2` komt daar via de gewone
+FileFinder terecht — precies wat deze hook wilde bereiken. cv2 regelt zijn
+eigen zoekpaden voor de native extensie verder zelf.
+
+De zelftest (`Bootharoo.exe --selftest`) controleert allebei de gevallen
+expliciet: dat cv2 laadt, én dat `typing` en `config` van de juiste plek
+komen. De bouwstraat draait die test op de geinstalleerde applicatie, dus
+een terugval hierin houdt de bouw tegen.
 
 
-LET OP — WAAROM HIERONDER EERST 'typing' WORDT GEIMPORTEERD
-===========================================================
-
-Het cv2-pakket bevat een submap die letterlijk `typing` heet
-(_internal/cv2/typing/). Zodra we hieronder _internal/cv2/ vooraan op
-sys.path zetten, staat die map VOOR de standaardbibliotheek. Elke `import
-typing` die daarna nog moet gebeuren, komt dan bij OpenCV uit in plaats van
-bij Python zelf. numpy importeert `typing` vroeg in zijn eigen opstart, en
-dan valt de hele boel om met:
-
-    cannot import name 'Any' from partially initialized module 'typing'
-    (most likely due to a circular import)
-    (...\\_internal\\cv2\\typing\\__init__.py)
-
-Dat is precies wat er gebeurde in v1.99.147: de applicatie startte niet meer
-op. Dezelfde botsing was al eerder gevonden voor het print-worker-subproces
-(zie splash_starter.py), maar daar losgemaakt in plaats van bij de bron.
-
-De oplossing is om `typing` te importeren VOORDAT de cv2-map op sys.path
-komt. Daarmee staat de echte module uit de standaardbibliotheek in
-sys.modules, en levert elke latere `import typing` — waar dan ook vandaan —
-diezelfde module op. De volgorde van sys.path doet er dan niet meer toe.
-
-Waarom niet gewoon achteraan op sys.path zetten: dat zou dit geval ook
-oplossen, maar het verandert de manier waarop cv2 zichzelf terugvindt bij de
-her-import hierboven, en dat is nou net het fragiele stuk dat deze hook moest
-repareren. De import hieronder laat dat mechanisme volledig met rust.
+WAAROM DE OUDE build.bat HIER GEEN LAST VAN HAD
+===============================================
+Bij PyInstaller 5 stond de FrozenImporter vooraan in sys.meta_path: modules
+uit het archief wonnen altijd, ongeacht sys.path. Vanaf PyInstaller 6 komt
+het zoeken op sys.path eerder aan de beurt, en dan gaat een map met bezette
+namen op positie 0 wél pijn doen. De handmatige build op de ontwikkelmachine
+gebruikte de oudere PyInstaller en merkte er daarom niets van.
 """
 import sys
-import os
 
-# Standaardmodules die door een gelijknamige submap in cv2/ overschaduwd
-# kunnen worden. Ze worden hier alvast geladen zodat ze in sys.modules staan
-# voordat cv2/ op sys.path komt. Op dit moment botst alleen `typing`, maar de
-# lijst is uitbreidbaar mocht OpenCV er ooit een toevoegen.
-_AFSCHERMEN = ("typing",)
-
-for _naam in _AFSCHERMEN:
+# Standaardmodules die een gelijknamige submap in cv2/ heeft. Ze worden hier
+# alvast geladen zodat ze in sys.modules staan. Strikt genomen overbodig nu de
+# cv2-map niet meer op sys.path komt, maar het kost niets en het beschermt
+# tegen een toekomstige wijziging die die map er alsnog op zet.
+for _naam in ("typing",):
     try:
         __import__(_naam)
     except Exception:
-        # Lukt het importeren niet, dan is er iets veel ergers aan de hand dan
-        # deze hook kan repareren. Nooit de opstart hierop laten stranden.
+        # Nooit de opstart van de booth op deze hook laten stranden.
         pass
-
-if hasattr(sys, '_MEIPASS'):
-    cv2_dir = os.path.join(sys._MEIPASS, 'cv2')
-    if os.path.isdir(cv2_dir):
-        # Insert at position 0 so it takes priority over _MEIPASS root
-        if cv2_dir in sys.path:
-            sys.path.remove(cv2_dir)
-        sys.path.insert(0, cv2_dir)
-
-    # Vangnet: mocht een eerdere PyInstaller-hook `typing` al uit cv2 hebben
-    # geladen voordat wij aan de beurt waren, dan gooien we die eruit en laten
-    # we hem opnieuw laden — nu met de standaardbibliotheek op de juiste plek.
-    _typing = sys.modules.get('typing')
-    _bestand = (getattr(_typing, '__file__', '') or '').replace('\\', '/')
-    if _typing is not None and '/cv2/' in _bestand:
-        del sys.modules['typing']
-        _oud = sys.path
-        try:
-            sys.path = [p for p in sys.path
-                        if os.path.normcase(p) != os.path.normcase(cv2_dir)]
-            __import__('typing')
-        finally:
-            sys.path = _oud
