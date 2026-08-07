@@ -25,6 +25,7 @@ from PyQt5.QtCore import Qt, QTimer, QSize, QEventLoop, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, QCursor, QBitmap, QIcon
 
 import config
+import merk  # de merkwaarden: kleuren, maten, afrondingen en knopstijlen
 from camera import (Camera, CaptureThread, EDSDKWorker,
                      get_search_folders, snapshot_files,
                      ensure_digicam_running, stop_digicam)
@@ -4313,45 +4314,36 @@ class PhotoboothWindow(QMainWindow):
           - Nee, begin opnieuw → reset sessie + terug naar preview
         """
         panel = QWidget()
-        panel.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        panel.setStyleSheet(f"QWidget {{ background: {merk.INKT_VLAK}; }}")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 20, 28, 20)
-        lay.setSpacing(14)
+        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
+                               merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
+        lay.setSpacing(merk.RUIMTE)
         lay.addStretch()
 
         title = QLabel("Zijn de foto's goed gelukt?")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("DM Sans", 22, QFont.Bold))
-        title.setStyleSheet("color: white; background: transparent;")
+        title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         title.setWordWrap(True)
         lay.addWidget(title)
 
         lay.addSpacing(16)
 
-        yes_btn = QPushButton("✓  Ja")
+        yes_btn = QPushButton("Ja")
         yes_btn.setCursor(Qt.PointingHandCursor)
-        yes_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        yes_btn.setMinimumHeight(72)
-        yes_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
-            f"QPushButton:pressed {{ background: #3A8B5E; }}"
-        )
+        yes_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        yes_btn.setMinimumHeight(merk.KNOP_HOOG)
+        yes_btn.setStyleSheet(merk.knop_hoofd())
         yes_btn.clicked.connect(self._on_review_photos_ok)
         lay.addWidget(yes_btn)
         self._review_confirm_yes_btn = yes_btn
 
-        no_btn = QPushButton("✗  Nee, begin opnieuw")
+        no_btn = QPushButton("Nee, begin opnieuw")
         no_btn.setCursor(Qt.PointingHandCursor)
-        no_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        no_btn.setMinimumHeight(60)
-        no_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.08); color: #cccccc; "
-            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
-            "padding: 14px; font-size: 16px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.16); color: white; }"
-        )
+        no_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        no_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        no_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         no_btn.clicked.connect(self._on_review_photos_redo)
         lay.addWidget(no_btn)
         self._review_confirm_no_btn = no_btn
@@ -4367,45 +4359,36 @@ class PhotoboothWindow(QMainWindow):
           - Nee     → direct naar action panel zonder auto-print
         """
         panel = QWidget()
-        panel.setStyleSheet("QWidget { background: rgba(255,255,255,0.06); }")
+        panel.setStyleSheet(f"QWidget {{ background: {merk.INKT_VLAK}; }}")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(28, 20, 28, 20)
-        lay.setSpacing(14)
+        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
+                               merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
+        lay.setSpacing(merk.RUIMTE)
         lay.addStretch()
 
         title = QLabel("Wil je de foto's geprint hebben?")
         title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("DM Sans", 22, QFont.Bold))
-        title.setStyleSheet("color: white; background: transparent;")
+        title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         title.setWordWrap(True)
         lay.addWidget(title)
 
         lay.addSpacing(16)
 
-        yes_btn = QPushButton("🖨  Ja, print")
+        yes_btn = QPushButton("Ja, print")
         yes_btn.setCursor(Qt.PointingHandCursor)
-        yes_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        yes_btn.setMinimumHeight(72)
-        yes_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
-            f"QPushButton:pressed {{ background: #3A8B5E; }}"
-        )
+        yes_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        yes_btn.setMinimumHeight(merk.KNOP_HOOG)
+        yes_btn.setStyleSheet(merk.knop_hoofd())
         yes_btn.clicked.connect(self._on_review_print_yes)
         lay.addWidget(yes_btn)
         self._review_print_yes_btn = yes_btn
 
-        no_btn = QPushButton("✗  Nee, geen print")
+        no_btn = QPushButton("Nee, geen print")
         no_btn.setCursor(Qt.PointingHandCursor)
-        no_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        no_btn.setMinimumHeight(60)
-        no_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.08); color: #cccccc; "
-            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
-            "padding: 14px; font-size: 16px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.16); color: white; }"
-        )
+        no_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        no_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        no_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         no_btn.clicked.connect(self._on_review_print_no)
         lay.addWidget(no_btn)
         self._review_print_no_btn = no_btn
@@ -4417,7 +4400,7 @@ class PhotoboothWindow(QMainWindow):
         """Build unified sharing screen: photo + all actions on one page.
         Layout adapts: landscape = side-by-side, portrait = stacked."""
         page = QWidget()
-        page.setStyleSheet(f"background: #1a1a1a;")
+        page.setStyleSheet(merk.pagina(op_donker=True))
         self._review_page = page
 
         # Use a QVBoxLayout as wrapper — actual layout managed by _adapt_review_layout
@@ -4431,10 +4414,7 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_countdown_bar.setValue(100)
         self._sharing_countdown_bar.setTextVisible(False)
         self._sharing_countdown_bar.setFixedHeight(6)
-        self._sharing_countdown_bar.setStyleSheet(
-            f"QProgressBar {{ background: rgba(255,255,255,0.15); border: none; }}"
-            f"QProgressBar::chunk {{ background: {config.COLOR_PRIMARY}; border: none; }}"
-        )
+        self._sharing_countdown_bar.setStyleSheet(merk.voortgangsbalk(op_donker=True))
         self._sharing_countdown_bar.raise_()
 
         # Timer for smooth countdown animation
@@ -4460,19 +4440,20 @@ class PhotoboothWindow(QMainWindow):
         # === Action panel (buttons) ===
         self._review_action_panel = QWidget()
         self._review_action_panel.setStyleSheet(
-            "QWidget { background: rgba(255,255,255,0.06); }"
+            f"QWidget {{ background: {merk.INKT_VLAK}; }}"
         )
         right_lay = QVBoxLayout(self._review_action_panel)
-        right_lay.setContentsMargins(28, 20, 28, 20)
-        right_lay.setSpacing(14)
+        right_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
+                                     merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
+        right_lay.setSpacing(merk.RUIMTE)
 
         right_lay.addStretch()
 
         # Print status label (shows when printing)
         self._sharing_print_status = QLabel("")
         self._sharing_print_status.setAlignment(Qt.AlignCenter)
-        self._sharing_print_status.setFont(QFont("DM Sans", 14))
-        self._sharing_print_status.setStyleSheet("color: #aaaaaa; background: transparent;")
+        self._sharing_print_status.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._sharing_print_status.setStyleSheet(merk.tekst(merk.OP_DONKER_ZACHT))
         self._sharing_print_status.setWordWrap(True)
         self._sharing_print_status.setFixedHeight(36)
         # Retain layout space when hidden — prevents buttons from shifting
@@ -4483,17 +4464,15 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addWidget(self._sharing_print_status)
 
         # --- PRINT button ---
-        self._sharing_print_btn = QPushButton("🖨  " + t("btn_print"))
+        # De hoofdactie van dit scherm, en de enige groene knop erop: merkgroen
+        # met donkere letters (9,29:1). Stond hier als gedempt groen met witte
+        # letters op 3,38:1, en de emoji ervoor werd door Windows in zijn eigen
+        # kleurenletter getekend — een blauwgrijs printertje naast een groene knop.
+        self._sharing_print_btn = QPushButton(t("btn_print"))
         self._sharing_print_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_print_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._sharing_print_btn.setMinimumHeight(72)
-        self._sharing_print_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_SUCCESS}; color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-            f"QPushButton:hover {{ background: {config.COLOR_SUCCESS_HOVER}; }}"
-            f"QPushButton:pressed {{ background: #3A8B5E; }}"
-            f"QPushButton:disabled {{ background: #555555; color: #888888; }}"
-        )
+        self._sharing_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._sharing_print_btn.setMinimumHeight(merk.KNOP_HOOG)
+        self._sharing_print_btn.setStyleSheet(merk.knop_hoofd())
         self._sharing_print_btn.clicked.connect(self._sharing_do_print)
         right_lay.addWidget(self._sharing_print_btn)
 
@@ -4502,15 +4481,11 @@ class PhotoboothWindow(QMainWindow):
         # standaard; 0s als storingsmeldingen uit staan) komt hier de print-
         # knop niet meer, maar de mogelijkheid om de pending print alsnog te
         # annuleren of opnieuw te fotograferen.
-        self._sharing_cancel_print_btn = QPushButton("✕  Annuleer print")
+        self._sharing_cancel_print_btn = QPushButton("Annuleer print")
         self._sharing_cancel_print_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_cancel_print_btn.setFont(QFont("DM Sans", 16, QFont.Bold))
-        self._sharing_cancel_print_btn.setMinimumHeight(60)
-        self._sharing_cancel_print_btn.setStyleSheet(
-            f"QPushButton {{ background: {config.COLOR_DANGER}; color: white; "
-            f"border: none; border-radius: 14px; padding: 10px; }}"
-            f"QPushButton:hover {{ background: #A93223; }}"
-        )
+        self._sharing_cancel_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._sharing_cancel_print_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        self._sharing_cancel_print_btn.setStyleSheet(merk.knop_gevaar())
         self._sharing_cancel_print_btn.clicked.connect(self._on_inline_print_cancel)
         _spcp = self._sharing_cancel_print_btn.sizePolicy()
         _spcp.setRetainSizeWhenHidden(False)
@@ -4518,16 +4493,11 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_cancel_print_btn.hide()
         right_lay.addWidget(self._sharing_cancel_print_btn)
 
-        self._sharing_redo_print_btn = QPushButton("📸  Foto's opnieuw maken")
+        self._sharing_redo_print_btn = QPushButton("Foto's opnieuw maken")
         self._sharing_redo_print_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_redo_print_btn.setFont(QFont("DM Sans", 15, QFont.Bold))
-        self._sharing_redo_print_btn.setMinimumHeight(56)
-        self._sharing_redo_print_btn.setStyleSheet(
-            f"QPushButton {{ background: rgba(255,255,255,0.12); color: white; "
-            f"border: 1px solid rgba(255,255,255,0.3); border-radius: 14px; "
-            f"padding: 8px; }}"
-            f"QPushButton:hover {{ background: rgba(255,255,255,0.22); }}"
-        )
+        self._sharing_redo_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._sharing_redo_print_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        self._sharing_redo_print_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         self._sharing_redo_print_btn.clicked.connect(self._on_inline_print_redo)
         _sprp = self._sharing_redo_print_btn.sizePolicy()
         _sprp.setRetainSizeWhenHidden(False)
@@ -4538,9 +4508,9 @@ class PhotoboothWindow(QMainWindow):
         # Print remaining indicator
         self._sharing_prints_remaining = QLabel("")
         self._sharing_prints_remaining.setAlignment(Qt.AlignCenter)
-        self._sharing_prints_remaining.setFont(QFont("DM Sans", 11))
-        self._sharing_prints_remaining.setStyleSheet("color: #888888; background: transparent;")
-        self._sharing_prints_remaining.setFixedHeight(24)
+        self._sharing_prints_remaining.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._sharing_prints_remaining.setStyleSheet(merk.tekst(merk.OP_DONKER_FIJN))
+        self._sharing_prints_remaining.setFixedHeight(26)
         right_lay.addWidget(self._sharing_prints_remaining)
 
         right_lay.addSpacing(8)
@@ -4551,56 +4521,50 @@ class PhotoboothWindow(QMainWindow):
         # gast 'm meteen kan scannen, geen klik nodig.)
         self._inline_qr_box = QWidget()
         self._inline_qr_box.setStyleSheet(
-            "QWidget { background: white; border-radius: 16px; padding: 14px; }"
+            f"QWidget {{ background: {merk.WIT};"
+            f" border-radius: {merk.RONDING_VLAK}px; }}"
         )
         qr_box_lay = QVBoxLayout(self._inline_qr_box)
-        qr_box_lay.setContentsMargins(14, 14, 14, 14)
-        qr_box_lay.setSpacing(8)
+        qr_box_lay.setContentsMargins(merk.RUIMTE, merk.RUIMTE, merk.RUIMTE, merk.RUIMTE)
+        qr_box_lay.setSpacing(merk.RUIMTE_KRAP)
 
         self._inline_qr_label = QLabel()
         self._inline_qr_label.setAlignment(Qt.AlignCenter)
         self._inline_qr_label.setMinimumSize(220, 220)
         self._inline_qr_label.setMaximumSize(320, 320)
         self._inline_qr_label.setScaledContents(True)
-        self._inline_qr_label.setStyleSheet("background: white;")
+        self._inline_qr_label.setStyleSheet(f"background: {merk.WIT};")
         qr_box_lay.addWidget(self._inline_qr_label, alignment=Qt.AlignCenter)
 
         # Animated 'uploading...' fallback (zichtbaar tot QR-pixmap er is)
-        self._inline_qr_loading = QLabel("⏳  " + t("uploading"))
+        self._inline_qr_loading = QLabel(t("uploading"))
         self._inline_qr_loading.setAlignment(Qt.AlignCenter)
-        self._inline_qr_loading.setFont(QFont("DM Sans", 14))
-        self._inline_qr_loading.setStyleSheet(
-            "color: #555; background: transparent;"
-        )
+        self._inline_qr_loading.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._inline_qr_loading.setStyleSheet(merk.tekst(merk.TEKST_GEDEMPT))
         self._inline_qr_loading.hide()
         qr_box_lay.addWidget(self._inline_qr_loading)
 
-        # Pijl + "Download op telefoon" prompt onder de QR
-        self._inline_qr_prompt = QLabel(
-            "↓\nDownload foto's op je telefoon"
-        )
+        # "Download op telefoon" prompt onder de QR
+        self._inline_qr_prompt = QLabel("Download je foto's op je telefoon")
         self._inline_qr_prompt.setAlignment(Qt.AlignCenter)
-        self._inline_qr_prompt.setFont(QFont("DM Sans", 13, QFont.Bold))
-        self._inline_qr_prompt.setStyleSheet(
-            "color: #1a1a1a; background: transparent;"
-        )
+        self._inline_qr_prompt.setFont(merk.letter(merk.TEKST_KLEIN, vet=True))
+        self._inline_qr_prompt.setStyleSheet(merk.tekst(merk.INKT))
+        self._inline_qr_prompt.setWordWrap(True)
         qr_box_lay.addWidget(self._inline_qr_prompt)
         right_lay.addWidget(self._inline_qr_box)
 
         # Alternatieve TIP-box voor wanneer er geen wifi is. Tonen we
         # ipv de QR-box. Compact paneel met de instructie.
         self._inline_no_wifi_tip = QLabel(
-            "💡  TIP\n"
             "Verbind de photobooth met wifi om de foto's\n"
             "via een QR-code op je telefoon te downloaden."
         )
         self._inline_no_wifi_tip.setAlignment(Qt.AlignCenter)
-        self._inline_no_wifi_tip.setFont(QFont("DM Sans", 14, QFont.Bold))
+        self._inline_no_wifi_tip.setFont(merk.letter(merk.TEKST_LOPEND))
         self._inline_no_wifi_tip.setWordWrap(True)
         self._inline_no_wifi_tip.setStyleSheet(
-            "QLabel { background: rgba(255,255,255,0.10); color: white; "
-            "border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; "
-            "padding: 22px 18px; }"
+            f"QLabel {{ {merk.kaart(op_donker=True, ronding=merk.RONDING_VLAK)}"
+            f" color: {merk.OP_DONKER_ZACHT}; padding: 22px 18px; }}"
         )
         self._inline_no_wifi_tip.hide()
         right_lay.addWidget(self._inline_no_wifi_tip)
@@ -4621,16 +4585,11 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addSpacing(8)
 
         # --- EMAIL button ---
-        self._sharing_email_btn = QPushButton("📧  " + t("btn_email"))
+        self._sharing_email_btn = QPushButton(t("btn_email"))
         self._sharing_email_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_email_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._sharing_email_btn.setMinimumHeight(72)
-        self._sharing_email_btn.setStyleSheet(
-            f"QPushButton {{ background: rgba(255,255,255,0.12); color: white; "
-            f"border: none; border-radius: 16px; padding: 16px; font-size: 18px; }}"
-            f"QPushButton:hover {{ background: rgba(255,255,255,0.18); }}"
-            f"QPushButton:pressed {{ background: rgba(255,255,255,0.25); }}"
-        )
+        self._sharing_email_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._sharing_email_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        self._sharing_email_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
 
         self._sharing_email_btn.clicked.connect(self._go_email_input)
         # Retain layout space when hidden — prevents done button from shifting
@@ -4640,10 +4599,10 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addWidget(self._sharing_email_btn)
 
         # --- No WiFi label (hidden by default) ---
-        self._no_wifi_label = QLabel("⚠  " + t("no_internet"))
+        self._no_wifi_label = QLabel(t("no_internet"))
         self._no_wifi_label.setAlignment(Qt.AlignCenter)
-        self._no_wifi_label.setFont(QFont("DM Sans", 12))
-        self._no_wifi_label.setStyleSheet("color: #ff6b6b; background: transparent;")
+        self._no_wifi_label.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._no_wifi_label.setStyleSheet(merk.tekst(merk.FOUT_OP_DONKER))
         self._no_wifi_label.setFixedHeight(30)
         # Retain layout space when hidden — prevents done button from shifting
         _sp2 = self._no_wifi_label.sizePolicy()
@@ -4655,17 +4614,11 @@ class PhotoboothWindow(QMainWindow):
         right_lay.addStretch()
 
         # --- KLAAR button (always at bottom) ---
-        self._sharing_done_btn = QPushButton("✓  " + t("btn_done"))
+        self._sharing_done_btn = QPushButton(t("btn_done"))
         self._sharing_done_btn.setCursor(Qt.PointingHandCursor)
-        self._sharing_done_btn.setFont(QFont("DM Sans", 18, QFont.Bold))
-        self._sharing_done_btn.setMinimumHeight(72)
-        self._sharing_done_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.08); color: #cccccc; "
-            "border: 1px solid rgba(255,255,255,0.15); border-radius: 16px; "
-            "padding: 16px; font-size: 18px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.14); color: white; }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.22); color: white; }"
-        )
+        self._sharing_done_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        self._sharing_done_btn.setMinimumHeight(merk.KNOP_NORMAAL)
+        self._sharing_done_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         self._sharing_done_btn.clicked.connect(self._go_done)
         right_lay.addWidget(self._sharing_done_btn)
 
@@ -4699,25 +4652,30 @@ class PhotoboothWindow(QMainWindow):
         # === QR overlay (shown when QR button is pressed) ===
         self._qr_overlay = QWidget(page)
         self._qr_overlay.setStyleSheet(
-            "QWidget { background: rgba(0,0,0,0.92); border-radius: 20px; }"
+            f"QWidget {{ background: {merk.INKT};"
+            f" border: 1px solid {merk.INKT_RAND};"
+            f" border-radius: {merk.RONDING_VLAK}px; }}"
         )
         self._qr_overlay.hide()
         qr_ov_lay = QVBoxLayout(self._qr_overlay)
-        qr_ov_lay.setContentsMargins(30, 20, 30, 20)
-        qr_ov_lay.setSpacing(12)
+        qr_ov_lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
+                                     merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
+        qr_ov_lay.setSpacing(merk.RUIMTE)
 
         qr_title = QLabel(t("scan_for_photo"))
         qr_title.setAlignment(Qt.AlignCenter)
-        qr_title.setFont(QFont("DM Sans", 22, QFont.Bold))
-        qr_title.setStyleSheet("color: white; background: transparent;")
+        qr_title.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True, kop=True))
+        qr_title.setStyleSheet(merk.tekst(merk.OP_DONKER))
         qr_ov_lay.addWidget(qr_title)
 
         # QR loading spinner label (animated dots)
-        self._qr_loading_label = QLabel("⏳  " + t("uploading"))
+        self._qr_loading_label = QLabel(t("uploading"))
         self._qr_loading_label.setAlignment(Qt.AlignCenter)
-        self._qr_loading_label.setFont(QFont("DM Sans", 16))
+        self._qr_loading_label.setFont(merk.letter(merk.TEKST_LOPEND))
         self._qr_loading_label.setMinimumSize(200, 200)
-        self._qr_loading_label.setStyleSheet("color: #aaaaaa; background: rgba(255,255,255,0.05); border-radius: 16px;")
+        self._qr_loading_label.setStyleSheet(
+            f"color: {merk.OP_DONKER_ZACHT}; background: {merk.INKT_VLAK};"
+            f" border-radius: {merk.RONDING_VLAK}px;")
         self._qr_loading_label.hide()
         qr_ov_lay.addWidget(self._qr_loading_label, alignment=Qt.AlignCenter)
 
@@ -4733,26 +4691,23 @@ class PhotoboothWindow(QMainWindow):
         self.qr_label.setMaximumSize(400, 400)
         self.qr_label.setScaledContents(True)
         self.qr_label.setStyleSheet(
-            "background: white; border-radius: 16px; padding: 20px;"
+            f"background: {merk.WIT};"
+            f" border-radius: {merk.RONDING_VLAK}px; padding: 20px;"
         )
         qr_ov_lay.addWidget(self.qr_label, alignment=Qt.AlignCenter)
 
         self.qr_url_label = QLabel("")
         self.qr_url_label.setAlignment(Qt.AlignCenter)
-        self.qr_url_label.setFont(QFont("DM Sans", 11))
+        self.qr_url_label.setFont(merk.letter(merk.TEKST_FIJN))
         self.qr_url_label.setWordWrap(True)
-        self.qr_url_label.setStyleSheet("color: #888888; background: transparent;")
+        self.qr_url_label.setStyleSheet(merk.tekst(merk.OP_DONKER_FIJN))
         qr_ov_lay.addWidget(self.qr_url_label)
 
-        qr_close_btn = QPushButton(t("close").upper())
+        qr_close_btn = QPushButton(t("close"))
         qr_close_btn.setCursor(Qt.PointingHandCursor)
-        qr_close_btn.setFont(QFont("DM Sans", 14, QFont.Bold))
-        qr_close_btn.setMinimumHeight(50)
-        qr_close_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.15); color: white; "
-            "border: none; border-radius: 12px; padding: 12px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.25); }"
-        )
+        qr_close_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
+        qr_close_btn.setMinimumHeight(merk.KNOP_MIN)
+        qr_close_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
         qr_close_btn.clicked.connect(lambda: self._qr_overlay.hide())
         qr_ov_lay.addWidget(qr_close_btn)
 

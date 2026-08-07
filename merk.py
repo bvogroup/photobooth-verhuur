@@ -112,6 +112,9 @@ INKT_IN = "#0B1421"         # inktknop ingedrukt
 
 GOED = "#4D7800"            # "klaar" — werkt als tekst (4,95:1) én als vlak (5,25:1)
 FOUT = "#C0392B"            # "mis" — idem (5,13:1 en 5,44:1)
+FOUT_OP_DONKER = "#F17166"  # dezelfde melding op een gastscherm — 5,70:1 op INKT
+                            # en 4,72:1 op INKT_VLAK. FOUT zelf haalt op donker
+                            # maar 3,4:1 en is daar dus te donker.
 LEI = "#4B535E"             # neutrale tweede knop op licht — wit erop 7,78:1
 
 UIT_VLAK = "#2E3947"        # uitgeschakelde knop op donker
