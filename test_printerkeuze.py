@@ -423,6 +423,19 @@ def test_onbereikbare_printerlijst_verandert_niets():
     assert wacht.stand().printer == "DP-QW410"
 
 
+def test_mislukte_dure_lijst_neemt_de_printer_niet_weg():
+    """De namenlijst lukt, de lijst met poort en driver niet. Dan kiezen we op
+    naam alleen — een lege lijst zou een werkende printer wegnemen."""
+    spion = _Spion([DNP, PDF])
+    wacht = Printerwacht(terugmelding=lambda b, s: None, drempel=1,
+                         lees_namen=spion.namen, lees_lijst=lambda: [],
+                         leest_leven=spion.leeft)
+    besluit = wacht.veeg()
+    assert besluit.printer == "DP-QW410"
+    # En de PDF-printer wordt nog steeds op naam uitgesloten.
+    assert "Microsoft Print to PDF" not in (besluit.printer or "")
+
+
 def test_wacht_onthoudt_het_stuurprogramma_van_een_verdwenen_queue():
     """Het geval waarvoor dit nodig is: Windows maakt na een unit-swap een
     nieuwe queue ('(Kopie 1)') en gooit de oude weg. De hoofddraad moet dan

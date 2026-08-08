@@ -803,6 +803,13 @@ class Printerwacht:
                     self._stuurprogrammas[k.naam] = k.stuurprogramma or ""
         # Verdwenen queues mogen niet blijven hangen in de gecachte lijst.
         kandidaten = [k for k in self._kandidaten if k.naam in namen]
+        # Kende de goedkope lijst namen die de dure lijst niet opleverde (die
+        # aanroep kan op zichzelf mislukken), val dan terug op de naam alleen.
+        # Zonder poort en stuurprogramma is de uitsluiting minder scherp, maar
+        # een lege lijst zou een werkende printer wegnemen — en dat is erger.
+        gezien = {k.naam for k in kandidaten}
+        for naam in namen - gezien:
+            kandidaten.append(Kandidaat(naam=naam))
 
         levend: Dict[str, bool] = {}
         huidig = self.automaat.gekozen
