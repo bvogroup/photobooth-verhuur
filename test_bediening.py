@@ -65,6 +65,7 @@ from PyQt5.QtWidgets import QApplication, QPushButton           # noqa: E402
 import merk                                                     # noqa: E402
 import proefvenster                                             # noqa: E402
 import bediening                                                # noqa: E402
+import respons                                                  # noqa: E402
 import filters as _filters                                      # noqa: E402
 
 # De Surface Pro 7: 2736 x 1824 fysiek. Op 200% rekent Qt in 1368 x 912 punten.
@@ -363,6 +364,126 @@ def toets_schermen(pb, breedte, hoogte, dpr):
     return schermen
 
 
+# ── 2b. één tik is één keer ────────────────────────────────────────────────
+def toets_eenmalig():
+    """Wat er gebeurt als iemand tien keer op dezelfde knop tikt.
+
+    De klacht: "mensen hebben geen idee wat ze doen, gaan misschien tien keer
+    klikken en dan loopt dat ding vast." Dat is geen beeldspraak. Qt BEWAART
+    tikken die binnenkomen terwijl de hoofddraad bezig is, en levert ze
+    daarna alsnog af — tien keer dezelfde handler achter elkaar. Op "Sessie
+    stoppen" betekende dat tien keer de terugkeer naar het startscherm, op
+    "Ja, print" tien prints.
+
+    Hieronder staat dat vastgelegd op de ECHTE gastknoppen, gebouwd met
+    bediening.zet_hoofdknop / zet_zijknop en gekoppeld met respons.eenmalig —
+    precies zoals photobooth.py het doet.
+    """
+    print("\nEén tik is één keer", flush=True)
+
+    # ── tien tikken achter elkaar ──────────────────────────────────────────
+    respons.open_grendel()
+    tellen = []
+    knop = bediening.zet_hoofdknop(QPushButton("Sessie stoppen"))
+    respons.eenmalig(knop, lambda: tellen.append(1))
+    knop.show()
+    QApplication.processEvents()
+    for _ in range(10):
+        knop.click()
+    eis(len(tellen) == 1,
+        f"tien tikken op “Sessie stoppen” leveren {len(tellen)} keer werk op "
+        f"(hoort 1 te zijn)")
+
+    # ── doortikken TIJDENS de bewerking ────────────────────────────────────
+    # Dit is het echte geval: de gast tikt door zolang hij niets ziet
+    # gebeuren. Die tikken komen aan bij een knop die al uit staat en horen
+    # te verdwijnen, niet in een rij te gaan staan.
+    respons.open_grendel()
+    tijdens = []
+    knop2 = bediening.zet_hoofdknop(QPushButton("Ja"))
+
+    def _traag():
+        tijdens.append(1)
+        for _ in range(10):
+            knop2.click()          # de ongeduldige vinger, midden in het werk
+
+    respons.eenmalig(knop2, _traag)
+    knop2.show()
+    QApplication.processEvents()
+    knop2.click()
+    eis(len(tijdens) == 1,
+        f"tikken tijdens de bewerking worden weggegooid en niet bewaard "
+        f"({len(tijdens)} keer werk)")
+    eis(not knop2.isEnabled(),
+        "de knop staat uit zolang hij bezig is — daar ziet de gast het aan")
+
+    # ── de knop ernaast is ook even doof ───────────────────────────────────
+    # De reeks na een sessie zet de hoofdknop bewust steeds op dezelfde plek:
+    # "Ja" → "Ja, print" → "Klaar". Zonder een grendel over alle gastknoppen
+    # heen klikt één doortikkende vinger zich in twee tellen door drie
+    # schermen en bestelt onderweg een print.
+    respons.open_grendel()
+    eerste, tweede = [], []
+    a = bediening.zet_hoofdknop(QPushButton("Ja"))
+    b = bediening.zet_hoofdknop(QPushButton("Ja, print"))
+    respons.eenmalig(a, lambda: eerste.append(1))
+    respons.eenmalig(b, lambda: tweede.append(1))
+    a.show()
+    b.show()
+    QApplication.processEvents()
+    a.click()
+    b.click()          # de doortik, op de knop die er nu staat
+    eis(len(eerste) == 1 and len(tweede) == 0,
+        f"een doortik op de VOLGENDE knop gaat niet af "
+        f"(eerste {len(eerste)}x, tweede {len(tweede)}x)")
+    eis(respons.GRENDEL_MS >= 300,
+        f"de grendel staat op {respons.GRENDEL_MS} ms — lang genoeg voor een "
+        f"doortik, korter dan lezen-beslissen-tikken")
+
+    # En hij gaat weer open, anders zit een gast vast.
+    respons.open_grendel()
+    b.click()
+    eis(len(tweede) == 1, "en daarna doet diezelfde knop het gewoon weer")
+
+    # ── het draaiende teken maakt de knop niet groter of kleiner ───────────
+    # De gastknoppen staan onderin het midden omdat de booth anders van zijn
+    # statief draait, en ze hebben een ondergrens van merk.KNOP_MIN. Een teken
+    # dat de maat verandert zou allebei om zeep helpen.
+    print("\nHet draaiende teken", flush=True)
+    teken_knop = bediening.zet_hoofdknop(QPushButton("Volgende foto maken"))
+    teken_knop.resize(teken_knop.sizeHint())
+    teken_knop.show()
+    QApplication.processEvents()
+    voor = (teken_knop.width(), teken_knop.height())
+    draaier = respons.wacht_in_knop(teken_knop)
+    QApplication.processEvents()
+    na = (teken_knop.width(), teken_knop.height())
+    eis(voor == na,
+        f"de knop houdt zijn maat met een teken erin ({voor[0]}x{voor[1]} en "
+        f"daarna {na[0]}x{na[1]})")
+    eis(na[1] >= merk.KNOP_MIN and na[0] >= merk.KNOP_MIN,
+        f"en blijft boven de aanraaknorm ({na[0]}x{na[1]}, ondergrens "
+        f"{merk.KNOP_MIN})")
+    eis(draaier.parent() is teken_knop
+        and draaier.x() >= 0 and draaier.y() >= 0
+        and draaier.x() + draaier.width() <= na[0]
+        and draaier.y() + draaier.height() <= na[1],
+        f"het teken staat binnen de knop "
+        f"({draaier.x()},{draaier.y()} {draaier.width()}x{draaier.height()})")
+
+    # Het teken beweegt echt: twee verfbeurten geven een andere hoek.
+    hoek1 = draaier._hoek
+    draaier._tik()
+    eis(draaier._hoek != hoek1,
+        f"het teken draait ({hoek1} graden en daarna {draaier._hoek})")
+
+    respons.stop_wachten(teken_knop)
+    QApplication.processEvents()
+    eis(teken_knop.maximumWidth() > na[0],
+        "en de knop mag daarna weer meeschalen met de balk")
+    respons.open_grendel()
+
+
 # ── 3. de kleurstalen ──────────────────────────────────────────────────────
 def toets_stalen():
     print("\nDe kleurstalen", flush=True)
@@ -515,6 +636,67 @@ def toets_erfenis():
         "de kolom van 340 punten aan de rechterkant van het filterscherm is weg")
 
 
+# ── 6. het venster komt eerst ──────────────────────────────────────────────
+def toets_venster_komt_eerst():
+    """Wat er gebeurt tussen "starten" en "er staat iets op het scherm".
+
+    De klacht: "Ook als je de software opstart zie je best lang een
+    bureaublad." Dat kwam niet door de collage — die staat er binnen een paar
+    tienden — maar doordat er vijf seconden lang HELEMAAL GEEN VENSTER was.
+    Alles wat photobooth bij het opstarten doet, gebeurde vóór het venster:
+    twee keer `netsh advfirewall`, een PowerShell-aanroep voor de
+    schermhelderheid, de camera aanspreken (die wacht tot vijftien seconden op
+    de spiegelreflex) en het bouwen van twintig schermen.
+
+    Hier wordt de VOLGORDE vastgelegd, want die is het hele punt: het venster
+    met het merk erop komt vóór al dat werk, niet erna.
+    """
+    print("\nHet venster komt eerst", flush=True)
+    pb_bron = open(os.path.join(APP, "photobooth.py"), encoding="utf-8").read()
+    main_bron = open(os.path.join(APP, "main.py"), encoding="utf-8").read()
+
+    def na(bron, eerste, tweede):
+        """Staat `eerste` vóór `tweede` in deze bron?"""
+        return bron.index(eerste) < bron.index(tweede)
+
+    eis("self._toon_opkomscherm()" in pb_bron,
+        "PhotoboothWindow zet zelf een scherm neer bij het opstarten")
+    eis(na(pb_bron, "self._toon_opkomscherm()", "self._build_ui()"),
+        "het venster staat er vóór de twintig schermen gebouwd worden")
+    eis(na(pb_bron, "self._toon_opkomscherm()", "self.camera = Camera()"),
+        "en vóór de camera wordt aangesproken")
+    eis(na(pb_bron, "self.state = State.IDLE", "self._toon_opkomscherm()"),
+        "de toestand staat er vóór het venster — resizeEvent kijkt ernaar")
+
+    # main.py: de twee trage Windows-klussen horen ACHTER het venster.
+    eis("_klussen_op_de_achtergrond" in main_bron,
+        "main.py heeft de trage Windows-klussen apart gezet")
+    eis(na(main_bron, "window = PhotoboothWindow()",
+           "QTimer.singleShot(0, _klussen_op_de_achtergrond)"),
+        "de firewallregel en de schermhelderheid komen ná het venster")
+    # Kijk in main() zelf, niet in het hele bestand: de definities staan
+    # bovenaan en die zeggen niets over de volgorde van uitvoeren. En sla het
+    # commentaar over — daarin worden deze twee namen juist genoemd om uit te
+    # leggen waaróm ze verhuisd zijn.
+    main_blok = main_bron[main_bron.index("\ndef main():"):
+                          main_bron.index("\ndef _klussen_op_de_achtergrond")]
+    code = "\n".join(r for r in main_blok.splitlines()
+                     if not r.lstrip().startswith("#"))
+    for klus in ("_ensure_firewall_rule()", "_set_display_brightness()"):
+        eis(klus not in code,
+            f"{klus} wordt niet meer in main() zelf aangeroepen")
+
+    # En de terugkeer uit de instellingen: het venster wordt daar opnieuw
+    # aangemaakt (setWindowFlags), dus dat hoort het LAATSTE te zijn.
+    eis("_terug_naar_startscherm" in pb_bron,
+        "launch event en 'terug' lopen via één weg")
+    blok = pb_bron[pb_bron.index("def _terug_naar_startscherm"):]
+    blok = blok[:blok.index("\n    def ", 10)]
+    eis(blok.index("self._go_idle()")
+        < blok.index("self._restore_fullscreen_flags()"),
+        "het startscherm staat klaar vóór het venster opnieuw wordt aangemaakt")
+
+
 def main():
     app = QApplication(sys.argv)
     try:
@@ -527,8 +709,10 @@ def main():
     breedte, hoogte = int(FYSIEK_B / dpr), int(FYSIEK_H / dpr)
 
     onderdeel("de erfenis", toets_erfenis)
+    onderdeel("het venster komt eerst", toets_venster_komt_eerst)
     onderdeel("de balk", toets_balk, breedte)
     onderdeel("de tussenruimte", toets_tussenruimte)
+    onderdeel("één tik is één keer", toets_eenmalig)
     onderdeel("de stalen", toets_stalen)
 
     pb = onderdeel("photobooth importeren", proefvenster.leen_photobooth)

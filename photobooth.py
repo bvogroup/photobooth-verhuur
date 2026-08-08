@@ -27,6 +27,7 @@ from PyQt5.QtGui import QPixmap, QPixmapCache, QImage, QFont, QPainter, QColor, 
 import config
 import merk  # de merkwaarden: kleuren, maten, afrondingen en knopstijlen
 import bediening  # de balk met gastknoppen: onderin, op de hartlijn
+import respons  # elke tik meteen zichtbaar, en precies één keer
 import filters as _filters  # de fotofilters en hun kleurstalen
 import startscherm  # de collage op het startscherm
 from camera import (Camera, CaptureThread, EDSDKWorker,
@@ -993,6 +994,9 @@ class PhotoboothWindow(QMainWindow):
     # uploadpoort loopt naar een ander scherm dan die vóór de updatecheck.
     _handover_upload_net_signal = pyqtSignal(bool)  # internet ja/nee
     _handover_wipe_signal = pyqtSignal(object)      # dict van opruimen.ruim_op
+    # De fotostrook is klaar (bouwdraad → hoofddraad). Het pad, of "" als het
+    # niet gelukt is. Zie _create_and_show_strip.
+    _strook_klaar_signaal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -1015,6 +1019,25 @@ class PhotoboothWindow(QMainWindow):
         )
         self.setWindowTitle("Photobooth")
         self.setStyleSheet(STYLESHEET)
+
+        # De toestand moet er zijn vóór het venster, niet erna. Zodra er een
+        # venster op het scherm komt, stuurt Qt een resizeEvent en die kijkt
+        # naar self.state. Stond die toewijzing verderop, dan viel het
+        # opstarten om op een AttributeError.
+        self.state = State.IDLE
+
+        # EERST EEN VENSTER, DAN PAS DE REST.
+        #
+        # Hieronder staat het opstartwerk: de camera aanspreken, alle schermen
+        # bouwen, de instellingen inlezen. Dat duurt seconden, en zolang het
+        # loopt bestond er nog geen venster — de gebruiker keek naar het
+        # bureaublad van Windows. Bij het opstarten viel dat extra op omdat de
+        # tkinter-splash uit splash_starter.pyw net daarvóór verdwijnt: die
+        # sluit zodra PyQt5 geladen is, en dan begint dit pas.
+        #
+        # Nu komt het venster hier, als eerste, met het merk erop. Alles
+        # daaronder gebeurt met dat venster al in beeld.
+        self._toon_opkomscherm()
 
         # Booth-wide backend-brand cache — bron voor self.backend_brand
         # wanneer er (nog) geen actief event is (welcome-page). Wordt
@@ -1123,7 +1146,8 @@ class PhotoboothWindow(QMainWindow):
             self._led_reconnect_timer.timeout.connect(self._led_reconnect_tick)
             self._led_reconnect_timer.start()
 
-        self.state = State.IDLE
+        # self.state staat al op State.IDLE — dat gebeurt bovenaan, vóór het
+        # venster, omdat resizeEvent er meteen naar kijkt.
         # Connect cross-thread SumUp signals (daemon thread → main thread)
         self._sumup_payment_signal.connect(self._sumup_auto_start_session)
         self._sumup_status_signal.connect(self._sumup_update_idle)
@@ -1150,6 +1174,7 @@ class PhotoboothWindow(QMainWindow):
         self._update_progress_signal.connect(self._on_update_progress)
         self._update_done_signal.connect(self._on_update_done)
         self._filter_ready_signal.connect(self._on_filter_thumbs_ready)
+        self._strook_klaar_signaal.connect(self._op_strook_klaar)
         self._handover_wifi_signal.connect(self._on_handover_wifi)
         self._handover_update_signal.connect(self._on_handover_update)
         self._handover_upload_net_signal.connect(self._on_handover_upload_net)
@@ -1243,12 +1268,60 @@ class PhotoboothWindow(QMainWindow):
             print(f"[I18N] Taal geladen: {lang}")
 
         self._build_ui()
+        # _build_ui zet zijn eigen centrale widget neer. Het opkomscherm hangt
+        # daarmee nergens meer aan, maar Qt ruimt het niet uit zichzelf op —
+        # dat zou een venstervullende widget in het geheugen laten staan voor
+        # de hele avond.
+        if getattr(self, '_opkomscherm', None) is not None:
+            try:
+                self._opkomscherm.setParent(None)
+                self._opkomscherm.deleteLater()
+            except Exception:
+                pass
+        self._opkomscherm = None
         self._apply_custom_cursor()
 
         # Auth check on startup
         self._do_startup_auth()
 
     # ── Helpers ────────────────────────────────
+
+    def _toon_opkomscherm(self):
+        """Zet binnen een oogwenk het merk op het scherm, en toon het venster.
+
+        Dit is het eerste dat een gebruiker van de booth ziet. Het staat er
+        vóór de camera wordt aangesproken (die aanroep wacht tot vijftien
+        seconden op de spiegelreflex), vóór de twintig schermen gebouwd zijn en
+        vóór de instellingen van schijf komen.
+
+        Waarom het venster hier al volledig getoond wordt en niet in main.py:
+        Qt tekent pas als de hoofddraad even vrij is, en die is na deze regel
+        seconden achtereen bezig. Het venster moet dus niet alleen bestaan maar
+        ook één keer geverfd zijn — vandaar de processEvents() hieronder. Wat
+        daarna komt, komt met dit scherm in beeld.
+
+        Het staat in een try: een photobooth op een feest moet opkomen, ook als
+        het logo ontbreekt of het scherm zich niet laat tekenen.
+        """
+        try:
+            logo = startscherm.merkbestand("logo.png")
+            self._opkomscherm = respons.Wachtscherm(
+                self, "Druk op het scherm\nom een foto te maken",
+                logo=logo, teken=False)
+            self.setCentralWidget(self._opkomscherm)
+            # De booth draait schermvullend. --windowed is de ontwikkelstand en
+            # die staat ook in main.py; hier hetzelfde, anders zou het venster
+            # eerst schermvullend opkomen en meteen weer terugklappen.
+            if "--windowed" in sys.argv:
+                self.showMaximized()
+            else:
+                self.showFullScreen()
+            self._opkomscherm.toon()
+            QApplication.processEvents()
+            print("[OPSTART] Venster staat, het merk is zichtbaar", flush=True)
+        except Exception as e:
+            print(f"[OPSTART] Opkomscherm niet getoond: {e}", flush=True)
+            self._opkomscherm = None
 
     def _apply_custom_cursor(self):
         """Create a large, bright cursor that is always visible on dark backgrounds.
@@ -3863,7 +3936,28 @@ class PhotoboothWindow(QMainWindow):
             try:
                 page = startscherm.Collage(self._collage_achtergrond())
                 self._idle_collage = page
-                page.zet_fotos(startscherm.fotos_van_event(self._get_raw_dir()))
+                # Hoeveel tegels er passen, gerekend uit de SCHERMmaat. De
+                # widget heeft op dit moment nog geen maat — hij wordt hier
+                # aangemaakt en meteen gevuld — en een maat vragen aan iets dat
+                # nog niet geplaatst is, is precies de fout die de miniaturen
+                # van beta.5 en de collage van beta.8 de mist in stuurde.
+                #
+                # Waar dit getal voor dient: zijn er minder fotosessies dan er
+                # tegels passen, dan vult fotos_van_event aan met een tweede
+                # opname uit dezelfde sessies. Aan het begin van een event —
+                # precies wanneer de eerste gasten kijken — staat het raster
+                # dan niet halfleeg.
+                passen = 0
+                try:
+                    scherm = self.screen()
+                    vlak = scherm.geometry() if scherm else None
+                    if vlak is not None and vlak.width() > 8:
+                        passen = startscherm.Layout(vlak.width(),
+                                                    vlak.height()).n
+                except Exception as e:
+                    print(f"[COLLAGE] tegelaantal onbekend: {e}", flush=True)
+                page.zet_fotos(startscherm.fotos_van_event(
+                    self._get_raw_dir(), aantal=passen))
                 # Het slotje en het serienummer liggen buiten de collage en
                 # zouden anders de hele avond stilstaan — juist die twee zijn
                 # klein, contrastrijk en staan in een lege hoek. Ze schuiven
@@ -3964,10 +4058,17 @@ class PhotoboothWindow(QMainWindow):
             )
             tap_overlay.setCursor(Qt.PointingHandCursor)
             # Bij voucher-modus: ga eerst naar voucher-input scherm
-            if voucher_on:
-                tap_overlay.clicked.connect(self._show_voucher_input)
-            else:
-                tap_overlay.clicked.connect(self._go_select_template)
+            #
+            # Dit vlak beslaat het hele startscherm, dus elke tik komt hier
+            # terecht. Juist hier hoort de grendel: wie op een druk feest twee
+            # keer tikt omdat er niet meteen iets gebeurt, startte anders een
+            # sessie en gooide hem in dezelfde beweging weer om. Uitzetten doet
+            # het vlak niet — het is doorzichtig, dus daar zou de gast toch
+            # niets van zien.
+            respons.eenmalig(
+                tap_overlay,
+                self._show_voucher_input if voucher_on else self._go_select_template,
+                uitzetten=False)
             lay.addWidget(tap_overlay)
 
         # License banner (always created, shown/hidden based on login state)
@@ -4574,12 +4675,12 @@ class PhotoboothWindow(QMainWindow):
         lay.addStretch()
 
         yes_btn = QPushButton("Ja")
-        yes_btn.clicked.connect(self._on_review_photos_ok)
+        respons.eenmalig(yes_btn, self._on_review_photos_ok)
         bediening.zet_hoofdknop(yes_btn)
         self._review_confirm_yes_btn = yes_btn
 
         no_btn = QPushButton("Nee, begin opnieuw")
-        no_btn.clicked.connect(self._on_review_photos_redo)
+        respons.eenmalig(no_btn, self._on_review_photos_redo)
         bediening.zet_zijknop(no_btn)
         self._review_confirm_no_btn = no_btn
 
@@ -4594,7 +4695,7 @@ class PhotoboothWindow(QMainWindow):
         # je niet wil hebben. Dat is een afstand die je met je duim voelt; een
         # afwijkende omlijning is alleen iets dat je achteraf ziet.
         stop_btn = QPushButton("Sessie stoppen")
-        stop_btn.clicked.connect(self._on_review_stop)
+        respons.eenmalig(stop_btn, self._on_review_stop)
         bediening.zet_zijknop(stop_btn)
         self._review_confirm_stop_btn = stop_btn
 
@@ -4626,12 +4727,12 @@ class PhotoboothWindow(QMainWindow):
         lay.addStretch()
 
         yes_btn = QPushButton("Ja, print")
-        yes_btn.clicked.connect(self._on_review_print_yes)
+        respons.eenmalig(yes_btn, self._on_review_print_yes)
         bediening.zet_hoofdknop(yes_btn)
         self._review_print_yes_btn = yes_btn
 
         no_btn = QPushButton("Nee, geen print")
-        no_btn.clicked.connect(self._on_review_print_no)
+        respons.eenmalig(no_btn, self._on_review_print_no)
         bediening.zet_zijknop(no_btn)
         self._review_print_no_btn = no_btn
 
@@ -4646,7 +4747,7 @@ class PhotoboothWindow(QMainWindow):
         # je niet wil hebben. Dat is een afstand die je met je duim voelt; een
         # afwijkende omlijning is alleen iets dat je achteraf ziet.
         stop_btn = QPushButton("Sessie stoppen")
-        stop_btn.clicked.connect(self._on_review_stop)
+        respons.eenmalig(stop_btn, self._on_review_stop)
         bediening.zet_zijknop(stop_btn)
         self._review_print_stop_btn = stop_btn
 
@@ -4816,7 +4917,7 @@ class PhotoboothWindow(QMainWindow):
         # Twee groene knoppen naast elkaar zou sowieso niet kunnen: het merk
         # staat er één per scherm toe, anders valt er niets meer op.
         self._sharing_print_btn = QPushButton(t("btn_print"))
-        self._sharing_print_btn.clicked.connect(self._sharing_do_print)
+        respons.eenmalig(self._sharing_print_btn, self._sharing_do_print)
         bediening.zet_zijknop(self._sharing_print_btn)
 
         # ── Inline print-delay knoppen (verborgen tot 'Ja print' klik) ──
@@ -4829,7 +4930,7 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_cancel_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
         self._sharing_cancel_print_btn.setMinimumHeight(merk.KNOP_NORMAAL)
         self._sharing_cancel_print_btn.setStyleSheet(merk.knop_gevaar())
-        self._sharing_cancel_print_btn.clicked.connect(self._on_inline_print_cancel)
+        respons.eenmalig(self._sharing_cancel_print_btn, self._on_inline_print_cancel)
         _spcp = self._sharing_cancel_print_btn.sizePolicy()
         _spcp.setRetainSizeWhenHidden(False)
         self._sharing_cancel_print_btn.setSizePolicy(_spcp)
@@ -4840,7 +4941,7 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_redo_print_btn.setFont(merk.letter(merk.TEKST_KNOP, vet=True))
         self._sharing_redo_print_btn.setMinimumHeight(merk.KNOP_NORMAAL)
         self._sharing_redo_print_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
-        self._sharing_redo_print_btn.clicked.connect(self._on_inline_print_redo)
+        respons.eenmalig(self._sharing_redo_print_btn, self._on_inline_print_redo)
         _sprp = self._sharing_redo_print_btn.sizePolicy()
         _sprp.setRetainSizeWhenHidden(False)
         self._sharing_redo_print_btn.setSizePolicy(_sprp)
@@ -4961,7 +5062,7 @@ class PhotoboothWindow(QMainWindow):
         # opduikt. Show wordt monkey-patched naar no-op.
         self._sharing_qr_btn = QPushButton(page)
         self._sharing_qr_btn.setFixedSize(0, 0)
-        self._sharing_qr_btn.clicked.connect(self._sharing_show_qr)
+        respons.eenmalig(self._sharing_qr_btn, self._sharing_show_qr)
         self._sharing_qr_btn.hide()
         self._sharing_qr_btn.show = lambda: None  # no-op show — kan nooit verschijnen
         self._sharing_qr_btn.setVisible = lambda _v=False: None
@@ -4974,7 +5075,7 @@ class PhotoboothWindow(QMainWindow):
         self._sharing_email_btn.setMinimumHeight(merk.KNOP_NORMAAL)
         self._sharing_email_btn.setStyleSheet(merk.knop_tweede(op_donker=True))
 
-        self._sharing_email_btn.clicked.connect(self._go_email_input)
+        respons.eenmalig(self._sharing_email_btn, self._go_email_input)
         # Retain layout space when hidden — prevents done button from shifting
         _sp3 = self._sharing_email_btn.sizePolicy()
         _sp3.setRetainSizeWhenHidden(True)
@@ -4996,7 +5097,7 @@ class PhotoboothWindow(QMainWindow):
 
         # --- KLAAR button ---
         self._sharing_done_btn = QPushButton(t("btn_done"))
-        self._sharing_done_btn.clicked.connect(self._go_done)
+        respons.eenmalig(self._sharing_done_btn, self._go_done)
         bediening.zet_hoofdknop(self._sharing_done_btn)
 
         # De band is af: meldingen boven, knoppen onder.
@@ -6738,6 +6839,14 @@ class PhotoboothWindow(QMainWindow):
             if timer is not None and timer.isActive():
                 timer.stop()
         self.state = State.IDLE
+        # Het wachtscherm van de strookbouw hoort nooit op idle te blijven
+        # staan — bijvoorbeeld als een sessie afgebroken wordt terwijl de
+        # bouwdraad nog loopt.
+        self._verberg_strookwachtscherm()
+        # De grendel wordt hier BEWUST niet geopend. Het startscherm is één
+        # groot aanraakvlak; wie twee keer op "Sessie stoppen" tikt zou met de
+        # tweede tik meteen een nieuwe sessie starten. De grendel loopt vanzelf
+        # af (respons.GRENDEL_MS), en dat is precies lang genoeg.
         self._stop_live_view()
         self._reset_countdown_ui()
         self.review_timer.stop()
@@ -6772,11 +6881,18 @@ class PhotoboothWindow(QMainWindow):
         if self._frame_buffer:
             self._frame_buffer.clear()
         self._email_thread = None
-        # Free cached pixmaps and images to reduce memory
+        # De verwijzingen loslaten is gratis; het OPRUIMEN kost tijd.
         self._last_live_pixmap = None
         self._capture_screen_pixmap = None
-        QPixmapCache.clear()  # Clear Qt's internal pixmap cache
-        gc.collect()  # Force garbage collection after session cleanup
+        # HET OPRUIMEN GEBEURT NA HET STARTSCHERM, NIET ERVOOR.
+        #
+        # Hier stonden QPixmapCache.clear() en gc.collect() — vóór de
+        # schermwissel. Beide lopen op de hoofddraad, dus zolang ze bezig zijn
+        # tekent Qt niets: de gast tikt op "Sessie stoppen" en blijft naar het
+        # vorige scherm kijken. Het geheugen moet wél terug, maar niemand
+        # wacht erop. Het gebeurt nu een tel later, met het startscherm al in
+        # beeld. Zie _ruim_geheugen_op().
+        self._plan_geheugen_opruimen()
 
         # Routing: bij geen gekoppeld event → welcome page (taal/wifi/QR setup);
         # anders normale idle (tap to start).
@@ -6819,7 +6935,18 @@ class PhotoboothWindow(QMainWindow):
 
         self.stack.setCurrentIndex(self.pages["idle"])
         self._ververs_collage()
-        self._update_status()
+        # HIER STOND _update_status(), EN DAT KOSTTE SECONDEN VOOR NIETS.
+        #
+        # Die methode vraagt Windows om de printerlijst
+        # (win32print.EnumPrinters met LOCAL | CONNECTIONS). CONNECTIONS gaat
+        # langs de netwerkverbindingen, en dat is de traagste aanroep die er in
+        # deze hele flow zit — op een booth met een printserver of een offline
+        # queue in de lijst duurt hij seconden, op de hoofddraad, precies op
+        # het moment dat de gast op "Sessie stoppen" heeft getikt.
+        #
+        # En het resultaat werd twintig regels verderop weggegooid: hij zet
+        # self.status_label, en daar komt hieronder het serienummer overheen.
+        # De aanroep deed dus niets anders dan wachten.
         # Position lock button in bottom-right corner
         if hasattr(self, '_idle_lock_btn'):
             self._idle_lock_btn.show()
@@ -6862,6 +6989,41 @@ class PhotoboothWindow(QMainWindow):
             self._payment_queue -= 1
             print(f"[PAYMENT] Volgende sessie uit wachtrij ({self._payment_queue} resterend)")
             QTimer.singleShot(2000, self._go_select_template)
+
+    # ── het opruimen na een sessie ────────────────────────────────────────
+    #
+    # Een sessie laat een hoop achter: de pixmaps van het livebeeld, de
+    # voorverwerkte foto's, de strook, de beeldjes van de boemerang. Dat moet
+    # terug, anders loopt een fanless tablet op een avond met honderd sessies
+    # vol. Maar het HOEFT NIET op het moment dat de gast op een knop tikt.
+    #
+    # gc.collect() loopt de hele objectgraaf van het proces langs en dat kost
+    # op de booth honderden milliseconden tot ruim een seconde — op de
+    # hoofddraad, dus in die tijd tekent Qt niets. Het gebeurt daarom een
+    # seconde ná de schermwissel: het startscherm staat er dan al, de gast is
+    # weg, en de collage heeft zijn tegels binnen.
+
+    OPRUIM_NA_MS = 1200
+
+    def _plan_geheugen_opruimen(self):
+        """Zet het opruimen klaar voor stráks. Kost nu vrijwel niets."""
+        timer = getattr(self, '_opruim_timer', None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._ruim_geheugen_op)
+            self._opruim_timer = timer
+        timer.start(self.OPRUIM_NA_MS)
+
+    def _ruim_geheugen_op(self):
+        """Het dure opruimwerk, op een moment dat niemand erop wacht."""
+        import time as _t
+        t0 = _t.perf_counter()
+        QPixmapCache.clear()
+        aantal = gc.collect()
+        duur = (_t.perf_counter() - t0) * 1000
+        print(f"[OPRUIMEN] {aantal} objecten opgeruimd in {duur:.0f} ms "
+              f"(na het startscherm, buiten het zicht van de gast)", flush=True)
 
     def _find_template_by_name(self, name, _retry=True):
         """Find a template by name with retry logic for transient file locks.
@@ -8569,17 +8731,17 @@ class PhotoboothWindow(QMainWindow):
         # De knoppen zelf zijn onveranderd — zelfde tekst, zelfde signaal.
         # Alleen hun plaats en maat komen nu uit bediening.py.
         self._filter_next_btn = QPushButton("Volgende foto maken")
-        self._filter_next_btn.clicked.connect(self._filter_next)
+        respons.eenmalig(self._filter_next_btn, self._filter_next)
         bediening.zet_hoofdknop(self._filter_next_btn)
 
         self._filter_retake_btn = QPushButton("Foto opnieuw nemen")
-        self._filter_retake_btn.clicked.connect(self._filter_retake)
+        respons.eenmalig(self._filter_retake_btn, self._filter_retake)
         bediening.zet_zijknop(self._filter_retake_btn)
 
         # Zelfde omlijning als "Foto opnieuw nemen" ernaast — zie
         # _build_review_confirm_panel. De bescherming zit in bediening.TUSSEN.
         self._filter_stop_btn = QPushButton("Stoppen")
-        self._filter_stop_btn.clicked.connect(self._filter_stop)
+        respons.eenmalig(self._filter_stop_btn, self._filter_stop)
         bediening.zet_zijknop(self._filter_stop_btn)
 
         self._filter_balk = bediening.gastbalk(
@@ -8639,6 +8801,9 @@ class PhotoboothWindow(QMainWindow):
         last = (photo_idx >= self.num_photos - 1)
         self._filter_title.setText(f"Foto {photo_idx + 1} van {self.num_photos}")
         self._filter_subtitle.setText("Kies hieronder een filter")
+        # Eerst het wachtteken eraf — anders zou het bij het opruimen de tekst
+        # van de VORIGE foto terugzetten, en die klopt hier niet meer.
+        respons.klaar_met_wachten(self._filter_next_btn)
         self._filter_next_btn.setText("Klaar" if last else "Volgende foto maken")
         # Toon meteen de zojuist gemaakte foto (hergebruik de al-gespiegelde/
         # gecropte pixmap van _show_captured_preview) zodat het scherm nooit
@@ -8833,7 +8998,10 @@ class PhotoboothWindow(QMainWindow):
             btn.setFont(merk.letter(merk.TEKST_FIJN))
             btn.setStyleSheet(self._FILTER_TEGEL_STIJL)
             btn.setFixedSize(tegel_b, hoogte)
-            btn.clicked.connect(lambda _=False, f=fid: self._filter_select(f))
+            # Een gast hoort er een paar te kunnen proberen: de tegels wisselen
+            # alleen de voorbeeldfoto, dus ze grendelen niet en gaan niet uit.
+            respons.eenmalig(btn, (lambda f=fid: self._filter_select(f)),
+                             grendelt=False, uitzetten=False)
             rij, kolom = divmod(i, kolommen)
             self._filter_thumbs_layout.addWidget(btn, rij, kolom,
                                                  alignment=Qt.AlignCenter)
@@ -8917,8 +9085,22 @@ class PhotoboothWindow(QMainWindow):
         if self.current_photo_num < self.num_photos:
             self._continue_after_preview()
         else:
-            # Geef de laatste foto een kleine voorsprong om te verwerken
-            # voordat de strip gebouwd wordt (matcht het klassieke gedrag).
+            # DIT IS DE LAATSTE FOTO, EN DAN DUURT HET EVEN.
+            #
+            # De halve seconde hieronder geeft de verwerkdraad van de laatste
+            # opname een voorsprong; daarna wordt de strook gebouwd. Bij elkaar
+            # is dat het langste dat de gast na een tik nog moet wachten. Tot
+            # beta.14 zag hij in die tijd zijn eigen foto met een knop eronder
+            # waar niets aan veranderde — de klassieke "er gebeurt niets".
+            #
+            # Nu draait er meteen een teken in de knop die hij net aanraakte,
+            # en zodra het bouwen begint komt het wachtscherm eroverheen. Allebei
+            # draaien ze echt: de voorsprong is een timer en het bouwen loopt op
+            # een eigen draad, dus de hoofddraad is in die tijd vrij.
+            try:
+                respons.wacht_in_knop(self._filter_next_btn)
+            except Exception as e:
+                print(f"[FILTER] Wachtteken niet gezet: {e}")
             QTimer.singleShot(500, self._finish_after_preview)
 
     def _filter_retake(self):
@@ -9069,8 +9251,89 @@ class PhotoboothWindow(QMainWindow):
         threading.Thread(target=_process, daemon=True).start()
 
     def _create_and_show_strip(self):
-        """Combine photos into strip and show review page."""
-        self.strip_path = self._build_strip_image()
+        """De fotostrook samenstellen en het deelscherm tonen.
+
+        DIT IS HET ENIGE MOMENT IN DE GASTENFLOW DAT NA BETA.15 NOG ECHT DUURT,
+        en daarom het enige met een draaiend teken erbij.
+
+        Wat er gebeurt: vier opnames op een vel van 1200 bij 1800 zetten, het
+        filter erop, de achtergrond eronder, en het geheel als JPEG naar de
+        schijf. Bij een DNP-template komt daar het driedubbele vel en een
+        gedraaide versie voor het scherm bij. Dat is puur rekenwerk met PIL —
+        er komt geen Qt aan te pas — en het stond tot nu toe op de hoofddraad.
+        Gevolg: de gast tikt op "Volgende foto maken", en dan bevriest het
+        filterscherm met zijn eigen foto erop tot het deelscherm verschijnt.
+
+        Nu bouwt een aparte draad de strook en staat er intussen een
+        wachtscherm met een teken dat ECHT draait. Dat teken is de reden dat
+        het werk verhuisd moest worden en niet andersom: op een geblokkeerde
+        hoofddraad zou het stilstaan en had het niets toegevoegd.
+
+        De strook wordt hierna nog aangeraakt door het printen, het uploaden en
+        het deelscherm. Die drie beginnen pas in _op_strook_klaar(), dus ze
+        krijgen altijd een afgemaakt bestand te zien.
+        """
+        self._toon_strookwachtscherm()
+        self._strook_begonnen = __import__('time').perf_counter()
+        # Van welke sessie is deze strook? Wordt hieronder nagekeken: eindigt de
+        # sessie terwijl de draad nog bezig is (een timer die afloopt, een
+        # afgebroken sessie), dan hoort het deelscherm niet alsnog op te komen
+        # over een startscherm heen waar de volgende groep al voor staat.
+        self._strook_sessie = self.session_id
+
+        def _bouwen():
+            pad = ""
+            try:
+                pad = self._build_strip_image() or ""
+            except Exception as e:
+                print(f"[STRIP] Bouwen mislukt: {type(e).__name__}: {e}")
+            self._strook_klaar_signaal.emit(pad)
+
+        threading.Thread(target=_bouwen, daemon=True).start()
+
+    def _toon_strookwachtscherm(self):
+        """Het wachtscherm neerzetten en METEEN tekenen, vóór het werk begint."""
+        try:
+            scherm = getattr(self, '_strook_wachtscherm', None)
+            if scherm is None:
+                scherm = respons.Wachtscherm(self, "Je foto's worden klaargemaakt")
+                self._strook_wachtscherm = scherm
+            scherm.toon()
+        except Exception as e:
+            print(f"[STRIP] Wachtscherm niet getoond: {e}")
+
+    def _verberg_strookwachtscherm(self):
+        """Het wachtscherm weg, en de knop eronder weer in zijn gewone stand."""
+        scherm = getattr(self, '_strook_wachtscherm', None)
+        if scherm is not None:
+            try:
+                scherm.verberg()
+            except Exception:
+                pass
+        knop = getattr(self, '_filter_next_btn', None)
+        if knop is not None:
+            respons.klaar_met_wachten(knop)
+
+    def _op_strook_klaar(self, pad):
+        """De bouwdraad is klaar. Vanaf hier weer alles op de hoofddraad."""
+        begonnen = getattr(self, '_strook_begonnen', None)
+        if begonnen is not None:
+            duur = (__import__('time').perf_counter() - begonnen) * 1000
+            print(f"[STRIP] Strook klaar in {duur:.0f} ms "
+                  f"(op een eigen draad — het scherm bleef bewegen)", flush=True)
+            self._strook_begonnen = None
+        self._verberg_strookwachtscherm()
+
+        # Is de sessie intussen afgelopen? Dan is dit bestand er nog wel — het
+        # staat op schijf en de uploadwachtrij pakt het op — maar het scherm
+        # van die sessie hoort niet meer te verschijnen.
+        van_deze_sessie = (getattr(self, '_strook_sessie', None) == self.session_id)
+        if self.state == State.IDLE or not van_deze_sessie:
+            print(f"[STRIP] Strook klaar maar de sessie is voorbij "
+                  f"(state={self.state}) — het deelscherm blijft weg", flush=True)
+            return
+
+        self.strip_path = pad or None
         if self.strip_path:
             self._create_boomerang()
             self._start_cloud_upload()  # Start upload early for max time
@@ -9986,8 +10249,8 @@ class PhotoboothWindow(QMainWindow):
             # Optional: show "ONTVANG JE FOTO" button, user chooses
             self._sharing_email_btn.setText("\U0001f4e7  " + t("btn_receive_photo"))
             self._sharing_email_btn.setVisible(True)
-            self._sharing_email_btn.clicked.connect(
-                lambda: self._show_data_collection("after"))
+            respons.eenmalig(self._sharing_email_btn,
+                             lambda: self._show_data_collection("after"))
             email_visible = True
         elif dc_enabled and dc_timing == 'after_auto' and gmail_ok:
             # Automatic: show form immediately after review page loads
@@ -9997,7 +10260,7 @@ class PhotoboothWindow(QMainWindow):
         else:
             self._sharing_email_btn.setText("\U0001f4e8  " + t("btn_email"))
             self._sharing_email_btn.setVisible(email_visible)
-            self._sharing_email_btn.clicked.connect(self._go_email_input)
+            respons.eenmalig(self._sharing_email_btn, self._go_email_input)
 
         # Auto-email after "before" data collection
         if (dc_enabled and dc_timing == 'before'
@@ -11789,6 +12052,18 @@ class PhotoboothWindow(QMainWindow):
     # ── Utilities ─────────────────────────────
 
     def _update_status(self):
+        """Camera- en printerstand in één regel. NIET vanaf de hoofddraad.
+
+        get_available_printers() vraagt Windows om alle printers inclusief de
+        netwerkverbindingen. Dat is de traagste aanroep in deze software: op
+        een booth met een printserver of een offline queue duurt hij seconden.
+
+        Hij stond in _go_idle() en zorgde daar voor het grootste deel van de
+        vijf seconden tussen "Sessie stoppen" en het startscherm — terwijl het
+        antwoord meteen daarna werd overschreven door het serienummer. Wie
+        deze regel weer nodig heeft, laat de printerlijst op een aparte draad
+        ophalen en zet de uitkomst via een signaal neer.
+        """
         parts = []
         if self.camera.is_connected():
             parts.append("Camera: OK")
@@ -22447,15 +22722,41 @@ class PhotoboothWindow(QMainWindow):
             self.active_event.save(config.EVENTS_DIR)
             self._save_active_event_id()
             print(f"[EVENT] Gelanceerd: {self.active_event.name}")
-        self._rebuild_idle_page()
-        self._restore_fullscreen_flags()
-        self._go_idle()
+        self._terug_naar_startscherm()
 
     def _settings_back(self):
         """Return to idle from settings — restore frameless fullscreen."""
+        self._terug_naar_startscherm()
+
+    def _terug_naar_startscherm(self):
+        """Uit de instellingen terug naar het startscherm, schermvullend.
+
+        DE VOLGORDE IS HIER HET HELE PUNT.
+
+        Er stond: pagina herbouwen, vensterstijl herstellen, naar idle. Dat gaf
+        de klacht "hij gaat eerst naar het bureaublad van Windows en dan moet
+        ik echt vijf seconden wachten". Twee dingen tegelijk:
+
+        1. setWindowFlags() in _restore_fullscreen_flags haalt het venster van
+           het scherm. Qt moet op Windows het venster opnieuw aanmaken en
+           showFullScreen() zet het daarna terug. Tussen die twee is er geen
+           venster — je kijkt door naar wat eronder ligt.
+        2. Meteen daarna liep _go_idle(), en dat kostte tot beta.14 ruim vijf
+           seconden op de hoofddraad (de printerlijst, het opruimen, de
+           collage — zie daar). Het venster was dus wel teruggezet maar kreeg
+           in al die tijd geen verfslag, dus er bleef niets te zien.
+
+        Punt twee is bij de bron opgelost. Punt één blijft: die vensterwissel
+        hoort erbij en kost wat hij kost. Maar hij is nu het LAATSTE wat er
+        gebeurt, met het startscherm al klaargezet, zodat het venster meteen
+        met de goede inhoud terugkomt in plaats van leeg.
+        """
         self._rebuild_idle_page()
-        self._restore_fullscreen_flags()
         self._go_idle()
+        self._restore_fullscreen_flags()
+        # Meteen verven: showFullScreen() zet het venster neer, maar Qt tekent
+        # het pas als de hoofddraad vrij is. Dat is hier zo, dus dat kan nu.
+        self.repaint()
 
     def _change_idle_background(self):
         """Change the idle screen background, save to active event."""
@@ -22808,21 +23109,39 @@ class PhotoboothWindow(QMainWindow):
         )
 
     def _ververs_collage(self):
-        """Zet de collage aan en voeg de foto's toe die er nog niet op staan.
+        """Zet de collage aan en bied de foto's aan die er ná de laatste bij zijn.
 
         Alleen de nieuwe foto's worden verwerkt, niet alle vijftien opnieuw:
         het maken van een miniatuur is de dure kant, het schuiven niet. Zo
         kost een sessie erbij één miniatuur en één rij die opnieuw wordt
         samengesteld.
+
+        WAAROM HIER NIET MEER OP "STAAT HIJ ER AL" GEKEKEN WORDT.
+        Er stond `bekend = set(collage._paden)` — de foto's die op dat moment
+        in beeld staan. Dat zijn er maar twaalf (liggend); alle oudere foto's
+        van het event zaten daar niet bij en werden dus bij ELKE terugkeer
+        naar het startscherm opnieuw aangeboden. Halverwege een avond met
+        honderd sessies waren dat bijna honderd aanbiedingen per sessie-einde,
+        en de eerste keer daarvan is de dure: elke opname van twintig megapixel
+        moest van schijf en op tegelmaat. Gemeten op honderdveertien foto's:
+        1,9 seconde, midden in de terugkeer naar het startscherm.
+
+        Nu telt de VOLGORDE. De lijst is oud-naar-nieuw gesorteerd, dus alles
+        na de laatste die de collage al kent, is er echt bij gekomen. Bij een
+        gewone sessie is dat precies één foto.
         """
         collage = getattr(self, "_idle_collage", None)
         if collage is None:
             return
         try:
-            bekend = set(collage._paden)
-            for pad in startscherm.fotos_van_event(self._get_raw_dir()):
-                if pad not in bekend:
-                    collage.nieuwe_foto(pad)
+            alle = startscherm.fotos_van_event(self._get_raw_dir())
+            bekend = collage.kent()
+            laatste = -1
+            for i, pad in enumerate(alle):
+                if pad in bekend:
+                    laatste = i
+            for pad in alle[laatste + 1:]:
+                collage.nieuwe_foto(pad)
             collage.start()
         except Exception as e:
             print(f"[COLLAGE] bijwerken mislukt: {e}", flush=True)

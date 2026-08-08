@@ -99,15 +99,31 @@ def bouw_event(basis, sessies=30, opnamen=3):
     verkeerde map, dan komen ze op het scherm en valt deze toets om — precies
     de klacht die van de booth kwam. In de vorige proef bestond strips/ niet,
     dus viel er niets te betrappen.
+
+    ELKE OPNAME KRIJGT ZIJN EIGEN TIJDSTEMPEL, en dat is sinds beta.15 de
+    kern van deze proef. Hier kregen alle opnames van één sessie eerst
+    DEZELFDE stempel, en daarmee toetste dit bestand een booth die niet
+    bestaat: _timestamp_filename() zet datetime.now() op het moment dat de
+    foto valt, en tussen twee foto's zit een aftelling van een paar tellen.
+    Op de echte booth verschilden de stempels dus wél — en daardoor zag het
+    startscherm elke losse opname als een eigen sessie en stonden er drie
+    bijna gelijke foto's van dezelfde groep naast elkaar.
     """
     raw = os.path.join(basis, "raw")
     strips = os.path.join(basis, "strips")
     os.makedirs(raw, exist_ok=True)
     os.makedirs(strips, exist_ok=True)
 
+    from datetime import datetime, timedelta
+    begin = datetime(2026, 8, 7, 20, 0, 0)
+    klok = begin
     for s in range(sessies):
-        stempel = f"07-08-2026_{20 + s // 60:02d}.{s % 60:02d}.{(s * 7) % 60:02d}"
+        stempel_sessie = klok.strftime("%d-%m-%Y_%H.%M.%S")
         for n in range(1, opnamen + 1):
+            # Zeven tellen tussen twee opnames: de aftelling plus het
+            # wegschrijven van een bestand van twintig megapixel.
+            stempel = klok.strftime("%d-%m-%Y_%H.%M.%S")
+            klok += timedelta(seconds=7)
             # Losse opname: liggend 3:2, net als een spiegelreflex of webcam.
             # De kleur verraadt welke opname het is, zodat te toetsen is dat
             # de tweede gekozen wordt.
@@ -117,8 +133,10 @@ def bouw_event(basis, sessies=30, opnamen=3):
         # De samengestelde strook: staand 1200 x 1800, twee kolommen van drie.
         strook = QPixmap(1200, 1800)
         strook.fill(QColor(255, 0, 255))
-        strook.save(os.path.join(strips, f"{stempel}.jpg"), "JPG")
-        strook.save(os.path.join(strips, f"{stempel}_enkel.jpg"), "JPG")
+        strook.save(os.path.join(strips, f"{stempel_sessie}.jpg"), "JPG")
+        strook.save(os.path.join(strips, f"{stempel_sessie}_enkel.jpg"), "JPG")
+        # En de pauze tot de volgende groep voor de camera staat.
+        klok += timedelta(minutes=4)
     return raw, strips
 
 
@@ -146,6 +164,73 @@ def toets_fotokeuze(raw, strips, sessies):
     # dan hoort daar niets uit te komen — de stroken hebben geen _cijfer.
     eis(startscherm.fotos_van_event(strips) == [],
         "strips/ levert niets op, ook niet als er per ongeluk naar gewezen wordt")
+
+    # ── geen twee foto's van dezelfde groep ────────────────────────────────
+    #
+    # "Je ziet nu allemaal een beetje dezelfde foto's. Ik wil dat je
+    # verschillende foto's pakt." De sessies zijn hierboven gebouwd zoals de
+    # booth ze schrijft: elke opname een eigen tijdstempel, een paar tellen na
+    # elkaar. Werd daarop gegroepeerd, dan telde elke losse opname als een
+    # eigen sessie en stonden er drie bijna gelijke foto's naast elkaar.
+    groepen = startscherm._sessiegroepen(raw)
+    eis(len(groepen) == sessies,
+        f"de opnames worden op {len(groepen)} sessies geknipt (hoort {sessies})")
+    eis(all(len(g) == 3 for g in groepen),
+        f"elke sessie heeft zijn drie opnames "
+        f"({sorted(set(len(g) for g in groepen))})")
+
+    # Twee foto's uit dezelfde sessie herken je aan hun kleur — bouw_event
+    # geeft elke sessie een eigen tint.
+    def tint(pad):
+        pm = QPixmap(pad)
+        return pm.toImage().pixelColor(900, 600).hue() if not pm.isNull() else -1
+
+    tinten = [tint(p) for p in paden]
+    eis(len(set(tinten)) == len(tinten),
+        f"alle {len(paden)} foto's op het scherm komen uit een andere sessie "
+        f"({len(set(tinten))} verschillende)")
+
+
+# ── 1b. aan het begin van een event staat het scherm niet halfleeg ─────────
+def toets_aanvullen(basis):
+    """Drie sessies, twaalf tegels. Wat staat er dan?
+
+    Aan het begin van een event zijn er nog nauwelijks sessies, en dat is
+    precies het moment waarop de eerste gasten naar het scherm kijken. Dan
+    wordt er aangevuld met een tweede opname uit dezelfde sessies — per RONDE,
+    zodat twee foto's van dezelfde groep zo ver mogelijk uit elkaar komen te
+    staan.
+    """
+    print("\nHet begin van een event", flush=True)
+    raw, _strips = bouw_event(os.path.join(basis, "begin"), sessies=3, opnamen=3)
+
+    kaal = startscherm.fotos_van_event(raw)
+    eis(len(kaal) == 3,
+        f"zonder tegelaantal: één foto per sessie ({len(kaal)})")
+
+    vol = startscherm.fotos_van_event(raw, aantal=12)
+    eis(len(vol) == 9,
+        f"met twaalf tegels: alles wat er is ({len(vol)} van 3x3 opnames)")
+    eis(vol[:3] == kaal,
+        "de eerste ronde staat vooraan — de beste keus per sessie")
+    eis(len(set(vol)) == len(vol), "en geen enkele foto staat er dubbel op")
+
+    # De rondes: de eerste drie zijn elk uit een andere sessie, de volgende
+    # drie ook. Twee foto's van dezelfde groep staan dus drie plekken uit
+    # elkaar en niet naast elkaar.
+    def sessie_van(pad):
+        naam = os.path.basename(pad)
+        return naam.rsplit("_", 1)[0]
+
+    for begin in (0, 3, 6):
+        blok = [sessie_van(p) for p in vol[begin:begin + 3]]
+        eis(len(set(blok)) == 3,
+            f"ronde {begin // 3 + 1}: drie verschillende sessies naast elkaar")
+
+    # Zijn er genoeg sessies, dan wordt er niet aangevuld.
+    raw2, _ = bouw_event(os.path.join(basis, "vol"), sessies=20, opnamen=3)
+    eis(len(startscherm.fotos_van_event(raw2, aantal=12)) == 20,
+        "bij genoeg sessies blijft het één per sessie")
 
 
 # ── 2. de opbouw, precies zoals photobooth.py hem aanroept ─────────────────
@@ -1305,6 +1390,7 @@ def main():
         sessies = 30
         raw, strips = bouw_event(os.path.join(werkmap, "Testfeest"), sessies)
         onderdeel("de fotokeuze", toets_fotokeuze, raw, strips, sessies)
+        onderdeel("het begin van een event", toets_aanvullen, werkmap)
         paden = startscherm.fotos_van_event(raw)
 
         onderdeel("de achtergronden", toets_achtergronden)

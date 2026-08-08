@@ -89,7 +89,7 @@ hij hoort te zijn — en niet de breedte. Dat staat er ook bij in het logboek.
 import math
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PyQt5.QtCore import (Qt, QTimer, QRect, QPoint, QPointF, QElapsedTimer,
                           pyqtSignal)
@@ -624,8 +624,35 @@ def _cache_zet(sleutel, tegel):
     _MINI_CACHE[sleutel] = tegel
 
 
-def _sessies_uit_map(raw_dir):
-    """Eén foto per sessie uit raw/, op volgorde.
+# Zit er meer dan dit tussen twee opnames, dan is het zeker een andere sessie.
+# Binnen een sessie zit een aftelling van een paar tellen plus het schrijven van
+# een bestand van twintig megapixel; drie minuten is daar ruim boven en ruim
+# onder de pauze tussen twee groepen op een feest.
+SESSIEGAT = timedelta(minutes=3)
+
+
+def _sessiegroepen(raw_dir):
+    """De opnames uit raw/, gegroepeerd per fotosessie.
+
+    HOE EEN SESSIE HERKEND WORDT, EN WAAROM DAT VERANDERD IS.
+
+    Hier werd gegroepeerd op de tijdstempel in de bestandsnaam. Dat leek te
+    kloppen — de namen zien eruit als `08-08-2026_22.14.07_2.jpg` — maar die
+    stempel wordt per OPNAME gezet, op het moment dat de foto valt
+    (_timestamp_filename gebruikt datetime.now()). Tussen twee foto's van
+    dezelfde sessie zit een aftelling, dus ze kregen verschillende stempels en
+    telden allebei als een eigen "sessie". Gevolg op het startscherm: drie
+    bijna identieke foto's van dezelfde groep naast elkaar in het raster.
+    "Je ziet nu allemaal een beetje dezelfde foto's."
+
+    Wat wél per sessie oploopt is het VOLGNUMMER achter de stempel: 1, 2, 3, 4
+    en dan weer 1 bij de volgende groep. Daar wordt nu op geknipt. Dat is een
+    signaal uit de software zelf en niet uit een klok, dus het blijft kloppen
+    als iemand halverwege de avond de tijd goedzet — en het gaat ook goed als
+    een opname mislukt en de reeks bij 2 begint.
+
+    Als vangnet telt een gat van meer dan SESSIEGAT ook als sessiegrens: twee
+    losse sessies van één foto zouden anders aan elkaar plakken.
 
     Twee dingen die hier misgaan als je ze niet weet, allebei uit het
     ontwerpverslag:
@@ -633,39 +660,87 @@ def _sessies_uit_map(raw_dir):
     * Bij een spiegelreflex staat elke opname DUBBEL op schijf: de EDSDK
       dumpt hem ook in de wortel van photos/. Daarom wordt hier alleen raw/
       gelezen en nooit recursief.
-    * De tijdstempel heeft secondeprecisie en is geen unieke sleutel. Hij wordt
-      hier alleen gebruikt om te groeperen en te sorteren, niet als sleutel.
-
-    En de klok van een booth kan mis staan — die van de testbooth liep acht uur
-    achter. Daarom wordt de naam ontleed in plaats van de bestandstijd gelezen:
-    een klok die verkeerd staat maar niet verspringt, geeft nog steeds de
-    goede volgorde. Tijdens het draaien telt bovendien de aankomstvolgorde,
-    want dan komt elke foto er via nieuwe_foto() bij.
+    * De klok van een booth kan mis staan — die van de testbooth liep acht uur
+      achter. Daarom wordt de naam ontleed in plaats van de bestandstijd
+      gelezen: een klok die verkeerd staat maar niet verspringt, geeft nog
+      steeds de goede volgorde.
     """
     if not raw_dir or not os.path.isdir(raw_dir):
         return []
 
-    per_sessie = {}
-    for naam in os.listdir(raw_dir):
-        m = _NAAM.match(naam)
-        if not m:
-            continue
-        stempel, nummer = m.group(1), int(m.group(2))
-        per_sessie.setdefault(stempel, []).append((nummer, naam))
-
-    def sorteersleutel(stempel):
+    def tijd(stempel):
         try:
             return (0, datetime.strptime(stempel, "%d-%m-%Y_%H.%M.%S"))
         except ValueError:
             return (1, datetime.min)
 
-    uit = []
-    for stempel in sorted(per_sessie, key=sorteersleutel):
-        opnamen = sorted(per_sessie[stempel])
-        # De tweede opname. Op de eerste kijkt vaak nog iemand naar de
-        # aftelring. Is er maar één, dan die.
-        gekozen = next((n for nr, n in opnamen if nr == 2), opnamen[0][1])
-        uit.append(os.path.join(raw_dir, gekozen))
+    opnames = []
+    for naam in os.listdir(raw_dir):
+        m = _NAAM.match(naam)
+        if not m:
+            continue
+        opnames.append((tijd(m.group(1)), int(m.group(2)), naam))
+    opnames.sort()
+
+    groepen = []
+    vorig_nr = None
+    vorige_tijd = None
+    for sleutel, nummer, naam in opnames:
+        nieuw = (vorig_nr is None or nummer <= vorig_nr)
+        if not nieuw and sleutel[0] == 0 and vorige_tijd is not None:
+            nieuw = (sleutel[1] - vorige_tijd) > SESSIEGAT
+        if nieuw:
+            groepen.append([])
+        groepen[-1].append((nummer, naam))
+        vorig_nr = nummer
+        vorige_tijd = sleutel[1] if sleutel[0] == 0 else vorige_tijd
+    return groepen
+
+
+def _voorkeur(groep, raw_dir):
+    """In welke volgorde we uit één sessie kiezen.
+
+    Eerst de tweede opname: op de eerste kijkt vaak nog iemand naar de
+    aftelring. Daarna de derde, vierde enzovoort, en de eerste als laatste.
+    De eerste keus staat vooraan, dus zolang er genoeg sessies zijn wordt er
+    nooit verder dan die ene gekeken.
+    """
+    op_nummer = sorted(groep)
+    tweede = [n for nr, n in op_nummer if nr == 2]
+    rest = [n for nr, n in op_nummer if nr not in (1, 2)]
+    eerste = [n for nr, n in op_nummer if nr == 1]
+    return [os.path.join(raw_dir, n) for n in tweede + rest + eerste]
+
+
+def _sessies_uit_map(raw_dir, aantal=0):
+    """Eén foto per sessie uit raw/, op volgorde van oud naar nieuw.
+
+    `aantal` is het aantal tegels dat op het scherm past. Zijn er minder
+    sessies dan dat, dan wordt er aangevuld met een tweede opname uit dezelfde
+    sessies — anders staat het startscherm aan het begin van een event
+    halfleeg, en dat is precies het moment waarop de eerste gasten ernaar
+    kijken. Die aanvulling gaat per RONDE: eerst uit elke sessie de beste
+    keus, dan uit elke sessie de volgende. Zo komen twee foto's van dezelfde
+    groep zo ver mogelijk uit elkaar in het raster te staan.
+
+    `aantal=0` (de standaard) geeft precies één foto per sessie. Dat is wat
+    _ververs_collage gebruikt: tijdens de avond komt er per sessie één foto
+    bij, en die schuift de oudste van het scherm. De aanvulling van het begin
+    is er dan vanzelf weer af.
+    """
+    groepen = _sessiegroepen(raw_dir)
+    if not groepen:
+        return []
+    voorkeuren = [_voorkeur(g, raw_dir) for g in groepen]
+
+    uit = [v[0] for v in voorkeuren]
+    ronde = 1
+    while len(uit) < aantal:
+        erbij = [v[ronde] for v in voorkeuren if len(v) > ronde]
+        if not erbij:
+            break
+        uit.extend(erbij)
+        ronde += 1
     return uit
 
 
@@ -781,6 +856,19 @@ class Collage(QWidget):
         self._bouwtimer = QTimer(self)
         self._bouwtimer.setInterval(0)
         self._bouwtimer.timeout.connect(self._bouw_stukje)
+
+        # En hetzelfde voor de foto's die er tijdens de avond bij komen. Die
+        # gingen tot beta.14 rechtstreeks door _maak_miniatuur, midden in
+        # _go_idle — dus op het moment dat de gast net op "Sessie stoppen"
+        # heeft getikt. Een opname van twintig megapixel inladen en op
+        # tegelmaat brengen kost op de booth een halve seconde, en in die tijd
+        # tekent Qt niets. Nu komen ze in een rij te staan die per beurt één
+        # foto verwerkt: het startscherm staat er dan al, en de tegel vloeit
+        # er even later bij zoals hij dat bij het opbouwen ook doet.
+        self._nieuw = []
+        self._nieuwtimer = QTimer(self)
+        self._nieuwtimer.setInterval(60)   # één tekenslag ruimte ertussen
+        self._nieuwtimer.timeout.connect(self._verwerk_een_nieuwe)
         # Hoe lang het duurde voordat er iets te zien was, geteld vanaf het
         # moment dat photobooth.py dit scherm toonde.
         self._getoond_op = None
@@ -799,6 +887,9 @@ class Collage(QWidget):
         self._stel_tempo_in()
         if not self._timer.isActive():
             self._timer.start()
+        # Wat er tijdens het fotograferen binnenkwam, gaat nu alsnog de rij in.
+        if self._nieuw and not self._nieuwtimer.isActive():
+            self._nieuwtimer.start()
         # Meteen één keer melden, zodat het slotje en het serienummer op hun
         # plek staan voordat de eerste verschuiving komt.
         self._gemeld = None
@@ -810,6 +901,9 @@ class Collage(QWidget):
         gast aan het fotograferen is."""
         self._timer.stop()
         self._vloeitimer.stop()
+        # De aankomstrij blijft staan: die foto's horen er nog bij zodra het
+        # startscherm terugkomt. Alleen de tekenlus gaat stil.
+        self._nieuwtimer.stop()
 
     # ── opkomen en overvloeien ─────────────────────────────────────────────
     def vloeit(self):
@@ -1120,7 +1214,49 @@ class Collage(QWidget):
         self.update()
 
     def nieuwe_foto(self, pad):
-        """Eén foto erbij, na afloop van een sessie.
+        """Eén foto erbij, na afloop van een sessie. Kost nu geen wachttijd.
+
+        De aanroeper staat op de hoofddraad, midden in de terugkeer naar het
+        startscherm. Het maken van de miniatuur gebeurt daarom niet hier maar
+        even later, één per beurt: zie _verwerk_een_nieuwe(). Wat de gast ziet
+        is hetzelfde — een tegel die opkomt of overvloeit — alleen zonder dat
+        het scherm er eerst een halve seconde voor stilstaat.
+        """
+        # De aanroeper (photobooth._ververs_collage) vergelijkt met _paden om
+        # te weten wat er nieuw is, en daar staat een foto pas in zodra hij
+        # verwerkt is. Een foto die nog in een van de twee rijen wacht, zou
+        # daardoor bij elke terugkeer naar het startscherm opnieuw worden
+        # aangeboden — en na een herbouw (die _paden leegt en alles in
+        # _wachtrij zet) zelfs de hele collage in één keer. Vandaar dat hier
+        # alle drie de lijsten nagekeken worden en niet alleen de eigen rij.
+        if not pad or pad in self._nieuw or pad in self._wachtrij \
+                or pad in self._paden:
+            return
+        self._nieuw.append(pad)
+        if not self._nieuwtimer.isActive():
+            self._nieuwtimer.start()
+
+    def kent(self):
+        """Alle paden die deze collage al heeft: in beeld of nog in een rij.
+
+        Bestaat zodat de aanroeper kan zien wat er écht nieuw is. Kijken naar
+        alleen de zichtbare tegels is niet genoeg — er staan er maar een
+        handvol in beeld, en wat er nog verwerkt moet worden telt ook mee.
+        """
+        return set(self._paden) | set(self._wachtrij) | set(self._nieuw)
+
+    def _verwerk_een_nieuwe(self):
+        """Eén foto uit de aankomstrij. Tussen twee beurten tekent Qt door."""
+        if not self._nieuw:
+            self._nieuwtimer.stop()
+            return
+        pad = self._nieuw.pop(0)
+        self._zet_nieuwe_foto(pad)
+        if not self._nieuw:
+            self._nieuwtimer.stop()
+
+    def _zet_nieuwe_foto(self, pad):
+        """Het eigenlijke werk: schalen en op zijn plek zetten.
 
         Dit is het enige moment waarop er geschaald en samengesteld wordt. Is
         de collage vol, dan vervangt de nieuwste de oudste op zijn plek — het
@@ -1439,7 +1575,11 @@ class Collage(QWidget):
         # in de wachtrij stond. Dat tweede is makkelijk te vergeten — er komt
         # tijdens het opbouwen een tweede herbouw langs, want de widget krijgt
         # zijn echte maat pas ná het vullen, en dan verdwijnt de halve lijst.
-        alle = (self._paden + self._wachtrij)[-L.n:]
+        # Ook wat er nog in de aankomstrij staat telt mee — anders raakt een
+        # foto die net binnenkwam kwijt zodra de widget van maat verandert.
+        alle = (self._paden + self._wachtrij + self._nieuw)[-L.n:]
+        self._nieuw = []
+        self._nieuwtimer.stop()
         self._miniaturen = []
         self._volgende = 0
         self._stroken = []
@@ -2013,6 +2153,15 @@ def _asset(naam):
     return ""
 
 
+def merkbestand(naam):
+    """Het pad naar een meegeleverd merkbestand, of "" als het er niet is.
+
+    Bestaat zodat andere modules niet aan de privénaam hieronder hoeven te
+    komen. photobooth.py gebruikt dit voor het logo op het opkomscherm.
+    """
+    return _asset(naam)
+
+
 def collage_aan(event):
     """Staat de collage aan voor dit event?
 
@@ -2028,6 +2177,11 @@ def collage_aan(event):
     return bool(getattr(event, "collage_enabled", True))
 
 
-def fotos_van_event(raw_dir):
-    """De foto's die op het startscherm horen te staan, op volgorde."""
-    return _sessies_uit_map(raw_dir)
+def fotos_van_event(raw_dir, aantal=0):
+    """De foto's die op het startscherm horen te staan, op volgorde.
+
+    Eén per fotosessie. `aantal` is het aantal tegels dat op het scherm past;
+    zijn er minder sessies, dan wordt er aangevuld zodat het raster aan het
+    begin van een event niet halfleeg staat. Zie _sessies_uit_map.
+    """
+    return _sessies_uit_map(raw_dir, aantal=aantal)

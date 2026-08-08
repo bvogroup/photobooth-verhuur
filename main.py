@@ -250,11 +250,18 @@ def main():
     # Migrate data from old location to Documents/Bootharoo
     _migrate_data()
 
-    # Ensure firewall allows local web server access
-    _ensure_firewall_rule()
-
-    # Schermhelderheid vastzetten (warmte/leesbaarheid op de fanless Surface)
-    _set_display_brightness()
+    # DE TWEE TRAGE WINDOWS-KLUSSEN ZIJN NAAR ACHTEREN VERHUISD.
+    #
+    # Hier stonden _ensure_firewall_rule() en _set_display_brightness(), allebei
+    # vóór het venster. Samen zijn dat drie subprocessen: twee keer `netsh
+    # advfirewall` en een keer PowerShell met Get-WmiObject. PowerShell starten
+    # kost op een fanless Surface al gauw twee tellen, netsh advfirewall ook —
+    # en de gebruiker keek al die tijd naar het bureaublad, want de splash uit
+    # splash_starter.pyw is dan net gesloten en het Qt-venster bestaat nog niet.
+    #
+    # Geen van beide heeft iets met opkomen te maken: de firewallregel is voor
+    # binnenkomend verkeer en de helderheid mag een tel later. Ze gebeuren nu
+    # ná het venster, op een eigen draad. Zie _klussen_op_de_achtergrond().
 
     # De merkletters inladen uit de meegeleverde map fonts/ — zie lettertype.py.
     #
@@ -289,12 +296,36 @@ def main():
     # luisterende poort minder open op een machine die bij klanten in de zaal
     # staat.
 
+    # Het venster staat er al: PhotoboothWindow toont zichzelf met het merk
+    # erop nog voordat de camera wordt aangesproken. Deze twee regels zetten
+    # alleen de eindstand vast — dat is niet meer het moment waarop de
+    # gebruiker voor het eerst iets ziet.
     if windowed:
         window.showMaximized()
     else:
         window.showFullScreen()
 
+    # En nu pas de klussen die niets met opkomen te maken hebben.
+    QTimer.singleShot(0, _klussen_op_de_achtergrond)
+
     sys.exit(app.exec_())
+
+
+def _klussen_op_de_achtergrond():
+    """De firewallregel en de schermhelderheid, buiten het opstarten om.
+
+    Allebei subprocessen die op Windows seconden kunnen duren, en allebei niet
+    nodig om een venster te tonen. Ze draaien op een eigen draad zodat ook het
+    startscherm er niet op hoeft te wachten; er komt geen Qt aan te pas, dus
+    dat mag.
+    """
+    import threading
+
+    def _werk():
+        _ensure_firewall_rule()
+        _set_display_brightness()
+
+    threading.Thread(target=_werk, daemon=True).start()
 
 
 if __name__ == "__main__":

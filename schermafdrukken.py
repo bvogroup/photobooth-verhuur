@@ -69,6 +69,8 @@ import merk                                                    # noqa: E402
 import lettertype                                              # noqa: E402
 import startscherm                                             # noqa: E402
 import proefvenster                                            # noqa: E402
+import bediening                                               # noqa: E402
+import respons                                                 # noqa: E402
 
 # De Surface Pro 7: 2736 x 1824 op 12,3 inch. Bij 200% vergroting is dat 1368 x
 # 912 aan punten, en dat is de maat waarin de code rekent.
@@ -239,6 +241,105 @@ def bouw_proefblad():
     return blad
 
 
+def bouw_wachtstanden():
+    """De knoppen zoals ze eruitzien terwijl er iets gebeurt.
+
+    Drie regels onder elkaar, met de gastbalk uit bediening.py — dus op de
+    echte maat en de echte plek:
+
+      1. zoals ze in rust staan
+      2. de hoofdknop uitgezet, want hij is net aangeraakt en aan het werk
+      3. dezelfde knop met het draaiende teken erin
+
+    Waar het bij deze afdruk om gaat is dat de knop in alle drie de regels
+    even breed en even hoog is en op dezelfde plek staat. Een knop die van
+    maat verandert zodra er iets in komt, schuift onder de duim van de gast
+    weg — en de hoofdknop hoort op de hartlijn te blijven staan.
+    """
+    blad = QWidget()
+    blad.setFixedSize(PUNTEN_BREED, PUNTEN_HOOG)
+    blad.setStyleSheet(merk.pagina(op_donker=True))
+    lay = QVBoxLayout(blad)
+    lay.setContentsMargins(0, merk.RUIMTE_KANTLIJN, 0, merk.RUIMTE_KANTLIJN)
+    lay.setSpacing(merk.RUIMTE_RUIM)
+
+    kop = _label("De gastknoppen terwijl er iets gebeurt",
+                 merk.TEKST_KOP, merk.OP_DONKER, vet=True, kop=True)
+    kop.setAlignment(Qt.AlignCenter)
+    lay.addWidget(kop)
+
+    balken = []
+    for bijschrift in ("in rust",
+                       "aangeraakt — de knop staat uit",
+                       "aangeraakt — met het draaiende teken erin"):
+        regel = _label(bijschrift, merk.TEKST_KLEIN, merk.OP_DONKER_ZACHT)
+        regel.setAlignment(Qt.AlignCenter)
+        lay.addWidget(regel)
+
+        hoofd = bediening.zet_hoofdknop(QPushButton("Volgende foto maken"))
+        links = bediening.zet_zijknop(QPushButton("Foto opnieuw nemen"))
+        rechts = bediening.zet_zijknop(QPushButton("Stoppen"))
+        balk = bediening.gastbalk(hoofd=hoofd, links=links, rechts=rechts)
+        balk.setFixedWidth(PUNTEN_BREED)
+        lay.addWidget(balk)
+        balken.append((balk, hoofd))
+    lay.addStretch()
+
+    blad.show()
+    QApplication.processEvents()
+    # De tweede en derde regel in hun wachtstand zetten — pas NA het plaatsen,
+    # zodat de maat die vastgezet wordt de maat is die de balk ze gaf.
+    balken[1][1].setEnabled(False)
+    balken[2][1].setEnabled(False)
+    respons.wacht_in_knop(balken[2][1])
+    QApplication.processEvents()
+
+    for nummer, (_balk, hoofd) in enumerate(balken, start=1):
+        print(f"[AFDRUK] wachtstand regel {nummer}: “{hoofd.text()}” "
+              f"{hoofd.width()}x{hoofd.height()} punten op x={hoofd.x()}",
+              flush=True)
+    return blad
+
+
+def bouw_wachtscherm():
+    """Het scherm dat er staat terwijl de fotostrook gebouwd wordt.
+
+    Dit is het enige moment in de gastenflow dat na beta.15 nog echt duurt.
+    Het werk draait op een eigen draad, dus het teken hierop draait ook echt —
+    zie respons.py voor waarom dat het verschil is tussen een spinner die iets
+    zegt en een spinner die liegt.
+    """
+    blad = QWidget()
+    blad.setFixedSize(PUNTEN_BREED, PUNTEN_HOOG)
+    scherm = respons.Wachtscherm(blad, "Je foto's worden klaargemaakt")
+    blad.show()
+    scherm.toon()
+    QApplication.processEvents()
+    return blad
+
+
+def bouw_opkomscherm():
+    """Het eerste dat de booth laat zien, nog vóór de camera is aangesproken.
+
+    Dit staat er binnen tweehonderd milliseconde na het starten, en het blijft
+    staan zolang de camera, de schermen en de instellingen bezig zijn. Daarvoor
+    keek de gebruiker in die tijd naar het bureaublad van Windows.
+
+    Bewust zonder draaiend teken: het werk dat hierachter gebeurt loopt op de
+    hoofddraad, dus een teken zou stilstaan en dan liegt het. Het merk en de
+    instructie staan er, en die zeggen genoeg.
+    """
+    blad = QWidget()
+    blad.setFixedSize(PUNTEN_BREED, PUNTEN_HOOG)
+    scherm = respons.Wachtscherm(
+        blad, "Druk op het scherm\nom een foto te maken",
+        logo=startscherm.merkbestand("logo.png"), teken=False)
+    blad.show()
+    scherm.toon()
+    QApplication.processEvents()
+    return blad
+
+
 def bouw_deelscherm():
     """Het paneel van het deelscherm, met dezelfde merk-aanroepen als het echt."""
     blad = QWidget()
@@ -357,6 +458,17 @@ def main():
 
     schrijf(bouw_proefblad(), os.path.join(map_naam, "proefblad.png"))
     schrijf(bouw_deelscherm(), os.path.join(map_naam, "deelpaneel.png"))
+
+    # De wachtstanden: wat de gast ziet zodra hij een knop heeft aangeraakt.
+    _wacht = veilig("wachtstanden", bouw_wachtstanden)
+    if _wacht is not None:
+        schrijf(_wacht, os.path.join(map_naam, "wachtstand-knoppen.png"))
+    _wachtscherm = veilig("wachtscherm", bouw_wachtscherm)
+    if _wachtscherm is not None:
+        schrijf(_wachtscherm, os.path.join(map_naam, "wachtstand-scherm.png"))
+    _opkomst = veilig("opkomscherm", bouw_opkomscherm)
+    if _opkomst is not None:
+        schrijf(_opkomst, os.path.join(map_naam, "opkomscherm.png"))
 
     # De echte gastschermen uit photobooth.py. Dit is waar de opdrachtgever naar
     # kijkt: staat de bediening onderin het midden, en zijn de kleurstalen te
