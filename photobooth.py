@@ -33,6 +33,7 @@ from camera import (Camera, CaptureThread, EDSDKWorker,
                      get_search_folders, snapshot_files,
                      ensure_digicam_running, stop_digicam)
 from printer import get_available_printers, select_printer_dialog, PrinterError
+import printerkeuze  # de booth kiest zelf zijn printer — achter een schakelaar
 from template_model import Template, list_templates, get_preset_layouts
 from event_model import Event, list_events
 from countdown_ring import CountdownRingWidget
@@ -972,6 +973,11 @@ class PhotoboothWindow(QMainWindow):
     _periodic_refresh_signal = pyqtSignal(object, str)
     # DNP QW410 status update (bg-thread → main thread). Carries dnp_status.DNPStatus.
     _dnp_status_signal = pyqtSignal(object)
+    # Automatische printerkeuze (wachtdraad → hoofddraad): Besluit + Stand.
+    # Zie printerkeuze.py; draait alléén als de schakelaar aan staat.
+    _printerkeuze_signal = pyqtSignal(object, object)
+    # Testvel klaargemaakt (bouwdraad → hoofddraad): (pad, foutmelding)
+    _test_print_gebouwd_signal = pyqtSignal(str, str)
     # Idle-page wifi check (bg-thread → main thread) — toont/verbergt wifi-tip
     _idle_wifi_tip_signal = pyqtSignal(bool)
     # Auto-updater (bg-thread → main thread): check-resultaat + download-voortgang
@@ -1130,6 +1136,13 @@ class PhotoboothWindow(QMainWindow):
         self._dnp_last_status = None
         self._dnp_error_overlay = None
         self._dnp_status_signal.connect(self._on_dnp_status_change_main)
+        # Automatische printerkeuze — wordt later gestart in _do_startup_auth,
+        # en alleen als de schakelaar aan staat.
+        self._printerwacht = None
+        self._printerkeuze_stand = None
+        self._printerkeuze_signal.connect(self._on_printerkeuze_main)
+        self._test_print_bezig = False
+        self._test_print_gebouwd_signal.connect(self._start_testprint)
         # Idle-page wifi-tip signal (bg-thread → main thread)
         self._idle_wifi_tip_signal.connect(self._on_idle_wifi_state)
         # Auto-updater signals (bg-thread → main thread)
@@ -1472,6 +1485,11 @@ class PhotoboothWindow(QMainWindow):
         # de storingsmeldingen uit staan.
         self._dnp_poller = None
         self._start_printer_status_poller()
+
+        # Automatische printerkeuze. Staat de schakelaar uit — en dat is de
+        # standaard op elke booth die al draaide — dan gebeurt hier niets en
+        # blijft config.PRINTER_NAME precies wat er in settings.json staat.
+        self._start_printerwacht()
 
         # Wifi-monitor uitgeschakeld — gebruiker wil deze flow niet meer zien.
         # Methodes blijven bestaan voor backwards compat maar starten niet.
@@ -12722,6 +12740,43 @@ class PhotoboothWindow(QMainWindow):
         printer_row.addStretch()
         connect_lay.addLayout(printer_row)
 
+        # --- Printer automatisch kiezen ---
+        # Aan = de booth zoekt zelf welke printer eraan hangt. Uit = precies
+        # het gedrag van vóór deze schakelaar: de printer uit settings.json en
+        # verder niets. Standaard aan op een verse installatie, uit op een
+        # booth die al gedraaid heeft (zie printerkeuze.standaard_aan).
+        connect_lay.addSpacing(6)
+        self._printerkeuze_toggle = ToggleSwitch("Printer automatisch kiezen")
+        self._printerkeuze_toggle.setFont(QFont("DM Sans", 13))
+        self._printerkeuze_toggle.setStyleSheet(toggle_style)
+        self._printerkeuze_toggle.setChecked(self._printerkeuze_aan())
+        self._printerkeuze_toggle.toggled.connect(self._on_printerkeuze_toggled)
+        connect_lay.addWidget(self._printerkeuze_toggle)
+
+        # Welke printer er nu gekozen is, hoe (zelf of automatisch), wanneer
+        # er voor het laatst gekeken is en of hij toen antwoordde. Zonder deze
+        # regel is de automaat een zwarte doos: komt er een print niet, dan
+        # moet je in één blik kunnen zien of hij de juiste heeft gepakt.
+        self._printerkeuze_status_label = QLabel("")
+        self._printerkeuze_status_label.setFont(QFont("DM Sans", 11))
+        self._printerkeuze_status_label.setStyleSheet(dim_label_style)
+        self._printerkeuze_status_label.setWordWrap(True)
+        connect_lay.addWidget(self._printerkeuze_status_label)
+
+        auto_terug_btn = QPushButton("Weer automatisch kiezen")
+        auto_terug_btn.setCursor(Qt.PointingHandCursor)
+        auto_terug_btn.setFont(QFont("DM Sans", 11, QFont.Bold))
+        auto_terug_btn.setFixedHeight(32)
+        auto_terug_btn.setStyleSheet(
+            small_btn_style.replace("{bg}", config.COLOR_SECONDARY)
+                           .replace("{hov}", config.COLOR_SECONDARY_HOVER)
+        )
+        auto_terug_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        auto_terug_btn.clicked.connect(self._on_terug_naar_automatisch)
+        connect_lay.addWidget(auto_terug_btn)
+        self._printerkeuze_terug_btn = auto_terug_btn
+        self._update_printerkeuze_label()
+
         # Test print row (de oude "Driver instellingen: PRINTER INSTELLEN"
         # is vervangen door de DNP-profielen-card hieronder, die per profiel
         # capture-knoppen toont in plaats van één globaal DEVMODE-bestand).
@@ -12743,6 +12798,17 @@ class PhotoboothWindow(QMainWindow):
         )
         test_print_btn.clicked.connect(self._on_test_print)
         test_row.addWidget(test_print_btn)
+        # De knop wordt uitgezet zolang de print loopt. Een testvel gaat van
+        # een rol die geld kost; twee keer tikken mag geen twee vellen geven.
+        self._test_print_btn = test_print_btn
+        # De terugkoppeling stond tot nu toe in _devmode_status_label, en die
+        # is onzichtbaar (setVisible(False)). Een mislukte testprint gaf dus
+        # geen enkel teken van leven. Deze regel staat er wél.
+        self._test_print_status_label = QLabel("")
+        self._test_print_status_label.setFont(QFont("DM Sans", 11))
+        self._test_print_status_label.setStyleSheet(dim_label_style)
+        self._test_print_status_label.setWordWrap(True)
+        test_row.addWidget(self._test_print_status_label, 1)
         test_row.addStretch()
         connect_lay.addLayout(test_row)
 
@@ -16270,6 +16336,9 @@ class PhotoboothWindow(QMainWindow):
         _safe(lambda: self._printer_name_label.setText(
             config.PRINTER_NAME or t("printer_not_selected")))
 
+        # Welke printer er nu gekozen is, en of dat automatisch ging
+        _safe(self._update_printerkeuze_label)
+
         # Update printer settings visibility
         _safe(self._update_printer_visibility)
 
@@ -17090,7 +17159,193 @@ class PhotoboothWindow(QMainWindow):
             except Exception as e:
                 print(f"[SETTINGS] DNP-referentieprofiel schrijven mislukt: {e}")
             self._update_devmode_status()
+            # Zelf aangeklikt = handmatig. De automaat overrulet dit nooit
+            # zolang deze queue bestaat (zie printerkeuze.Keuzeautomaat).
+            self._save_app_setting(printerkeuze.SLEUTEL_HANDMATIG, selected)
+            wacht = getattr(self, '_printerwacht', None)
+            if wacht is not None:
+                wacht.zet_handmatig(selected)
+            self._update_printerkeuze_label()
             print(f"[SETTINGS] Printer geselecteerd: {selected}")
+
+    # ── Automatische printerkeuze ─────────────────────────────────────
+    # Alles hieronder draait alléén als de schakelaar aan staat. Staat hij uit,
+    # dan is er geen draad, geen periodieke bevraging en geen enkele regel log
+    # die er voorheen niet was — de software gedraagt zich exact zoals vóór
+    # deze wijziging.
+
+    def _printerkeuze_aan(self):
+        """Staat de automatische printerkeuze aan?
+
+        De standaard hangt af van de machine: een verse installatie krijgt 'm
+        aan, een bestaande booth uit. Zie printerkeuze.standaard_aan — bij
+        twijfel altijd uit, want een booth die midden op een feest van printer
+        wisselt is erger dan één tik in de instellingen.
+        """
+        try:
+            return printerkeuze.bepaal_automaat_aan(
+                self._load_app_setting, self._save_app_setting, config.DATA_DIR)
+        except Exception as e:
+            print(f"[PRINTERKEUZE] Standaard niet te bepalen ({e}) — uit")
+            return False
+
+    def _start_printerwacht(self):
+        """Start (of herstart) de printerwacht, mits de schakelaar aan staat."""
+        self._stop_printerwacht()
+        if not self._printerkeuze_aan():
+            return
+        try:
+            handmatig = self._load_app_setting(
+                printerkeuze.SLEUTEL_HANDMATIG, "") or None
+            self._printerwacht = printerkeuze.Printerwacht(
+                terugmelding=lambda besluit, stand:
+                    self._printerkeuze_signal.emit(besluit, stand),
+                gekozen=(config.PRINTER_NAME or None),
+                handmatig_naam=handmatig,
+                # Er loopt een print zolang er een printdraad leeft. Wisselen
+                # halverwege een vel is een mislukte print op papier dat geld
+                # kost, dus dat gebeurt niet.
+                print_bezig=lambda: bool(
+                    getattr(self, '_print_threads_alive', [])),
+            )
+            self._printerwacht.start()
+            print(f"[PRINTERKEUZE] Wacht gestart "
+                  f"({printerkeuze.VEEG_INTERVAL_SEC:.0f}s, "
+                  f"{printerkeuze.MISSER_DREMPEL} missers voor een wissel)")
+        except Exception as e:
+            print(f"[PRINTERKEUZE] Wacht niet gestart: {e}")
+            self._printerwacht = None
+
+    def _stop_printerwacht(self):
+        """Stop de wacht. Het joinen gebeurt op een eigen draad zodat het
+        omzetten van de schakelaar de UI niet laat hangen."""
+        wacht = getattr(self, '_printerwacht', None)
+        self._printerwacht = None
+        if wacht is not None:
+            threading.Thread(target=lambda: wacht.stop(), daemon=True).start()
+
+    def _on_printerkeuze_toggled(self, checked):
+        """Schakelaar 'Printer automatisch kiezen'."""
+        aan = bool(checked)
+        self._save_app_setting(printerkeuze.SLEUTEL_AUTO, aan)
+        print(f"[PRINTERKEUZE] Automatisch kiezen: {'AAN' if aan else 'UIT'}")
+        if aan:
+            self._start_printerwacht()
+        else:
+            self._stop_printerwacht()
+            self._printerkeuze_stand = None
+        self._update_printerkeuze_label()
+
+    def _on_terug_naar_automatisch(self):
+        """Laat de handmatige keuze los; de wacht kiest bij de eerstvolgende
+        veeg opnieuw. De huidige printer blijft tot dat moment staan, zodat er
+        geen moment is waarop de booth zonder printer zit."""
+        self._save_app_setting(printerkeuze.SLEUTEL_HANDMATIG, "")
+        wacht = getattr(self, '_printerwacht', None)
+        if wacht is not None:
+            wacht.terug_naar_automatisch()
+        print("[PRINTERKEUZE] Handmatige keuze losgelaten")
+        self._update_printerkeuze_label()
+
+    def _on_printerkeuze_main(self, besluit, stand):
+        """Terugmelding van de wachtdraad — draait op de hoofddraad.
+
+        Bij een gewone veeg zonder verandering staat hier alleen een setText.
+        Al het echte werk (profielen meeverhuizen, poller herstarten) gebeurt
+        uitsluitend als er daadwerkelijk een andere printer gekozen is.
+        """
+        self._printerkeuze_stand = stand
+        try:
+            if besluit.gewisseld:
+                self._pas_printerkeuze_toe(besluit)
+        except Exception as e:
+            print(f"[PRINTERKEUZE] Toepassen mislukt: {e}")
+        # Bij een gewone veeg zonder verandering hoeft de regel alleen bij te
+        # werken als iemand er ook naar kijkt. Buiten het instellingenscherm
+        # blijft de hoofddraad zo helemaal vrij; bij het openen ervan wordt de
+        # regel toch al ververst via _refresh_settings_ui.
+        if besluit.gewisseld or getattr(self, 'state', None) == State.SETTINGS:
+            self._update_printerkeuze_label()
+
+    def _pas_printerkeuze_toe(self, besluit):
+        """Zet de nieuw gekozen printer in gebruik. Op de hoofddraad, maar
+        alleen het goedkope deel — het papierprofiel verhuist op een eigen
+        draad mee, want daar zit bestandswerk en een printerlijst in."""
+        nieuwe = besluit.printer or ""
+        config.PRINTER_NAME = nieuwe
+        self._save_app_setting("printer_name", nieuwe)
+        if hasattr(self, '_printer_name_label'):
+            try:
+                self._printer_name_label.setText(
+                    nieuwe or t("printer_not_selected"))
+            except Exception:
+                pass
+        if not nieuwe:
+            self._stop_printer_status_poller()
+            return
+
+        threading.Thread(
+            target=self._verhuis_papierprofiel,
+            args=(besluit.vorige, nieuwe, besluit.zelfde_stuurprogramma),
+            daemon=True).start()
+
+        # De DNP-statuspoller kijkt naar een vaste printernaam; die moet mee.
+        self._start_printer_status_poller()
+
+    def _verhuis_papierprofiel(self, vorige, nieuwe, zelfde_stuurprogramma):
+        """Neem het vastgelegde papierprofiel mee naar de nieuwe queue.
+
+        Het profiel hangt aan de printernaam (printer._devmode_path). Wisselt
+        de naam, dan vindt de printcode niets meer. Bij DNP met profielsleutel
+        werpt print_photo dan een duidelijke fout; bij het legacy HiTi-pad valt
+        hij stil terug op de driver-standaard — zonder het vastgelegde formaat
+        en zonder split/cut. Dat stille geval is precies wat we willen
+        voorkomen, dus verhuist het profiel mee — maar alleen bij hetzelfde
+        stuurprogramma, want een DEVMODE-blob hoort bij een driver.
+        """
+        try:
+            overgenomen, ontbreekt = printerkeuze.neem_devmode_over(
+                vorige, nieuwe, zelfde_stuurprogramma)
+            if overgenomen:
+                print(f"[PRINTERKEUZE] Papierprofielen meegenomen: "
+                      f"{', '.join(overgenomen)}")
+            # DNP: de ingebakken 4x6-profielen alsnog wegschrijven als ze er
+            # niet zijn. Dit raakt bestaande captures nooit aan.
+            from printer import ensure_dnp_reference_devmode
+            ensure_dnp_reference_devmode(nieuwe)
+            # Alleen waarschuwen als er ná dit alles nog iets ontbreekt én we
+            # het niet konden overnemen — dan is er echt handwerk nodig.
+            self._printerkeuze_profielwaarschuwing = (
+                bool(ontbreekt) and not zelfde_stuurprogramma)
+            if self._printerkeuze_profielwaarschuwing:
+                print(f"[PRINTERKEUZE] {nieuwe!r} mist nog: "
+                      f"{', '.join(ontbreekt)}")
+        except Exception as e:
+            print(f"[PRINTERKEUZE] Papierprofiel overnemen mislukt: {e}")
+
+    def _update_printerkeuze_label(self):
+        """Werk de regel in Instellingen → Printen bij. Alleen een setText."""
+        label = getattr(self, '_printerkeuze_status_label', None)
+        if label is None:
+            return
+        try:
+            aan = bool(self._load_app_setting(printerkeuze.SLEUTEL_AUTO, False))
+            handmatig = self._load_app_setting(
+                printerkeuze.SLEUTEL_HANDMATIG, "") or config.PRINTER_NAME
+            tekst = printerkeuze.stand_tekst(
+                getattr(self, '_printerkeuze_stand', None), aan, handmatig)
+            if aan and getattr(self, '_printerkeuze_profielwaarschuwing', False):
+                tekst += ("\n⚠ Deze printer heeft nog geen vastgelegd "
+                          "papierprofiel — doe eerst een testprint.")
+            label.setText(tekst)
+            knop = getattr(self, '_printerkeuze_terug_btn', None)
+            if knop is not None:
+                # Alleen zinvol als de automaat aan staat én er een eigen
+                # keuze ligt om los te laten.
+                knop.setVisible(bool(aan and self._load_app_setting(
+                    printerkeuze.SLEUTEL_HANDMATIG, "")))
+        except Exception:
+            pass
 
     def _on_configure_printer(self):
         """Open the printer driver's own preferences dialog and save DEVMODE."""
@@ -17451,11 +17706,38 @@ class PhotoboothWindow(QMainWindow):
         self._refresh_event_limit_ui()
 
     def _on_test_print(self):
-        """Generate a test image and send it to the configured printer."""
+        """Eén testvel op de gekozen printer. Blokkeert de hoofddraad niet.
+
+        Drie dingen die hier eerder misgingen:
+        - het bouwen van de testafbeelding (tweeduizend lijntjes + een PNG van
+          1200x1800) stond op de hoofddraad, dus de knop voelde als vastlopen;
+        - twee keer tikken vuurde twee vellen af van een rol die geld kost;
+        - de terugkoppeling ging naar _devmode_status_label, en dat label staat
+          op setVisible(False) — een mislukte testprint gaf dus geen enkel
+          teken van leven.
+        """
+        if getattr(self, '_test_print_bezig', False):
+            return  # loopt al — een tweede tik mag geen tweede vel geven
         if not config.PRINTER_NAME:
+            self._test_print_melding(
+                "Er is geen printer gekozen. Sluit de printer aan, of kies er "
+                "zelf een met 'Wijzig'.", goed=False)
             print("[SETTINGS] Test print: geen printer geselecteerd")
             return
 
+        self._test_print_bezig = True
+        btn = getattr(self, '_test_print_btn', None)
+        if btn is not None:
+            try:
+                btn.setEnabled(False)
+            except Exception:
+                pass
+        self._test_print_melding("Testvel wordt klaargemaakt…", goed=None)
+        # Bouwen op een eigen draad; het resultaat komt via een signaal terug.
+        threading.Thread(target=self._bouw_testprint, daemon=True).start()
+
+    def _bouw_testprint(self):
+        """Bouwt de testafbeelding. Draait op een achtergronddraad."""
         from PIL import Image, ImageDraw, ImageFont
         from datetime import datetime
 
@@ -17505,33 +17787,110 @@ class PhotoboothWindow(QMainWindow):
             img.save(test_path, "PNG")
         except Exception as e:
             print(f"[SETTINGS] Test print image fout: {e}")
+            self._test_print_gebouwd_signal.emit(
+                "", f"Het testvel kon niet gemaakt worden: {e}")
             return
+        self._test_print_gebouwd_signal.emit(test_path, "")
 
+    def _start_testprint(self, test_path, fout):
+        """Het testvel is klaar (of niet) — verstuur het. Op de hoofddraad."""
+        if fout or not test_path:
+            self._test_print_klaar(fout or "Het testvel kon niet gemaakt worden.",
+                                   goed=False)
+            return
         # Test print: gebruik het profiel passend bij huidige printer-modus.
         # _resolve_dnp_profile_key(None) gaf altijd None (legacy pad) —
         # de test kon de vastgelegde 4x6_cut/4x3 profielen dus nooit
         # valideren. Map nu direct vanaf de booth printer_mode.
+        #
+        # Huren (HiTi) draait op de legacy DEVMODE-blob zonder profielsleutel;
+        # dat is dezelfde afweging als in _handover_photo_ok (code 2718).
         from printer import PROFILE_4X6_CUT, PROFILE_4X6_NOCUT, PROFILE_4X3
-        mode = getattr(self.active_event, 'printer_mode', '3strips') \
-            if self.active_event else '3strips'
-        test_profile = {
-            '3strips': PROFILE_4X6_CUT,
-            '4x6': PROFILE_4X6_NOCUT,
-            '4x3': PROFILE_4X3,
-        }.get(mode)
-        self._test_print_thread = SubprocessPrintThread(
-            test_path, config.PRINTER_NAME, 1, profile_key=test_profile,
-            skip_status_check=not self._printer_status_enabled())
-        self._test_print_thread.print_failed.connect(
-            lambda msg: self._devmode_status_label.setText(f"⚠ Test mislukt: {msg[:80]}")
-            if hasattr(self, '_devmode_status_label') else None
-        )
-        self._test_print_thread.print_complete.connect(
-            lambda: self._devmode_status_label.setText("✓ Test print verstuurd")
-            if hasattr(self, '_devmode_status_label') else None
-        )
-        self._test_print_thread.start()
-        print(f"[SETTINGS] Test print naar: {config.PRINTER_NAME} (profiel: {test_profile or 'legacy'})")
+        if getattr(self, 'backend_brand', '') == 'huren':
+            test_profile = None
+        else:
+            mode = getattr(self.active_event, 'printer_mode', '3strips') \
+                if self.active_event else '3strips'
+            test_profile = {
+                '3strips': PROFILE_4X6_CUT,
+                '4x6': PROFILE_4X6_NOCUT,
+                '4x3': PROFILE_4X3,
+            }.get(mode)
+        try:
+            self._test_print_thread = SubprocessPrintThread(
+                test_path, config.PRINTER_NAME, 1, profile_key=test_profile,
+                skip_status_check=not self._printer_status_enabled())
+            self._test_print_thread.print_failed.connect(
+                lambda msg: self._test_print_klaar(
+                    self._leesbare_printfout(msg), goed=False))
+            self._test_print_thread.print_complete.connect(
+                lambda: self._test_print_klaar(
+                    f"Testvel verstuurd naar {config.PRINTER_NAME}.", goed=True))
+            # Keep-alive: dezelfde reden als bij de gewone printdraad — een
+            # QThread die weggegooid wordt terwijl hij loopt crasht hard.
+            if not hasattr(self, '_print_threads_alive'):
+                self._print_threads_alive = []
+            self._print_threads_alive.append(self._test_print_thread)
+            self._test_print_thread.finished.connect(
+                lambda th=self._test_print_thread:
+                    self._print_threads_alive.remove(th)
+                    if th in self._print_threads_alive else None)
+            self._test_print_thread.start()
+        except Exception as e:
+            self._test_print_klaar(f"De print kon niet gestart worden: {e}",
+                                   goed=False)
+            return
+        self._test_print_melding("Bezig met printen…", goed=None)
+        print(f"[SETTINGS] Test print naar: {config.PRINTER_NAME} "
+              f"(profiel: {test_profile or 'legacy'})")
+
+    def _leesbare_printfout(self, melding):
+        """Maak van een printerfout een zin die de verhuurder iets zegt."""
+        rauw = (melding or "").strip()
+        laag = rauw.lower()
+        if "niet gevonden" in laag:
+            return ("De printer reageert niet. Staat hij aan, en zit de "
+                    "USB-kabel erin?")
+        if "niet vastgelegd" in laag or "profiel" in laag:
+            return ("Het papierprofiel voor deze printer is nog niet "
+                    "vastgelegd. Leg het vast via Geavanceerd → DNP "
+                    "printer-instellingen.")
+        if "geen papier" in laag or "paper" in laag:
+            return "Er zit geen papier meer in de printer."
+        if "lint" in laag or "ribbon" in laag:
+            return "Het lint van de printer is op."
+        if "timeout" in laag:
+            return ("De printer antwoordde niet binnen twee minuten. Zet hem "
+                    "uit en weer aan, en probeer het opnieuw.")
+        if "offline" in laag:
+            return "De printer staat op offline in Windows."
+        return rauw[:200] or "De print is niet gelukt."
+
+    def _test_print_melding(self, tekst, goed=None):
+        """Zet de regel naast de testprint-knop. Alleen een setText."""
+        label = getattr(self, '_test_print_status_label', None)
+        if label is None:
+            return
+        teken = {True: "✓ ", False: "⚠ ", None: ""}[goed]
+        kleur = {True: config.COLOR_SUCCESS, False: config.COLOR_DANGER,
+                 None: config.COLOR_TEXT_DIM}[goed]
+        try:
+            label.setText(f"{teken}{tekst}")
+            label.setStyleSheet(f"color: {kleur};")
+        except Exception:
+            pass
+
+    def _test_print_klaar(self, tekst, goed):
+        """Afronden: melding tonen en de knop weer vrijgeven."""
+        self._test_print_bezig = False
+        btn = getattr(self, '_test_print_btn', None)
+        if btn is not None:
+            try:
+                btn.setEnabled(True)
+            except Exception:
+                pass
+        self._test_print_melding(tekst, goed=goed)
+        print(f"[SETTINGS] Test print {'gelukt' if goed else 'MISLUKT'}: {tekst}")
 
     def _update_devmode_status(self):
         """Update the DEVMODE status label."""
