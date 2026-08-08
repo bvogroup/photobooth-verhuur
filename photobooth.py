@@ -11867,6 +11867,12 @@ class PhotoboothWindow(QMainWindow):
                     qr_box.raise_()
             except Exception:
                 pass
+        # Het slotmenu ligt over hetzelfde venster; die moet mee.
+        if getattr(self, '_slotmenu_widget', None) is not None:
+            try:
+                self._slotmenu_plaats()
+            except Exception:
+                pass
 
     def _position_countdown_bar(self):
         """Position countdown bar at top of review page, full screen width."""
@@ -12006,6 +12012,13 @@ class PhotoboothWindow(QMainWindow):
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_Escape:
+            # Staat het slotmenu open, dan sluit Escape éérst dat. Anders zou
+            # hij op idle rechtstreeks de instellingen openen terwijl er nog
+            # een menu overheen ligt.
+            if getattr(self, '_slotmenu_widget', None) is not None:
+                print("[UI] Escape: slotmenu dicht", flush=True)
+                self._slotmenu_sluit()
+                return
             try:
                 if self.state == State.SETTINGS:
                     print("[UI] Escape: terug naar idle", flush=True)
@@ -14461,231 +14474,401 @@ class PhotoboothWindow(QMainWindow):
 
         self.stack.addWidget(page)
 
-    def _on_lock_clicked(self):
-        """Slotje geklikt → toon info-dialog (event-info + acties) i.p.v.
-        direct PIN-prompt. PIN-prompt komt pas bij Loskoppelen of
-        Geavanceerde instellingen.
-        """
-        self._show_event_info_dialog()
+    # ══════════════════════════════════════════════════════════════════
+    # Het slotmenu — wat de verhuurder ziet als hij op het slotje tikt
+    #
+    # Dit was een QDialog: een LOS VENSTER met een eigen titelbalk, dat je op
+    # Windows van de booth af kon schuiven en dat met zijn lichte kaart niets
+    # te maken had met het scherm eronder. Nu is het een overlay ín het
+    # venster, zoals de rest van de booth het al doet (_handover_overlay, de
+    # printer-fout, het printaantal): een halfdoorzichtig vlak over de pagina
+    # die er toch al staat, met de collage die eronder doorkleurt.
+    #
+    # Wat er beschermd is verandert hier NIET. Loskoppelen en Geavanceerde
+    # instellingen vragen nog altijd de pincode van het event — zie
+    # _lock_action_unlink en _lock_action_advanced, allebei onaangeroerd. Dat
+    # is de drempel tussen een gast die op het slotje tikt en een booth die
+    # midden op een feest van zijn event af ligt.
+    # ══════════════════════════════════════════════════════════════════
 
-    def _on_evinfo_dialog_closed(self, _result):
-        """Stop de live-refresh timer wanneer de event-info dialog sluit."""
+    # De kaart is 640 van de 1368 punten breed: bijna de helft van het scherm,
+    # zodat hij als paneel leest en niet als vensterje, maar smal genoeg dat de
+    # achtergrond er aan weerszijden omheen blijft staan.
+    _SLOTMENU_KAART_BREED = 640
+
+    def _on_lock_clicked(self):
+        """Slotje aangeraakt → het slotmenu open.
+
+        De pincode komt pas bij Loskoppelen of Geavanceerde instellingen; wat
+        je hier ziet (welk event, staat alles in de cloud, hoe staat de
+        printer) mag iedereen zien die er toch al voor staat.
+        """
+        self._slotmenu_open()
+
+    def _show_event_info_dialog(self):
+        """De oude naam van dezelfde deur.
+
+        De printer-foutoverlay heeft een eigen 'Printer-info'-knop die hier
+        binnenkomt. Die hoeft niet te weten dat het geen dialoogvenster meer is.
+        """
+        self._slotmenu_open()
+
+    def _slotmenu_sluit(self, *_args):
+        """Slotmenu weg, en de live verversing eerst stoppen.
+
+        Blijft die timer draaien, dan werkt hij labels bij die niet meer
+        bestaan — en dat is precies waar de vorige versie een `finished`-signaal
+        voor nodig had.
+        """
         try:
-            if hasattr(self, '_evinfo_refresh_timer') and self._evinfo_refresh_timer:
+            if getattr(self, '_evinfo_refresh_timer', None):
                 self._evinfo_refresh_timer.stop()
-                self._evinfo_refresh_timer = None
         except Exception:
             pass
+        self._evinfo_refresh_timer = None
         self._evinfo_event_lbl = None
+        self._evinfo_datum_lbl = None
+        self._evinfo_upload_lbl = None
         self._evinfo_printer_lbl = None
-        self._evinfo_dialog = None
+        ov = getattr(self, '_slotmenu_widget', None)
+        self._slotmenu_widget = None
+        if ov is not None:
+            try:
+                ov.hide()
+                ov.setParent(None)
+                ov.deleteLater()
+            except Exception:
+                pass
+
+    def _slotmenu_plaats(self):
+        """De overlay over het hele venster leggen, de kaart in het midden.
+
+        Wordt ook bij een vensterwijziging aangeroepen (zie resizeEvent), want
+        een kaart die na het draaien half buiten beeld hangt is onbruikbaar.
+        """
+        ov = getattr(self, '_slotmenu_widget', None)
+        if ov is None:
+            return
+        breed, hoog = self.width(), self.height()
+        ov.setGeometry(0, 0, breed, hoog)
+        weg = getattr(ov, 'wegtikvlak', None)
+        if weg is not None:
+            weg.setGeometry(0, 0, breed, hoog)
+        kaart = getattr(ov, 'kaart', None)
+        if kaart is not None:
+            kaart.adjustSize()
+            kaart.move(max(0, (breed - kaart.width()) // 2),
+                       max(0, (hoog - kaart.height()) // 2))
+            kaart.raise_()
+
+    def _slotmenu_uploadregel(self, booking_id):
+        """Eén regel die de énige vraag beantwoordt die vlak vóór het
+        loskoppelen telt: staat alles al in de cloud?
+
+        Geeft (tekst, kleur). Er stond "📤 118/132 (89%)" — een rekensom die de
+        verhuurder eerst zelf moet uitvoeren, met een gast naast zich. Het
+        antwoord staat er nu als antwoord.
+        """
+        try:
+            from cloud_uploader import get_status
+            s = get_status(booking_id)
+        except Exception:
+            return "Uploadstand onbekend", merk.OP_DONKER_FIJN
+        totaal = int(s.get("total", 0) or 0)
+        klaar = int(s.get("uploaded", 0) or 0)
+        mislukt = int(s.get("failed", 0) or 0)
+        if totaal <= 0:
+            return "Nog geen foto's", merk.OP_DONKER_FIJN
+        rest = max(0, totaal - klaar)
+        if rest == 0 and mislukt == 0:
+            return f"✅  Alles staat in de cloud  ·  {totaal} foto's", merk.GROEN
+        regel = f"📤  Nog {rest} van de {totaal} te uploaden"
+        if mislukt:
+            # Mislukte uploads zijn het enige geval waarin er iets MOET
+            # gebeuren; die krijgt daarom de foutkleur van een donker scherm.
+            return f"{regel}  ·  ⚠ {mislukt} mislukt", merk.FOUT_OP_DONKER
+        return regel, merk.OP_DONKER
 
     def _refresh_event_info_labels(self):
-        """Update de event + printer regels in de info-dialog. Live update."""
-        # Safety: dialog kan tussentijds gesloten zijn
-        if not hasattr(self, '_evinfo_event_lbl') or self._evinfo_event_lbl is None:
+        """De regels in het slotmenu bijwerken. Draait elke 1,5 seconde door.
+
+        Kort houden is hier het punt. De verhuurder leest dit staand, met een
+        feest om zich heen: welk event hangt eraan, staat alles in de cloud, en
+        doet de printer het nog.
+        """
+        # Vangnet: het menu kan tussentijds gesloten zijn.
+        if getattr(self, '_evinfo_event_lbl', None) is None:
             return
-        if not hasattr(self, '_evinfo_printer_lbl') or self._evinfo_printer_lbl is None:
+        if getattr(self, '_evinfo_printer_lbl', None) is None:
             return
 
-        # ── Event-regel opbouwen ─────────────────────────────────
+        # ── Welk event hangt eraan ───────────────────────────────
         ev = self.active_event
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
         booking_label = getattr(ev, 'linked_booking_label', '') if ev else ''
         if not booking_id:
+            self._evinfo_kop_lbl.setVisible(False)
             self._evinfo_event_lbl.setText("Geen event gekoppeld")
             self._evinfo_event_lbl.setStyleSheet(
-                f"color: {config.COLOR_TEXT_DIM}; background: transparent;"
-            )
+                merk.tekst(merk.OP_DONKER_ZACHT, op_donker=True))
+            self._evinfo_datum_lbl.setText("")
+            self._evinfo_datum_lbl.setVisible(False)
+            self._evinfo_upload_lbl.setText("")
+            self._evinfo_upload_lbl.setVisible(False)
         else:
-            # Naam · datum komen al gecombineerd uit linked_booking_label
-            # ("ron-debbygroet · 2026-06-05" typisch).
-            name_date = booking_label or booking_id[:8]
-            upload_part = ""
-            try:
-                from cloud_uploader import get_status
-                s = get_status(booking_id)
-                if s["total"] > 0:
-                    pct = int(100 * s["uploaded"] / max(1, s["total"]))
-                    upload_part = f"  ·  📤 {s['uploaded']}/{s['total']} ({pct}%)"
-                    if s["failed"] > 0:
-                        upload_part += f"  ·  ⚠ {s['failed']} mislukt"
-                else:
-                    upload_part = "  ·  📤 nog niets geüpload"
-            except Exception:
-                pass
-            self._evinfo_event_lbl.setText(f"🟢  {name_date}{upload_part}")
+            # linked_booking_label is "naam · datum" (zie _apply_linked_booking).
+            # De naam is waar je op kijkt; de datum is de bevestiging eronder.
+            naam, _, datum = (booking_label or booking_id[:8]).partition(" · ")
+            self._evinfo_kop_lbl.setVisible(True)
+            self._evinfo_event_lbl.setText(f"🟢  {naam}")
             self._evinfo_event_lbl.setStyleSheet(
-                f"color: {config.COLOR_TEXT}; background: transparent;"
-            )
+                merk.tekst(merk.OP_DONKER, op_donker=True))
+            self._evinfo_datum_lbl.setText(datum)
+            self._evinfo_datum_lbl.setVisible(bool(datum))
+            regel, kleur = self._slotmenu_uploadregel(booking_id)
+            self._evinfo_upload_lbl.setText(regel)
+            self._evinfo_upload_lbl.setStyleSheet(merk.tekst(kleur, op_donker=True))
+            self._evinfo_upload_lbl.setVisible(True)
 
-        # ── Printer-regel opbouwen ───────────────────────────────
+        # ── Doet de printer het nog ──────────────────────────────
+        # Zelfde standen als altijd, alleen in de kleuren van een donker
+        # scherm: de lichte varianten (COLOR_SUCCESS, COLOR_TEXT) zijn hier
+        # onleesbaar. Voor een waarschuwing heeft het merk geen eigen tint —
+        # daar doet het ⚠-teken zelf het werk.
         st = getattr(self, '_dnp_last_status', None)
         from dnp_status import StatusLevel
         if st is None:
-            text = "⏳  Status nog niet bekend..."
-            color = config.COLOR_TEXT_DIM
+            text = "⏳  Status nog niet bekend…"
+            color = merk.OP_DONKER_FIJN
         elif st.level == StatusLevel.OK:
+            # Bewust niet in het merkgroen: dan zou de printerregel harder
+            # roepen dan de hoofdknop en dan de uploadstand. Dat het goed is,
+            # zegt het vinkje al.
             text = "✅  Klaar"
-            color = config.COLOR_SUCCESS
+            color = merk.OP_DONKER_ZACHT
         elif st.level == StatusLevel.INFO:
             text = f"ℹ️  {st.label}"
-            color = config.COLOR_TEXT
+            color = merk.OP_DONKER_ZACHT
         elif st.level == StatusLevel.WARNING:
             text = f"⚠️  {st.label}"
-            color = "#B07A00"
+            color = merk.OP_DONKER
         elif st.level == StatusLevel.ERROR:
             if st.connected:
                 code = f" (code {st.code})" if st.code is not None else ""
                 text = f"❌  {st.label}{code}"
             else:
                 text = "❌  Printer niet bereikbaar (USB?)"
-            color = config.COLOR_DANGER
+            color = merk.FOUT_OP_DONKER
         else:  # UNKNOWN
             if st.connected:
                 text = "🔧  USB-printer aangesloten, geen libusb-toegang"
             else:
                 text = "🔌  Printer niet gevonden op USB"
-            color = config.COLOR_TEXT_DIM
+            color = merk.OP_DONKER_FIJN
 
-        # Voeg prints-over toe achter de status indien beschikbaar
+        # Prints-over erachter, als de printer het doorgeeft. Het percentage is
+        # eraf: 312 van de 700 zegt hetzelfde en leest sneller dan 312/700 · 44%.
         if (st is not None
                 and getattr(st, 'prints_remaining', None) is not None
                 and getattr(st, 'prints_total', None)):
-            remain = st.prints_remaining
-            total = st.prints_total
-            pct = int(100 * remain / max(1, total))
-            text += f"  ·  {remain}/{total} prints over  ·  {pct}%"
+            text += (f"  ·  {st.prints_remaining} van de "
+                     f"{st.prints_total} prints over")
 
-        self._evinfo_printer_lbl.setText(text)
-        self._evinfo_printer_lbl.setStyleSheet(
-            f"color: {color}; background: transparent;"
-        )
+        self._evinfo_printer_lbl.setText(f"🖨️  {config.PRINTER_NAME}  ·  {text}")
+        self._evinfo_printer_lbl.setStyleSheet(merk.tekst(color, op_donker=True))
 
-    def _show_event_info_dialog(self):
-        """Modal met event-info + acties: Ververs / Loskoppel / Geavanceerd.
+    def _slotmenu_open(self):
+        """Het slotmenu ín het scherm zetten: welk event, staat alles in de
+        cloud, hoe staat de printer, en de drie dingen die je ermee kunt.
 
-        Loskoppel + Geavanceerd vragen om PIN. Ververs werkt direct.
+        Geen los venster meer. De overlay hangt aan het hoofdvenster zelf,
+        precies zoals _handover_overlay en de printer-fout dat doen, en is
+        halfdoorzichtig: de collage eronder kleurt mee.
         """
-        from PyQt5.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
-        )
+        from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+                                     QLabel, QPushButton)
+
+        if getattr(self, '_slotmenu_widget', None) is not None:
+            self._slotmenu_plaats()      # staat al open — alleen goed neerzetten
+            return self._slotmenu_widget
+
+        def doorschijnend(kleur, dekking):
+            """Een merkkleur met de achtergrond eronder zichtbaar.
+
+            De kleur komt uit merk.py en wordt hier alleen doorzichtig gemaakt;
+            zo blijft er één plek waar het palet staat.
+            """
+            q = QColor(kleur)
+            return f"rgba({q.red()}, {q.green()}, {q.blue()}, {dekking})"
+
         ev = self.active_event
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Event-info")
-        dlg.setModal(True)
-        dlg.setMinimumWidth(480)
-        dlg.setStyleSheet(f"QDialog {{ background: {config.COLOR_CARD_BG}; }}")
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(16)
-
-        # ── Header ──────────────────────────────────────────────────
-        title = QLabel("Gekoppeld event")
-        title.setFont(QFont("DM Sans", 18, QFont.Bold))
-        title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
-        lay.addWidget(title)
-
-        # ── Event-block (compact, 1 regel met live update) ─────────
-        status_frame = QFrame()
-        status_frame.setStyleSheet(
-            f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
-            f"border: 1px solid {config.COLOR_BORDER}; border-radius: 10px; padding: 14px; }}"
-        )
-        st_lay = QVBoxLayout(status_frame)
-        st_lay.setSpacing(6)
-
         booking_id = getattr(ev, 'linked_booking_id', '') if ev else ''
 
-        # 1 regel: 🟢 naam · datum · 📤 X/Y (Z%)
-        self._evinfo_event_lbl = QLabel("")
-        self._evinfo_event_lbl.setFont(QFont("DM Sans", 14, QFont.Bold))
-        self._evinfo_event_lbl.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
-        self._evinfo_event_lbl.setWordWrap(True)
-        st_lay.addWidget(self._evinfo_event_lbl)
-        lay.addWidget(status_frame)
+        # ── Het vlak over het hele venster ─────────────────────────
+        ov = QWidget(self)
+        ov.setObjectName("slotmenu")
+        ov.setStyleSheet(
+            f"#slotmenu {{ background: {doorschijnend(merk.INKT, 0.62)}; }}")
 
-        # ── Printer-block (compact) ────────────────────────────────
-        printer_frame = QFrame()
-        printer_frame.setStyleSheet(
-            f"QFrame {{ background: {config.COLOR_INPUT_BG}; "
-            f"border: 1px solid {config.COLOR_BORDER}; border-radius: 10px; padding: 14px; }}"
+        # Het hele vlak is één grote sluitknop: naast de kaart tikken doet het
+        # menu dicht. Hij ligt ónder de kaart, dus een tik op de kaart zelf
+        # komt hier nooit aan. Een knop en geen muisafhandeling, want een knop
+        # werkt met een vinger even goed als met een muis.
+        weg = QPushButton("", ov)
+        weg.setCursor(Qt.ArrowCursor)
+        weg.setFocusPolicy(Qt.NoFocus)
+        weg.setStyleSheet(
+            "QPushButton { background: transparent; border: none; }")
+        weg.clicked.connect(self._slotmenu_sluit)
+        ov.wegtikvlak = weg
+
+        # ── De kaart in het midden ─────────────────────────────────
+        kaart = QWidget(ov)
+        kaart.setObjectName("slotkaart")
+        kaart.setFixedWidth(self._SLOTMENU_KAART_BREED)
+        # De kaart zelf is dicht. Doorschijnend geprobeerd, en zelfs op een
+        # paar procent kwam de kop van het startscherm er als spookletter
+        # doorheen — dat leest als een tekenfout, niet als glas. Het
+        # doorkijkje hoort in het vlak eromheen, en daar is het er ook.
+        kaart.setStyleSheet(
+            f"#slotkaart {{ background: {merk.INKT_VLAK}; "
+            f"border: 1px solid {merk.INKT_RAND}; "
+            f"border-radius: {merk.RONDING_VLAK}px; }}"
         )
-        pr_lay = QVBoxLayout(printer_frame)
-        pr_lay.setSpacing(6)
+        lay = QVBoxLayout(kaart)
+        lay.setContentsMargins(merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM,
+                               merk.RUIMTE_KANTLIJN, merk.RUIMTE_RUIM)
+        lay.setSpacing(0)
 
-        pr_title = QLabel(f"🖨️  Printer  ·  {config.PRINTER_NAME}")
-        pr_title.setFont(QFont("DM Sans", 13, QFont.Bold))
-        pr_title.setStyleSheet(f"color: {config.COLOR_TEXT}; background: transparent;")
-        pr_lay.addWidget(pr_title)
+        # Het kopje verdwijnt als er niets gekoppeld is: "Gekoppeld event" met
+        # daaronder "Geen event gekoppeld" spreekt zichzelf tegen.
+        self._evinfo_kop_lbl = QLabel("Gekoppeld event")
+        self._evinfo_kop_lbl.setFont(
+            merk.letter(merk.TEKST_FIJN, vet=True, spatie=106))
+        self._evinfo_kop_lbl.setStyleSheet(
+            merk.tekst(merk.OP_DONKER_FIJN, op_donker=True))
+        lay.addWidget(self._evinfo_kop_lbl)
+        lay.addSpacing(merk.RUIMTE_KRAP)
 
-        # 1 regel: <icoon> Status · X/Y prints over · Z%
+        # De naam van het event: het enige dat je van een meter afstand moet
+        # kunnen lezen. Stond in dezelfde regel als de datum én de uploadstand.
+        self._evinfo_event_lbl = QLabel("")
+        self._evinfo_event_lbl.setFont(merk.letter(merk.TEKST_SUBKOP, vet=True))
+        self._evinfo_event_lbl.setStyleSheet(merk.tekst(op_donker=True))
+        self._evinfo_event_lbl.setWordWrap(True)
+        lay.addWidget(self._evinfo_event_lbl)
+
+        self._evinfo_datum_lbl = QLabel("")
+        self._evinfo_datum_lbl.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._evinfo_datum_lbl.setStyleSheet(
+            merk.tekst(merk.OP_DONKER_ZACHT, op_donker=True))
+        lay.addWidget(self._evinfo_datum_lbl)
+
+        lay.addSpacing(merk.RUIMTE)
+
+        # De uploadstand. Dit is waarom dit scherm bestaat vlak vóór het
+        # loskoppelen: staat alles in de cloud, of nog niet?
+        self._evinfo_upload_lbl = QLabel("")
+        self._evinfo_upload_lbl.setFont(merk.letter(merk.TEKST_LOPEND, vet=True))
+        self._evinfo_upload_lbl.setStyleSheet(merk.tekst(op_donker=True))
+        self._evinfo_upload_lbl.setWordWrap(True)
+        lay.addWidget(self._evinfo_upload_lbl)
+
+        lay.addSpacing(merk.RUIMTE_RUIM)
+        streep = QWidget()
+        streep.setFixedHeight(1)
+        streep.setStyleSheet(f"background: {merk.INKT_RAND};")
+        lay.addWidget(streep)
+        lay.addSpacing(merk.RUIMTE)
+
+        # De printer: één regel, niet een eigen blok met een eigen kopje.
         self._evinfo_printer_lbl = QLabel("")
-        self._evinfo_printer_lbl.setFont(QFont("DM Sans", 12, QFont.Bold))
+        self._evinfo_printer_lbl.setFont(merk.letter(merk.TEKST_KLEIN))
+        self._evinfo_printer_lbl.setStyleSheet(merk.tekst(op_donker=True))
         self._evinfo_printer_lbl.setWordWrap(True)
-        pr_lay.addWidget(self._evinfo_printer_lbl)
+        lay.addWidget(self._evinfo_printer_lbl)
 
-        lay.addWidget(printer_frame)
+        lay.addSpacing(merk.RUIMTE_RUIM)
 
-        # ── Live refresh: elke 1.5s de labels bijwerken ───────────
-        self._evinfo_dialog = dlg
-        self._evinfo_refresh_timer = QTimer(dlg)
+        # ── De knoppen ─────────────────────────────────────────────
+        # Eén hoofdknop (Ververs), één gevaarknop (Loskoppelen) en daaronder
+        # twee stille: sluiten, en de uitzondering.
+        def knop(tekst, stijl, hoogte=merk.KNOP_NORMAAL, punten=merk.TEKST_KNOP):
+            b = QPushButton(tekst)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFont(merk.letter(punten, vet=True))
+            b.setMinimumHeight(hoogte)
+            b.setStyleSheet(stijl)
+            return b
+
+        ververs = knop("Ververs event", merk.knop_hoofd())
+        ververs.setEnabled(bool(booking_id))
+        ververs.clicked.connect(lambda: self._lock_action_refresh(ov))
+        lay.addWidget(ververs)
+        lay.addSpacing(merk.RUIMTE_KRAP + 4)
+
+        # Loskoppelen vraagt nog steeds de pincode van het event; zie
+        # _lock_action_unlink. Daar is met opzet niets aan veranderd.
+        loskoppelen = knop("Loskoppelen", merk.knop_gevaar(op_donker=True))
+        loskoppelen.setEnabled(bool(booking_id))
+        loskoppelen.clicked.connect(lambda: self._lock_action_unlink(ov))
+        lay.addWidget(loskoppelen)
+
+        lay.addSpacing(merk.RUIMTE)
+
+        # Onderin: sluiten rechts, en linksonder de uitzondering. Geavanceerde
+        # instellingen is een knop voor als er iets bijzonders aan de hand is,
+        # niet voor het dagelijkse werk — dus staat hij er klein en gedempt,
+        # net als het overslaan-knopje in de afsluitflow. Vindbaar als je hem
+        # zoekt, niet uitnodigend als je hem niet zoekt.
+        onderrij = QHBoxLayout()
+        onderrij.setContentsMargins(0, 0, 0, 0)
+        onderrij.setSpacing(merk.RUIMTE)
+
+        # De stille knop van het merk, maar in de fijnste tekstkleur die het
+        # toestaat (5,29:1) in plaats van de zachte (8,21:1): nog leesbaar,
+        # maar hij vraagt niet om aandacht.
+        geavanceerd = knop(
+            "⚙  Geavanceerde instellingen",
+            merk.knop_stil(op_donker=True).replace(
+                f"color: {merk.OP_DONKER_ZACHT};",
+                f"color: {merk.OP_DONKER_FIJN};", 1),
+            hoogte=merk.KNOP_MIN, punten=merk.TEKST_FIJN)
+        geavanceerd.clicked.connect(lambda: self._lock_action_advanced(ov))
+        onderrij.addWidget(geavanceerd)
+        onderrij.addStretch()
+
+        sluiten = knop("Sluiten", merk.knop_tweede(op_donker=True),
+                       hoogte=merk.KNOP_MIN, punten=merk.TEKST_KLEIN)
+        sluiten.setMinimumWidth(160)
+        sluiten.clicked.connect(self._slotmenu_sluit)
+        onderrij.addWidget(sluiten)
+        lay.addLayout(onderrij)
+
+        # _lock_action_refresh / _unlink / _advanced kregen een QDialog mee en
+        # roepen accept() aan als ze klaar zijn. Die drie blijven zo precies
+        # zoals ze waren — inclusief de pincode.
+        ov.kaart = kaart
+        ov.accept = self._slotmenu_sluit
+        ov.reject = self._slotmenu_sluit
+
+        self._slotmenu_widget = ov
+        self._slotmenu_plaats()
+        ov.show()
+        ov.raise_()
+
+        # Live verversing, net als de dialoog die had: elke 1,5 seconde.
+        self._evinfo_refresh_timer = QTimer(ov)
         self._evinfo_refresh_timer.setInterval(1500)
         self._evinfo_refresh_timer.timeout.connect(self._refresh_event_info_labels)
         self._evinfo_refresh_timer.start()
-        # Stop timer bij sluiten van dialog (anders draait 'm tot app sluit)
-        dlg.finished.connect(self._on_evinfo_dialog_closed)
-        # Eerste render direct
         self._refresh_event_info_labels()
-
-        # ── Actie-knoppen ──────────────────────────────────────────
-        def _btn(label, color_bg, color_hover, font_size=14):
-            b = QPushButton(label)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setFont(QFont("DM Sans", font_size, QFont.Bold))
-            b.setMinimumHeight(48)
-            b.setStyleSheet(
-                f"QPushButton {{ background: {color_bg}; color: {config.COLOR_TEXT_ON_PRIMARY}; "
-                f"border: none; border-radius: 10px; padding: 10px 18px; }}"
-                f"QPushButton:hover {{ background: {color_hover}; }}"
-                f"QPushButton:disabled {{ background: rgba(0,0,0,0.15); color: rgba(255,255,255,0.5); }}"
-            )
-            return b
-
-        # Ververs (direct, geen PIN)
-        refresh_btn = _btn("🔄  Ververs event", config.COLOR_PRIMARY, config.COLOR_PRIMARY_HOVER)
-        refresh_btn.setEnabled(bool(booking_id))
-        refresh_btn.clicked.connect(lambda: self._lock_action_refresh(dlg))
-        lay.addWidget(refresh_btn)
-
-        # Loskoppelen (PIN vereist)
-        unlink_btn = _btn("🔗❌  Loskoppelen", config.COLOR_DANGER, "#8E2D24")
-        unlink_btn.setEnabled(bool(booking_id))
-        unlink_btn.clicked.connect(lambda: self._lock_action_unlink(dlg))
-        lay.addWidget(unlink_btn)
-
-        lay.addSpacing(8)
-
-        # Geavanceerde instellingen (PIN vereist)
-        settings_btn = _btn("⚙️  Geavanceerde instellingen",
-                            config.COLOR_SECONDARY, config.COLOR_SECONDARY_HOVER)
-        settings_btn.clicked.connect(lambda: self._lock_action_advanced(dlg))
-        lay.addWidget(settings_btn)
-
-        # Sluiten
-        close_btn = QPushButton("Sluiten")
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setFont(QFont("DM Sans", 12))
-        close_btn.setMinimumHeight(40)
-        close_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #888; border: none; "
-            "padding: 8px 16px; }"
-            "QPushButton:hover { color: #333; }"
-        )
-        close_btn.clicked.connect(dlg.reject)
-        lay.addWidget(close_btn, alignment=Qt.AlignCenter)
-
-        dlg.exec_()
+        # De tekst bepaalt de hoogte van de kaart, dus pas ná het vullen staat
+        # hij op zijn plek.
+        self._slotmenu_plaats()
+        print("[SLOT] Slotmenu open"
+              f" (event {'gekoppeld' if booking_id else 'los'})", flush=True)
+        return ov
 
     def _lock_action_refresh(self, dlg):
         """Ververs-knop in event-info dialog: re-fetch booking + sluiten."""
