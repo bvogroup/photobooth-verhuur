@@ -91,7 +91,7 @@ import os
 import re
 from datetime import datetime
 
-from PyQt5.QtCore import (Qt, QTimer, QRect, QPoint, QElapsedTimer,
+from PyQt5.QtCore import (Qt, QTimer, QRect, QPoint, QPointF, QElapsedTimer,
                           pyqtSignal)
 from PyQt5.QtGui import (QPixmap, QPainter, QColor, QPainterPath,
                          QFontMetrics, QPen)
@@ -213,9 +213,11 @@ SCHUIVEN_STANDAARD = False
 
 # Twee tekenfrequenties, want er zijn twee soorten beweging en ze kosten niet
 # hetzelfde. Zie de klasse Collage: schuiven is versiering en mag uit; de
-# verschuiving tegen inbranden is bescherming en blijft altijd aan. Staat het
-# schuiven uit, dan hoeft er nog maar twee keer per seconde getekend te worden
-# — er verandert dan hooguit één pixel per twee seconden.
+# verschuiving tegen inbranden en het kruipen van de achtergrond zijn zó traag
+# dat ze aan twee beeldjes per seconde ruim genoeg hebben — ze verplaatsen
+# samen ongeveer één fysieke pixel per seconde. Vijfentwintig beeldjes zou
+# betekenen: vierentwintig keer precies hetzelfde tekenen en dan één pixel
+# opschuiven.
 BEELDJES_S = 25
 BEELDJES_S_STIL = 2
 
@@ -226,36 +228,96 @@ DRIFT_X, DRIFT_Y = 56, 34
 DRIFT_PERIODE_X = 11 * 60.0
 DRIFT_PERIODE_Y = 17 * 60.0
 
-# En de achtergrond schuift er zelfstandig achterlangs. Dat is niet dezelfde
+# En de achtergrond kruipt er zelfstandig achterlangs. Dat is niet dezelfde
 # beweging als hierboven: die verplaatst de hele opbouw als één laag, en als de
-# achtergrond meeging zou er niets aan veranderen.
+# achtergrond meeging zou er niets aan veranderen. Deze kruipt eronderdoor.
 #
-# Waarom dit moet. Bij een volle collage beweegt er van alles en is het risico
-# klein. Bij een LEGE collage is de achtergrond het enige wat er is — het begin
-# van de avond, en de hele avond bij een event waar de collage uit staat. Juist
-# die stand staat het langst stil.
+# Waarom hij er is. Gevraagd is: "die achtergrond moet heel rustig de kleur
+# wisselen, of een beetje verschuiven. Niet te overduidelijk en ook niet dat het
+# heel traag is. Gewoon heel eenvoudig, dat je het bijna niet ziet, maar dat het
+# wel gebeurt." En het scherm staat uren hetzelfde te tonen: bij een volle
+# collage beweegt er van alles, maar bij een LEGE collage — het begin van de
+# avond, en de hele avond bij een event waar de collage uit staat — is de
+# achtergrond het enige wat er is.
 #
-# En het is gratis: het veld staat overmaats klaar en er wordt een bewegend
-# deelvlak uit getekend. Eén blit, net als een stilstaande achtergrond; er wordt
-# per beeldje niets geschaald.
+# HET KOST NIETS, EN DAT IS DE EIS EN GEEN BIJVANGST
+# --------------------------------------------------
+# "Kan je ook gewoon zorgen dat het startscherm weinig rekenkracht inneemt zoals
+# nu." Dus: het veld staat overmaats klaar (BG_OVERMAAT) en er wordt per beeldje
+# een bewegend deelvlak uit getekend. Dat is exact dezelfde tekenopdracht als
+# een stilstaande achtergrond — één blit, alleen op een andere x en y. Er wordt
+# niets geschaald, niets getint en niets samengesteld. Wat er per beeldje bij
+# komt zijn twee sinussen.
+#
+# En het TEKENTEMPO GAAT ER NIET VAN OMHOOG. Zie beweegt(): dit telt daar met
+# opzet niet in mee. Het scherm tekent stil twee keer per seconde en dat blijft
+# zo.
+#
+# WAAROM DIT NIET IS WAT ER EERDER UIT GEHAALD IS
+# -----------------------------------------------
+# Er heeft hier al twee keer beweging op gezeten die er weer af moest.
+#
+#   * Beta.5 liet de rijen foto's schuiven. Dat tekende alles dubbel én negeerde
+#     de schermschaal, dus werd elk beeldje door Windows opgeblazen: "ik zie de
+#     service nu echt al best wel laggen met dat effect, misschien moeten we het
+#     maar gewoon statisch houden." Zie SCHUIVEN_STANDAARD — dat staat nog uit
+#     en blijft uit.
+#   * Beta.6 liet de achtergrond pannen, op precies deze plek. Die kostte toen
+#     al vrijwel niets, maar hij liep schokkerig: "de ene keer doet hij het wel,
+#     de andere keer niet."
+#
+# Die tweede is de leerzame, want de fout zat niet in de prijs maar in het
+# tempo. Hij liep met 2,1 fysieke pixel per seconde, sprong per hele LOGISCHE
+# punt (op een tablet op 200% dus twee pixels tegelijk), en zette daarvoor het
+# hele scherm op vijfentwintig beeldjes per seconde. Vierentwintig beeldjes
+# precies hetzelfde, dan een sprong van twee pixels. Wie daarnaar kijkt ziet
+# geen beweging maar een tik, en een tik leest als een storing.
+#
+# Daarom drie dingen anders, en het zijn er precies drie:
+#
+#   1. RUIM VIER KEER ZO LANGZAAM: op zijn snelst 0,50 fysieke pixel per
+#      seconde. Dat is trager dan de verschuiving tegen inbranden hierboven
+#      (0,53), en die kruipt al op vijfentwintig booths zonder dat iemand hem
+#      opgemerkt heeft. Dat is de maatstaf, en hij is na te rekenen in plaats
+#      van te beoordelen.
+#   2. STAPPEN VAN ÉÉN FYSIEKE PIXEL in plaats van één logische punt, om
+#      dezelfde reden als bij _verschuiving(): de kleinste beweging die er is
+#      wordt dan 0,095 mm.
+#   3. GEEN EXTRA BEELDJES. Zie hierboven.
+#
+# HOE TRAAG PRECIES
+# -----------------
+# Volle slag 410 fysieke pixels breed en 274 hoog — dat is de overmaat. Eén hele
+# cyclus duurt 43 respectievelijk 29 minuten, dus 21,5 en 14,5 minuut van de ene
+# uiterste stand naar de andere. Beide priem, dus het patroon herhaalt zich pas
+# na 43 x 29 = 1247 minuten: ruim twintig uur, langer dan welk feest ook.
+#
+# Wat dat betekent voor wie kijkt. In dertig seconden verschuift er hooguit
+# vijftien fysieke pixels — anderhalve millimeter op dit scherm, op een wazig
+# verloop zonder één scherpe rand om aan af te lezen. Daar is niets van te zien.
+# Loop je er een half uur later langs, dan staat het veld honderden pixels
+# verderop en is de kleur op een vaste plek op het scherm meetbaar anders: op de
+# meegeleverde achtergrond gemiddeld 25 van de 255 per kanaal over de volle
+# slag, en op de sterkste plekken 69. Dat is het "bijna niet zien, maar het
+# gebeurt wel".
+#
+# Eerlijk erbij: het is een sinus, dus er zijn ongelukkige momenten waarop hij na
+# precies een half uur toevallig weer bijna op zijn oude plek staat. Dat is eigen
+# aan elke heen-en-weergaande beweging en niet weg te kiezen.
 BG_OVERMAAT = 1.15      # hoeveel groter dan het scherm het veld staat
-BG_PERIODE_X = 10 * 60.0
-BG_PERIODE_Y = 13 * 60.0
+BG_PERIODE_X = 43 * 60.0
+BG_PERIODE_Y = 29 * 60.0
 
-# ...maar STANDAARD UIT. Op de echte booth liep die pan niet vloeiend: "de ene
-# keer doet hij het wel, de andere keer niet". Een beweging die hapert leest als
-# een storing; een stilstaande achtergrond leest als niets. Bij twijfel wint dus
-# stilstand.
+# ...en hij staat STANDAARD AAN. Dat is de omgekeerde stand van beta.6, en dat
+# mag omdat het bezwaar van toen weg is: er is geen haperende pan meer om uit te
+# zetten en er komen geen beeldjes bij.
 #
-# Dat het scherm daarmee onbeschermd zou zijn, klopt niet. De achtergrond is een
-# wazig verloop zonder één scherpe rand — daar brandt niets van in. Het risico
-# zit in de instructie, het logo, het slotje en het serienummer, en die worden
-# beschermd door de verschuiving hierboven. Die kost een verplaatsing van de
-# tekenpositie en verder niets, en blijft dus altijd aan.
-#
-# De pan is aan te zetten met de schakelaar bij de instellingen, voor wie hem op
-# zijn eigen booth wil proberen.
-PARALLAX_STANDAARD = False
+# De schakelaar bij de instellingen blijft bestaan, voor wie zijn achtergrond
+# toch liever muurvast heeft. Uitzetten kost geen bescherming: wat werkelijk kan
+# inbranden is de instructie, het logo, het slotje en het serienummer, en die
+# worden door de verschuiving hierboven beschermd — die staat hier los van en
+# blijft altijd aan.
+PARALLAX_STANDAARD = True
 
 
 class Layout:
@@ -615,7 +677,7 @@ class Collage(QWidget):
     Tekent achter elkaar: de achtergrond, de schuivende rijen, de instructie en
     het logo. Geen enkele laag wordt per beeldje opnieuw gerasterd of geschaald.
 
-    TWEE SOORTEN BEWEGING, en ze zijn met opzet gescheiden.
+    DRIE SOORTEN BEWEGING, en ze zijn met opzet gescheiden.
 
     *Het schuiven van de rijen* is versiering. Het mag uit, en dat is een
     schakelaar bij de instellingen en geen keuze in de code — wie het op zijn
@@ -628,6 +690,14 @@ class Collage(QWidget):
     hertekening van de inhoud, en het kruipt met een halve punt per seconde.
     Dat kost vrijwel niets en het is het enige wat de instructie, het logo, het
     slotje en het serienummer ervan weerhoudt uren op dezelfde pixels te staan.
+
+    *Het kruipen van de achtergrond* is dat het scherm leeft. Het is dezelfde
+    soort beweging als de tweede — een andere uitsnede uit een veld dat al
+    klaarstaat, dus één blit en geen hertekening — en het loopt op hetzelfde
+    tempo: een halve fysieke pixel per seconde. Het telt daarom NIET mee in
+    beweegt(): een beweging van een pixel per twee seconden heeft aan twee
+    beeldjes per seconde meer dan genoeg. Zie BG_PERIODE_X hierboven; daar staat
+    ook waarom de vorige poging hiertoe eruit moest.
 
     En er wordt bijgehouden wat een beeldje werkelijk kost. Zie _tik(): elke
     minuut komt er een regel in het logboek met het gemiddelde en het duurste
@@ -859,6 +929,22 @@ class Collage(QWidget):
               f"stappen sinds de start, grootste {self._drift_grootste_stap:.0f} "
               f"fysieke pixel(s), samen {self._drift_pad * self._dpr:.0f} pixels "
               f"afgelegd", flush=True)
+        # En waar de achtergrond staat. Ook die hoort onzichtbaar te zijn, en
+        # ook dat is af te lezen in plaats van te beoordelen: de stand ten
+        # opzichte van het midden, en hoe groot de hele slag is. Staat er een
+        # klacht over "hij beweegt niet" of juist "hij springt", dan staat het
+        # antwoord in deze regel.
+        if not self._achtergrond.isNull() and L is not None:
+            bx, by = self._achtergrond_verschuiving(nu / 1000.0)
+            sx = max(0.0, self._achtergrond.width() / self._dpr - L.W)
+            sy = max(0.0, self._achtergrond.height() / self._dpr - L.H)
+            print(f"[COLLAGE] achtergrond {'kruipt' if self._parallax else 'staat stil'}"
+                  f" op {(bx + sx / 2.0) * self._dpr:+.0f}, "
+                  f"{(by + sy / 2.0) * self._dpr:+.0f} fysieke pixels uit het "
+                  f"midden van een slag van {sx * self._dpr:.0f}x"
+                  f"{sy * self._dpr:.0f} | volle cyclus "
+                  f"{BG_PERIODE_X / 60:.0f} en {BG_PERIODE_Y / 60:.0f} minuten",
+                  flush=True)
         self._beeldjes = 0
         self._teken_som = 0.0
         self._teken_ergste = 0.0
@@ -939,8 +1025,20 @@ class Collage(QWidget):
     def _achtergrond_verschuiving(self, t):
         """Waar het achtergrondveld nu staat — een uitsnede, geen hertekening.
 
-        Staat de pan uit (en dat is de standaard), dan wordt het veld netjes
-        gecentreerd neergezet en staat het stil.
+        Het veld staat BG_OVERMAAT keer zo groot klaar; wat hier uitkomt is
+        waar de linkerbovenhoek ervan neergezet wordt, in logische punten. Er
+        wordt dus alleen een ander stuk van hetzelfde veld getekend. Zie de
+        uitleg bij BG_PERIODE_X voor hoe traag dit is en waarom.
+
+        De uitkomst gaat op HELE FYSIEKE PIXELS, precies zoals _verschuiving()
+        dat doet en om dezelfde twee redenen: anders staat het veld per beeldje
+        op een andere onderpixel en moet Qt hem opnieuw bemonsteren, en anders
+        is de kleinste stap niet meer af te lezen. Nu is die per definitie één
+        fysieke pixel — 0,095 mm op dit scherm — en valt er bij een klacht na
+        te rekenen in plaats van naar een foto van een beeldscherm te kijken.
+
+        Staat het kruipen uit, dan wordt het veld netjes gecentreerd neergezet
+        en staat het stil.
         """
         L = self._layout
         if L is None or self._achtergrond.isNull():
@@ -949,39 +1047,63 @@ class Collage(QWidget):
         speling_y = max(0.0, self._achtergrond.height() / self._dpr - L.H)
         if not self._parallax:
             return -speling_x / 2.0, -speling_y / 2.0
+        # Heen en weer over de volle speling, met perioden die geen deler
+        # gemeen hebben. De 1,1 zet de twee uit de pas, zodat het pad een lus
+        # is en geen streep.
         fx = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_X)
         fy = 0.5 + 0.5 * math.sin(2 * math.pi * t / BG_PERIODE_Y + 1.1)
-        return -speling_x * fx, -speling_y * fy
+        stap = 1.0 / max(1e-6, self._dpr)
+        return (round(-speling_x * fx / stap) * stap,
+                round(-speling_y * fy / stap) * stap)
 
     def zet_parallax(self, aan):
-        """De schuivende achtergrond aan of uit. Standaard uit.
+        """Het kruipen van de achtergrond aan of uit. Standaard AAN.
 
-        Op de echte booth liep die pan niet vloeiend — "de ene keer doet hij
-        het wel, de andere keer niet". Een beweging die hapert leest als een
-        storing, een stilstaande achtergrond leest als niets, dus bij twijfel
-        wint stilstand. Het is sfeer, geen bescherming: de achtergrond is een
-        wazig verloop zonder scherpe rand en daar brandt niets van in. Wat wél
-        beschermd moet worden — de instructie, het logo, het slotje, het
-        serienummer — wordt beschermd door de trage verschuiving, en die staat
-        hier los van en blijft altijd aan.
+        Het is sfeer én bescherming, maar het is vooral GRATIS: het veld staat
+        overmaats klaar, dus of hij nu stilstaat of kruipt, er wordt precies
+        één keer hetzelfde plaatje neergezet. Alleen op een andere x en y.
+
+        Daarom wordt hier ook NIET aan het tekentempo gezeten. Dat was de fout
+        van beta.6: die zette het scherm voor deze beweging op vijfentwintig
+        beeldjes per seconde en liet hem per twee pixels tegelijk verspringen,
+        en dat is waar "de ene keer doet hij het wel, de andere keer niet"
+        vandaan kwam. Hij kruipt nu met een halve fysieke pixel per seconde;
+        twee beeldjes per seconde is daar ruim genoeg voor. Zie beweegt().
+
+        Uitzetten mag, en het kost geen bescherming: wat werkelijk kan
+        inbranden — de instructie, het logo, het slotje, het serienummer —
+        wordt beschermd door de trage verschuiving, en die staat hier los van
+        en blijft altijd aan.
         """
         aan = bool(aan)
         if aan == self._parallax:
             return
         self._parallax = aan
-        self._stel_tempo_in()
-        print(f"[COLLAGE] schuivende achtergrond {'AAN' if aan else 'UIT'} — de "
-              f"verschuiving tegen inbranden blijft hoe dan ook aan", flush=True)
+        print(f"[COLLAGE] kruipende achtergrond {'AAN' if aan else 'UIT'} — het "
+              f"tekentempo verandert daar niet van ({self._timer.interval()} ms "
+              f"per beeldje), en de verschuiving tegen inbranden blijft hoe dan "
+              f"ook aan", flush=True)
         self.update()
 
     def beweegt(self):
-        """Beweegt er iets dat per beeldje hertekend moet worden?
+        """Beweegt er iets dat PER BEELDJE hertekend moet worden?
 
         Zo niet, dan hoeft er nog maar twee keer per seconde getekend te
-        worden: de verschuiving tegen inbranden verplaatst hooguit één punt
-        per twee seconden.
+        worden.
+
+        DE ACHTERGROND TELT HIER MET OPZET NIET IN MEE, en dat is de kern van
+        deze hele voorziening. Hij kruipt met een halve fysieke pixel per
+        seconde, net als de verschuiving tegen inbranden. Bij twee beeldjes per
+        seconde schuift hij dus ongeveer elk vijfde beeldje één pixel op; bij
+        vijfentwintig zouden er vierentwintig identieke beeldjes per stap
+        getekend worden. Dat levert geen vloeiender beeld op — er valt niets
+        vloeiends aan een pixel — maar wel twaalf keer zoveel rekenwerk op een
+        fanless tablet die er de hele avond mee staat.
+
+        Precies dat gebeurde in beta.6 wel, en dat is waar de klacht over
+        haperen vandaan kwam. Zet dit dus niet "voor de zekerheid" terug.
         """
-        return self._schuiven or self._parallax
+        return self._schuiven
 
     # ── inhoud ─────────────────────────────────────────────────────────────
     def zet_fotos(self, paden):
@@ -1769,9 +1891,16 @@ class Collage(QWidget):
 
         # 1. achtergrond — één blit van een uitsnede uit het overmaatse veld.
         #    Er wordt hier niets geschaald: dat is bij het klaarzetten al
-        #    gebeurd.
+        #    gebeurd. Kruipt hij, dan is het exact dezelfde opdracht op een
+        #    andere x en y; dat is waarom die beweging niets kost.
+        #
+        #    Met een QPointF en niet met twee gehele getallen: de plek staat al
+        #    op een hele FYSIEKE pixel (zie _achtergrond_verschuiving), en op
+        #    een tablet op 200% is dat een halve logische punt. Afronden op
+        #    hele punten zou daar twee pixels tegelijk van maken — precies de
+        #    sprong waar het in beta.6 aan lag.
         ox, oy = self._achtergrond_verschuiving(t)
-        p.drawPixmap(int(round(ox)), int(round(oy)), self._achtergrond)
+        p.drawPixmap(QPointF(ox, oy), self._achtergrond)
 
         # 2. de verschuiving tegen inbranden: de hele opbouw kruipt mee, als
         #    één laag, zodat de onderlinge verhoudingen kloppen blijven. Het

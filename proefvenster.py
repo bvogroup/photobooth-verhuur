@@ -35,6 +35,10 @@ from PyQt5.QtCore import QRect                                   # noqa: E402
 from PyQt5.QtWidgets import (QApplication, QMainWindow,        # noqa: E402
                              QStackedWidget, QWidget)
 
+# Voor de standaardstanden van de collage. Die staan daar en horen hier niet
+# nog een keer ingetikt te worden; zie _collage_schuiven_aan hieronder.
+import startscherm                                              # noqa: E402
+
 # Alles wat photobooth.py bij het importeren aan hardware en netwerk optuigt.
 # Er wordt hieronder niets van gebruikt; het gaat om de vensteropbouw.
 #
@@ -315,12 +319,14 @@ class Startschermvenster(QMainWindow):
     def _get_raw_dir(self):
         return self._raw_dir
 
-    # De collage staat aan, de versiering uit — net als de standaardinstelling.
+    # Precies de standaardinstellingen, en die staan in startscherm.py — hier
+    # niet nog een keer ingetikt, anders laten de afdrukken iets anders zien
+    # dan de booth. De foto's staan stil; de achtergrond kruipt.
     def _collage_schuiven_aan(self):
-        return False
+        return startscherm.SCHUIVEN_STANDAARD
 
     def _collage_parallax_aan(self):
-        return False
+        return startscherm.PARALLAX_STANDAARD
 
     def _load_app_setting(self, *a, **k):
         return False

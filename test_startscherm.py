@@ -27,6 +27,7 @@ Draait zonder beeldscherm, dus ook op een bouwserver:
     python test_startscherm.py
 """
 
+import math
 import os
 import re
 import shutil
@@ -366,7 +367,15 @@ def _tipbalk(W, H):
                 f"photobooth.py: {wat}")
         return m
 
-    hoog = int(getal(r"_IDLE_TIP_HOOG\s*=\s*(\d+)", "_IDLE_TIP_HOOG").group(1))
+    # De balkhoogte is geen los getal meer maar een som: hij rekent zich naar
+    # KNOP_MIN toe, omdat de wifi-knop er anders onderuit puilt. Hier dus ook
+    # geen getal, maar diezelfde som uit de bron gelezen — anders bewaakt deze
+    # toets een balk die er niet meer staat.
+    marge = getattr(merk, getal(r"_IDLE_TIP_MARGE\s*=\s*merk\.(\w+)",
+                                "_IDLE_TIP_MARGE").group(1))
+    hoog = getattr(merk, getal(
+        r"_IDLE_TIP_HOOG\s*=\s*merk\.(\w+)\s*\+\s*2\s*\*\s*_IDLE_TIP_MARGE",
+        "_IDLE_TIP_HOOG").group(1)) + 2 * marge
     onder = getattr(merk, getal(r"_IDLE_TIP_ONDER\s*=\s*merk\.(\w+)",
                                 "_IDLE_TIP_ONDER").group(1))
     lucht = getattr(merk, getal(r"_IDLE_TIP_LUCHT\s*=\s*merk\.(\w+)",
@@ -845,7 +854,6 @@ def toets_verschuiving(page, dpr):
     instructie, het logo, de achtergrond, het slotje en het serienummer niet.
     """
     print("\nDe verschuiving tegen inbranden", flush=True)
-    L = page._layout
 
     ax, ay = page.verschuiving_bereik()
     eis(abs(ax * dpr - 56) <= 2 and abs(ay * dpr - 34) <= 2,
@@ -862,36 +870,9 @@ def toets_verschuiving(page, dpr):
     eis(per_minuut * dpr < 40,
         f"in een minuut hooguit {per_minuut*dpr:.0f} fysieke pixels — niet te zien")
 
-    # De schuivende achtergrond staat sinds beta.8 UIT. Op de booth liep hij
-    # schokkerig, en een haperende beweging leest als een storing. Het is sfeer
-    # en geen bescherming: een wazig verloop zonder scherpe rand brandt niet in.
-    eis(page._parallax is False, "de schuivende achtergrond staat standaard uit")
-    bg = [page._achtergrond_verschuiving(t) for t in range(0, 1800, 30)]
-    eis(len(set(bg)) == 1, "en de achtergrond staat dus werkelijk stil")
-    eis(not page.beweegt() or page._schuiven,
-        "met alleen de achtergrond uit hoeft er niets extra's getekend te worden")
-
-    # Aanzetten kan wel, en dan hoort hij te schuiven zonder zichtbaar te zijn.
-    page.zet_parallax(True)
-    eis(page._achtergrond.width() / dpr > L.W + 8,
-        f"het achtergrondveld staat overmaats klaar "
-        f"({page._achtergrond.width()}x{page._achtergrond.height()} fysiek voor "
-        f"een scherm van {int(L.W*dpr)}x{int(L.H*dpr)})")
-    bg = [page._achtergrond_verschuiving(t) for t in range(0, 1800, 30)]
-    bg_b = max(x for x, _ in bg) - min(x for x, _ in bg)
-    bg_h = max(y for _, y in bg) - min(y for _, y in bg)
-    eis(bg_b > 20 and bg_h > 10,
-        f"aangezet schuift hij {bg_b:.0f}x{bg_h:.0f} punten")
-    bg_per_min = max(abs(page._achtergrond_verschuiving(t + 60)[0]
-                         - page._achtergrond_verschuiving(t)[0])
-                     for t in range(0, 660, 30))
-    # De bovengrens komt uit het ontwerp: daar staat de pan van de achtergrond
-    # op 4,3 fysieke pixels per seconde, ofwel een schermbreedte per kwartier,
-    # en dat is als niet te zien beoordeeld. 258 px per minuut dus.
-    eis(bg_per_min * dpr < 258,
-        f"en hooguit {bg_per_min*dpr:.0f} fysieke pixels per minuut (ontwerp "
-        f"staat 258 toe)")
-    page.zet_parallax(False)
+    # De achtergrond heeft zijn eigen onderdeel hieronder: daar gaat het niet
+    # alleen over onzichtbaar zijn maar ook over wat het kost, en dat tweede is
+    # waar het eerder op stukliep. Zie toets_de_achtergrond_leeft().
 
     # Het slotje en het serienummer liggen buiten deze widget en moeten het te
     # horen krijgen; zonder dit signaal staan juist zij de hele avond stil.
@@ -924,6 +905,168 @@ def toets_verschuiving(page, dpr):
         "en weer aan")
 
 
+# ── 2b2. de achtergrond leeft, en dat mag niets kosten ─────────────────────
+def _achtergrondkleuren(page, t, punten):
+    """De kleur van het achtergrondveld op vaste plekken op HET SCHERM.
+
+    Op het scherm, niet in het veld — in het veld zou er per definitie niets
+    veranderen. Het veld kruipt eronderdoor, dus een vaste plek op het glas
+    kijkt na verloop van tijd naar een ander stuk van het verloop, en dát is
+    wat een gast als "de kleur wisselt" ziet.
+    """
+    ox, oy = page._achtergrond_verschuiving(t)
+    beeld = page._achtergrond.toImage()
+    uit = []
+    for x, y in punten:
+        px = max(0, min(beeld.width() - 1, int(round((x - ox) * page._dpr))))
+        py = max(0, min(beeld.height() - 1, int(round((y - oy) * page._dpr))))
+        c = QColor(beeld.pixel(px, py))
+        uit.append((c.red(), c.green(), c.blue()))
+    return uit
+
+
+def toets_de_achtergrond_leeft(page, dpr):
+    """Het startscherm hoort te leven, en dat mag geen rekenkracht kosten.
+
+    Twee eisen die tegen elkaar in werken, en allebei hard. Eerst: "die
+    achtergrond moet heel rustig de kleur wisselen, of een beetje verschuiven.
+    Niet te overduidelijk en ook niet dat het heel traag is. Gewoon heel
+    eenvoudig, dat je het bijna niet ziet, maar dat het wel gebeurt." En meteen
+    daarna: "kan je ook gewoon zorgen dat het startscherm weinig rekenkracht
+    inneemt zoals nu."
+
+    DIT IS DE PLEK WAAR HET EERDER IS MISGEGAAN, twee keer. In beta.5 gingen
+    de foto's schuiven op een scherm dat alles dubbel tekende en de
+    schermschaal negeerde: "ik zie de service nu echt al best wel laggen met
+    dat effect, misschien moeten we het maar gewoon statisch houden." In beta.6
+    kroop de achtergrond ook al, en die beweging kostte op zichzelf niets —
+    maar het scherm ging er wél voor van twee naar vijfentwintig beeldjes per
+    seconde. Beide keren ging de beweging eruit terwijl de oorzaak in het
+    tekentempo zat.
+
+    Deze toets valt dus om zodra de beweging aan dat tempo komt. Wat er
+    gemeten wordt, in deze volgorde:
+
+      1. hij beweegt werkelijk — anders is het scherm dood;
+      2. hij verspringt met hooguit één fysieke pixel tegelijk;
+      3. hij is niet te zien — gemeten tégen de verschuiving tegen inbranden,
+         die al op vijfentwintig booths kruipt zonder dat iemand haar heeft
+         opgemerkt. Dat is de maatstaf, en hij wordt hier uit die verschuiving
+         zelf gehaald in plaats van als getal ingetikt;
+      4. hij zet het tekentempo NIET omhoog — de eigenlijke eis;
+      5. en na een half uur is de kleur op een vaste plek op het scherm
+         meetbaar anders. Dat is "het gebeurt wel", in een getal.
+
+    Wat een beeldje ermee kost staat in toets_tekentijd(); daar hoort het,
+    want daar staat ook waar het tegen afgezet moet worden.
+    """
+    print("\nDe achtergrond die leeft", flush=True)
+    L = page._layout
+    was_schuiven, was_parallax = page._schuiven, page._parallax
+    page.zet_parallax(True)
+
+    print(f"        volle cyclus {startscherm.BG_PERIODE_X/60:.0f} minuten "
+          f"horizontaal, {startscherm.BG_PERIODE_Y/60:.0f} verticaal "
+          f"(beide priem, dus het patroon herhaalt zich pas na "
+          f"{startscherm.BG_PERIODE_X*startscherm.BG_PERIODE_Y/3600.0/60.0:.0f} "
+          f"uur)", flush=True)
+
+    eis(startscherm.PARALLAX_STANDAARD is True,
+        "de achtergrond kruipt standaard — het scherm staat niet dood")
+    eis(page._achtergrond.width() / dpr > L.W + 8,
+        f"het veld staat overmaats klaar, dus kruipen is een uitsnede en geen "
+        f"hertekening ({page._achtergrond.width()}x{page._achtergrond.height()} "
+        f"fysiek voor een scherm van {int(L.W*dpr)}x{int(L.H*dpr)})")
+
+    # 1. HIJ BEWEEGT WERKELIJK. Over één hele horizontale cyclus, want daar
+    #    past de verticale (die korter is) helemaal in.
+    duur = int(startscherm.BG_PERIODE_X) + 60
+    standen = [page._achtergrond_verschuiving(t) for t in range(0, duur, 5)]
+    slag_b = (max(x for x, _ in standen) - min(x for x, _ in standen)) * dpr
+    slag_h = (max(y for _, y in standen) - min(y for _, y in standen)) * dpr
+    print(f"        volle slag {slag_b:.0f}x{slag_h:.0f} fysieke pixels", flush=True)
+    eis(slag_b > 200 and slag_h > 100,
+        f"hij legt werkelijk afstand af ({slag_b:.0f}x{slag_h:.0f} fysieke "
+        f"pixels)")
+
+    # 2. OP HELE FYSIEKE PIXELS, EN NOOIT MEER DAN ÉÉN PER BEELDJE.
+    #    Dit is de helft van waarom beta.6 schokte: die sprong per hele
+    #    LOGISCHE punt, op een tablet op 200% dus twee pixels tegelijk.
+    eis(all(abs(v * dpr - round(v * dpr)) < 1e-6 for xy in standen for v in xy),
+        "elke stand ligt op een hele fysieke pixel")
+    beeldje = 1.0 / startscherm.BEELDJES_S_STIL     # het tempo dat er stil staat
+    fijn = [page._achtergrond_verschuiving(i * beeldje) for i in range(240)]
+    stap_x = max(abs(b[0] - a[0]) for a, b in zip(fijn, fijn[1:])) * dpr
+    stap_y = max(abs(b[1] - a[1]) for a, b in zip(fijn, fijn[1:])) * dpr
+    eis(stap_x <= 1.0001 and stap_y <= 1.0001,
+        f"en verspringt per beeldje hooguit één fysieke pixel per as "
+        f"({stap_x:.0f} en {stap_y:.0f})")
+
+    # 3. NIET TE ZIEN. De maatstaf is de verschuiving tegen inbranden: die
+    #    kruipt al op vijfentwintig booths en niemand heeft haar opgemerkt.
+    #    Blijft de achtergrond daar per as onder, dan is hij dat ook — en hij
+    #    heeft het makkelijker, want een wazig verloop heeft geen enkele rand
+    #    om beweging aan af te lezen.
+    def per_as_in(f, venster):
+        x = max(abs(f(t + venster)[0] - f(t)[0]) for t in range(0, 3600, 10))
+        y = max(abs(f(t + venster)[1] - f(t)[1]) for t in range(0, 3600, 10))
+        return x * dpr, y * dpr
+
+    bg_x, bg_y = per_as_in(page._achtergrond_verschuiving, 30)
+    dr_x, dr_y = per_as_in(page._verschuiving, 30)
+    print(f"        in 30 seconden: achtergrond {bg_x:.0f}x{bg_y:.0f} fysieke "
+          f"pixels, de verschuiving tegen inbranden {dr_x:.0f}x{dr_y:.0f}",
+          flush=True)
+    eis(max(bg_x, bg_y) <= max(dr_x, dr_y),
+        f"de achtergrond kruipt niet sneller dan de verschuiving die er al zit "
+        f"({max(bg_x, bg_y):.0f} tegen {max(dr_x, dr_y):.0f} fysieke pixels per "
+        f"halve minuut)")
+    eis(max(bg_x, bg_y) < 20,
+        f"in dertig seconden hooguit {max(bg_x, bg_y):.0f} fysieke pixels — "
+        f"{max(bg_x, bg_y)*0.095:.1f} mm op dit scherm, en niet te zien")
+
+    # 4. EN HET TEKENTEMPO BLIJFT WAT HET WAS. Dít is de eis. Een beweging van
+    #    een pixel per twee seconden heeft aan twee beeldjes per seconde ruim
+    #    genoeg; vijfentwintig zou vierentwintig identieke beeldjes per stap
+    #    tekenen, en dat is precies wat er in beta.6 gebeurde.
+    page.zet_schuiven(False)
+    eis(page.beweegt() is False,
+        "de kruipende achtergrond telt niet als iets dat per beeldje "
+        "hertekend moet worden")
+    eis(page._timer.interval() >= 400,
+        f"dus met de foto's stil tekent het scherm nog "
+        f"{1000/page._timer.interval():.0f} keer per seconde, en niet 25 — "
+        f"dit is de fout van beta.6 en dit is het vangnet ertegen")
+
+    # 5. EN NA EEN HALF UUR STAAT DE KLEUR ANDERS. Van de ene uiterste stand
+    #    naar de andere duurt een halve cyclus; dat is het "je ziet het niet
+    #    gebeuren, maar het gebeurt wel" in een getal.
+    punten = [(x * L.W / 6.0, y * L.H / 4.0)
+              for x in range(1, 6) for y in range(1, 4)]
+    kwart = startscherm.BG_PERIODE_X / 4.0
+    voor = _achtergrondkleuren(page, kwart, punten)
+    na = _achtergrondkleuren(page, 3 * kwart, punten)
+    verschil = [math.sqrt(sum((p - q) ** 2 for p, q in zip(a, b)))
+                for a, b in zip(voor, na)]
+    gem = sum(verschil) / len(verschil)
+    print(f"        over een halve cyclus ({2*kwart/60:.0f} minuten) verandert "
+          f"de kleur op {len(punten)} vaste plekken gemiddeld {gem:.0f} en "
+          f"hoogstens {max(verschil):.0f} van de 255 per kanaal", flush=True)
+    eis(gem > 8,
+        f"na {2*kwart/60:.0f} minuten is de kleur op een vaste plek meetbaar "
+        f"anders (gemiddeld {gem:.0f} van de 255)")
+    eis(max(verschil) > 20,
+        f"en op de sterkste plekken flink ({max(verschil):.0f} van de 255)")
+
+    # En uitzetten kan nog steeds, voor wie zijn achtergrond muurvast wil.
+    page.zet_parallax(False)
+    stil = set(page._achtergrond_verschuiving(t) for t in range(0, 1800, 30))
+    eis(len(stil) == 1, "uitgezet staat hij werkelijk stil")
+
+    page.zet_parallax(was_parallax)
+    page.zet_schuiven(was_schuiven)
+
+
 # ── 2c. wat een beeldje kost ───────────────────────────────────────────────
 def toets_tekentijd(page, dpr):
     """Meten, niet gissen. De opdrachtgever zag beta.5 haperen.
@@ -936,19 +1079,38 @@ def toets_tekentijd(page, dpr):
     print("\nWat een beeldje kost", flush=True)
     from PyQt5.QtCore import QElapsedTimer
 
-    def meet(aan, n=40):
-        page.zet_schuiven(aan)
+    def meet(n=40, ronden=5):
+        """De BESTE van een paar reeksen, niet het gemiddelde van één.
+
+        Dit draait op een gedeelde bouwserver, en die meet zichzelf tot een
+        factor twee uit elkaar zodra er iets anders langskomt. Dat is ruis en
+        geen bevinding over de code. De snelste reeks is de reeks waarin de
+        machine het minst met iets anders bezig was, en dat is het beste dat
+        er over het tekenwerk zelf te zeggen valt.
+
+        Het is ook wat het verschil van een halve milliseconde meetbaar maakt:
+        zonder dit verdwijnt zo'n verschil in de ruis en toetst deze meting
+        niets meer.
+        """
         doek = QPixmap(int(page.width() * dpr), int(page.height() * dpr))
         doek.setDevicePixelRatio(dpr)
         page.render(doek)                     # eerste keer bouwt de caches op
-        klok = QElapsedTimer()
-        klok.start()
-        for _ in range(n):
-            page.render(doek)
-        return klok.nsecsElapsed() / 1e6 / n
+        beste = None
+        for _ in range(ronden):
+            klok = QElapsedTimer()
+            klok.start()
+            for _ in range(n):
+                page.render(doek)
+            ms = klok.nsecsElapsed() / 1e6 / n
+            beste = ms if beste is None else min(beste, ms)
+        return beste
 
-    aan = meet(True)
-    uit = meet(False)
+    def meet_schuiven(aan):
+        page.zet_schuiven(aan)
+        return meet()
+
+    aan = meet_schuiven(True)
+    uit = meet_schuiven(False)
     print(f"        volle collage, schuiven aan: {aan:.2f} ms per beeldje", flush=True)
     print(f"        volle collage, schuiven uit: {uit:.2f} ms per beeldje", flush=True)
     eis(aan < 1000.0 / 25,
@@ -964,12 +1126,49 @@ def toets_tekentijd(page, dpr):
         f"uit)")
     page.zet_schuiven(True)
 
+    # ── EN WAT DE KRUIPENDE ACHTERGROND KOST ───────────────────────────────
+    #
+    # Dit is de eis die boven alle andere gaat: "kan je ook gewoon zorgen dat
+    # het startscherm weinig rekenkracht inneemt zoals nu." Meer dan een halve
+    # milliseconde per beeldje erbij is te duur — dan hoort de beweging er niet
+    # te komen, hoe mooi ze ook is.
+    #
+    # Hij hoort er niets bij te kosten, en dat is geen hoop maar een gevolg van
+    # de bouw: het veld staat overmaats klaar en er wordt precies één keer
+    # hetzelfde plaatje neergezet, alleen op een andere x en y. Wat erbij komt
+    # zijn twee sinussen. Meet dit dus mét de foto's stil, want dat is de stand
+    # waarin een booth de hele avond staat.
+    page.zet_schuiven(False)
+    page.zet_parallax(True)
+    kruipt = meet()
+    page.zet_parallax(False)
+    muurvast = meet()
+    page.zet_parallax(True)
+    print(f"        achtergrond kruipt:          {kruipt:.2f} ms per beeldje",
+          flush=True)
+    print(f"        achtergrond muurvast:        {muurvast:.2f} ms per beeldje",
+          flush=True)
+    eis(kruipt <= muurvast + 0.5,
+        f"de kruipende achtergrond kost hooguit een halve milliseconde per "
+        f"beeldje extra ({kruipt:.2f} tegen {muurvast:.2f} ms, verschil "
+        f"{kruipt - muurvast:+.2f})")
+    eis(kruipt < 1000.0 / startscherm.BEELDJES_S,
+        f"en past ruim in de {1000.0/startscherm.BEELDJES_S:.0f} ms die zelfs "
+        f"het snelste tempo toestaat ({kruipt:.2f} ms)")
+    page.zet_schuiven(True)
+
     # En de lege toestand. Die was in de vooraf gemaakte meting het DUURSTE
     # onderdeel van het scherm — zeven tot zeventien keer de hele schuivende
     # collage — omdat de achtergrond per beeldje opnieuw geschaald werd. Hij
     # wordt nu één keer overmaats klaargezet en per beeldje alleen verschoven,
     # dus dat hoort weg te zijn. Juist deze toestand staat op een rustige avond
     # het langst.
+    #
+    # Deze collage wordt vers aangemaakt en staat dus op de standaardstanden:
+    # de foto's stil, de achtergrond kruipend. Dat is precies het scherm dat
+    # aan het begin van een event uren staat te wachten, en dat is dus ook de
+    # stand waarin die kruipende achtergrond het meest moet waarmaken dat hij
+    # niets kost.
     leeg = startscherm.Collage(page._achtergrond_bron_pad)
     leeg.zet_zichtbaar_vlak(QRect(0, 0, page.width(), page.height()))
     stapel = QStackedWidget()
@@ -1125,6 +1324,8 @@ def main():
             onderdeel("de melding onderin", toets_de_melding, dpr)
             onderdeel("de QR", toets_qr, page, dpr)
             onderdeel("de verschuiving", toets_verschuiving, page, dpr)
+            onderdeel("de levende achtergrond", toets_de_achtergrond_leeft,
+                      page, dpr)
             onderdeel("de tekentijd", toets_tekentijd, page, dpr)
         onderdeel("de maat van de stapel", toets_maat_van_de_stapel,
                   achtergrond, paden, dpr)
