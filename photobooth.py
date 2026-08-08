@@ -11147,13 +11147,26 @@ class PhotoboothWindow(QMainWindow):
             _zet('_inline_deel_mislukt', True)
             return
 
-        # Wifi-conditie bepaalt QR-box vs tip-box
-        show_qr_box = wifi_ok
-        _zet('_inline_qr_box', show_qr_box)
-        _zet('_inline_no_wifi_tip', not show_qr_box)
+        # De QR staat er ALTIJD, ook zonder wifi op de booth.
+        #
+        # Hij werd verborgen zodra de booth offline was, en dan kreeg de gast
+        # alleen de tip te lezen dat de booth aan wifi moest. Dat is onnodig:
+        # de code wordt gebouwd uit het sessie-id dat de booth zelf al heeft
+        # aangemaakt, dus er is geen internet nodig om hem te tekenen. En de
+        # gast scant hem met zijn eigen mobiele internet, niet met dat van de
+        # booth.
+        #
+        # Staan de foto's er nog niet, dan vangt de website dat af: de gast
+        # laat naam en mailadres achter en krijgt "je foto's volgen nog",
+        # waarna gasten-inhaalronde ze nastuurt zodra de booth alsnog heeft
+        # geüpload. Sinds de uploadpoort in de afsluitflow gebeurt dat ook
+        # echt bij het loskoppelen. Zo gaat niemand meer met lege handen weg.
+        #
+        # Alleen bij een écht mislukte deling (hierboven) blijft de QR weg —
+        # een kapotte code is slechter dan geen code.
+        _zet('_inline_qr_box', True)
+        _zet('_inline_no_wifi_tip', False)
         _zet('_inline_deel_mislukt', False)
-        if not show_qr_box:
-            return
         if ready and pixmap is not None:
             try:
                 self._inline_qr_label.setPixmap(pixmap)
@@ -12405,11 +12418,12 @@ class PhotoboothWindow(QMainWindow):
         _cs_hint.setWordWrap(True)
         card_bg_lay.addWidget(_cs_hint)
 
-        # --- Schuivende achtergrond aan/uit (standaard UIT) ---
-        # Stond in beta.6 aan en liep op de booth niet vloeiend. Sfeer, geen
-        # bescherming: de achtergrond is een wazig verloop zonder scherpe rand.
+        # --- Kruipende achtergrond aan/uit (standaard AAN) ---
+        # Stond in beta.6 aan en liep op de booth niet vloeiend; hij is sinds
+        # beta.14 ruim vier keer zo langzaam en zet het tekentempo niet meer
+        # omhoog. Zie BG_PERIODE_X in startscherm.py.
         card_bg_lay.addSpacing(6)
-        self._collage_parallax_toggle = ToggleSwitch("Achtergrond laten schuiven")
+        self._collage_parallax_toggle = ToggleSwitch("Achtergrond laten bewegen")
         self._collage_parallax_toggle.setFont(QFont("DM Sans", 13))
         self._collage_parallax_toggle.setStyleSheet(toggle_style)
         self._collage_parallax_toggle.setChecked(self._collage_parallax_aan())
@@ -12418,9 +12432,10 @@ class PhotoboothWindow(QMainWindow):
         card_bg_lay.addWidget(self._collage_parallax_toggle)
 
         _cp_hint = QLabel(
-            "Staat uit. De achtergrond liep op sommige booths schokkerig, en\n"
-            "een haperende beweging valt meer op dan een stilstaande.\n"
-            "Aanzetten kan; kijk dan even of het bij jou wel vloeiend loopt."
+            "Staat aan. De achtergrond kruipt een halve pixel per seconde — je\n"
+            "ziet het niet gebeuren, maar na een half uur staat het scherm er\n"
+            "anders bij. Het kost geen rekenkracht: er wordt niets extra's\n"
+            "getekend, alleen een ander stuk van dezelfde achtergrond."
         )
         _cp_hint.setFont(QFont("DM Sans", 10))
         _cp_hint.setStyleSheet(dim_label_style)
@@ -16786,19 +16801,27 @@ class PhotoboothWindow(QMainWindow):
                 print(f"[COLLAGE] schuiven omzetten mislukt: {e}", flush=True)
 
     def _collage_parallax_aan(self):
-        """Of de achtergrond van het startscherm mag schuiven. Standaard UIT.
+        """Of de achtergrond van het startscherm mag kruipen. Standaard AAN.
 
-        Op de echte booth liep die beweging niet vloeiend: de ene keer wel, de
-        andere keer niet. Haperende beweging leest als een storing; een
-        stilstaande achtergrond leest als niets. Dit is sfeer, geen
-        bescherming — de achtergrond is een wazig verloop zonder scherpe rand
-        en daar brandt niets van in. De trage verschuiving van instructie,
-        logo, slotje en serienummer staat hier los van en blijft altijd aan.
+        De standaardstand komt uit startscherm.py en staat hier niet nog een
+        keer ingetikt — dat was hij wél, en daardoor bleef de achtergrond op
+        de booth stilstaan hoe die module er ook over dacht.
+
+        Hij stond uit omdat de beweging in beta.6 niet vloeiend liep: de ene
+        keer wel, de andere keer niet. Dat lag niet aan de prijs maar aan het
+        tempo — zie BG_PERIODE_X in startscherm.py. Hij kruipt nu ruim vier
+        keer zo langzaam, in stappen van één fysieke pixel, en zet het scherm
+        niet meer op vijfentwintig beeldjes per seconde.
+
+        Wie hem toch liever muurvast heeft, zet hem hier uit. Dat kost geen
+        bescherming: de trage verschuiving van instructie, logo, slotje en
+        serienummer staat hier los van en blijft altijd aan.
         """
-        return bool(self._load_app_setting("collage_parallax", False))
+        return bool(self._load_app_setting("collage_parallax",
+                                           startscherm.PARALLAX_STANDAARD))
 
     def _on_collage_parallax_toggled(self, checked):
-        """Schakelaar 'Achtergrond laten schuiven' — onthoud en pas meteen toe."""
+        """Schakelaar 'Achtergrond laten bewegen' — onthoud en pas meteen toe."""
         aan = bool(checked)
         self._save_app_setting("collage_parallax", aan)
         collage = getattr(self, "_idle_collage", None)
