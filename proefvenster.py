@@ -282,7 +282,7 @@ class Startschermvenster(QMainWindow):
                "_collage_achtergrond", "_get_default_idle_path",
                "_load_idle_background", "_is_logged_in")
     OVERGENOMEN = ("_IDLE_HOEK_LUCHT", "_IDLE_TIP_HOOG", "_IDLE_TIP_ONDER",
-                   "_IDLE_TIP_LUCHT")
+                   "_IDLE_TIP_LUCHT", "_IDLE_TIP_MARGE")
 
     def __init__(self, pb, breedte, hoogte, raw_dir="", serienummer="3D04"):
         super().__init__()

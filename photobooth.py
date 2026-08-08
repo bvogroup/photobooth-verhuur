@@ -4073,7 +4073,7 @@ class PhotoboothWindow(QMainWindow):
             f"QFrame {{ {merk.kaart(op_donker=True)} }}"
         )
         wifi_lay = QHBoxLayout(self._idle_wifi_tip)
-        wifi_lay.setContentsMargins(18, 12, 18, 12)
+        wifi_lay.setContentsMargins(18, self._IDLE_TIP_MARGE, 18, self._IDLE_TIP_MARGE)
         wifi_lay.setSpacing(14)
         wifi_icon = QLabel("📶")
         wifi_icon.setFont(QFont("DM Sans", 22))
@@ -4105,7 +4105,17 @@ class PhotoboothWindow(QMainWindow):
     # De maatvoering van de melding onderin. Staat hier bij elkaar omdat het
     # startscherm er ruimte voor moet vrijmaken en dus dezelfde getallen nodig
     # heeft — zie _idle_onderruimte().
-    _IDLE_TIP_HOOG = 70                    # de balk zelf
+    # De balkhoogte is UITGEREKEND en geen los getal. Hij stond op 70 met een
+    # marge van 12 boven en onder; dat laat 46 punten over voor een knop die
+    # KNOP_MIN = 48 hoog moet zijn. Twee punten te weinig, en omdat de balk een
+    # vaste hoogte heeft puilde de knop er onderuit — op de booth duidelijk
+    # zichtbaar als een groen vlak dat over de rand van de balk heen liep.
+    #
+    # KNOP_MIN verlagen mag niet: dat is de ondergrens van 9,1 mm voor alles
+    # wat een gast aanraakt. Dus rekent de balk zich naar de knop in plaats van
+    # andersom. Verandert KNOP_MIN ooit, dan volgt de balk vanzelf.
+    _IDLE_TIP_MARGE = merk.RUIMTE          # 16 — boven en onder de knop
+    _IDLE_TIP_HOOG = merk.KNOP_MIN + 2 * _IDLE_TIP_MARGE   # 48 + 32 = 80
     _IDLE_TIP_ONDER = merk.RUIMTE_RUIM     # 24 — van de onderrand af
     _IDLE_TIP_LUCHT = merk.RUIMTE          # 16 — tussen de balk en de onderbouw
 
