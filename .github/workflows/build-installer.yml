@@ -343,5 +343,28 @@ jobs:
             Write-Host "Er bestaat nog geen release $tag — installer alleen als artefact bewaard."
             exit 0
           }
-          gh release upload $tag "${{ steps.installer.outputs.pad }}" --clobber
+
+          # ── Nooit een installer overschrijven die er al hangt ─────────────
+          #
+          # Hier stond `--clobber`. Dat gaat mis in precies het geval dat het vaakst
+          # voorkomt: je maakt de release met de installer er al aan, en het aanmaken van
+          # die release zet de tag, en de tag zet deze bouw aan. Die bouwt dan hetzelfde
+          # nog een keer en zet het over het bestand heen dat er al goed hing.
+          #
+          # Op 26 augustus 2026 kostte dat een mislukte update op een booth: `--clobber`
+          # verwijdert eerst en uploadt dan, de tweede upload landde niet goed, en in dat
+          # gat gaf de download 404 terwijl de API het bestand nog als `uploaded` meldde.
+          #
+          # De regel is nu: erbij hangen als hij ontbreekt, en anders afblijven. Dat
+          # bedient de bedoelde weg (release aanmaken, tag zetten, bouw hangt de installer
+          # erin) net zo goed, en kan een goede installer niet meer slopen. Moet er tóch
+          # een nieuwe overheen, dan verwijder je het bestand met de hand en draai je de
+          # bouw opnieuw — dat is één handeling meer, en die hoort bewust te zijn.
+          $bestand = Split-Path -Leaf "${{ steps.installer.outputs.pad }}"
+          $bestaand = gh release view $tag --json assets --jq ".assets[].name"
+          if ($bestaand -contains $bestand) {
+            Write-Host "Release $tag heeft $bestand al — niets overschreven."
+            exit 0
+          }
+          gh release upload $tag "${{ steps.installer.outputs.pad }}"
           Write-Host "Installer toegevoegd aan release $tag"
