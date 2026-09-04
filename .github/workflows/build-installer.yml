@@ -141,6 +141,29 @@ jobs:
               Write-Host "ok    $($_.Name): ontleedt zonder fouten"
             }
           }
+          # ── Write-Output in een functie ──────────────────────────────
+          # In PowerShell IS de pijplijn de teruggave van een functie. Een
+          # `Write-Output` in een hulpfunctie die ergens anders wordt aangeroepen,
+          # plakt zijn tekst dus aan de teruggave van DIE functie vast.
+          #
+          # Dat is op 4 september 2026 gebeurd: `Meld` schreef met Write-Output, en
+          # `Vind-Serienummer` riep hem aan vlak voor de `return`. Die functie gaf
+          # daardoor geen "PVG01" terug maar een lijstje van twee — de logregel én
+          # het serienummer. Dat lijstje ging naar de server, die er niets mee kon,
+          # en in het logboek van de booth stond alleen "Geen token: ." zonder reden.
+          #
+          # Voor onze scripts geldt: melden doe je met Write-Host, teruggeven met
+          # return. Write-Output hoort hier niet thuis.
+          Get-ChildItem -Path . -Filter *.ps1 -File | ForEach-Object {
+            $regels = Get-Content $_.FullName
+            for ($i = 0; $i -lt $regels.Count; $i++) {
+              if ($regels[$i] -match '^\s*Write-Output\b') {
+                Write-Host "FOUT  $($_.Name) regel $($i+1): Write-Output — gebruik Write-Host, anders lekt dit in de teruggave van de functie"
+                $stuk = $true
+              }
+            }
+          }
+
           if ($stuk) { Write-Host ""; Write-Host "Een of meer PowerShell-scripts deugen niet."; exit 1 }
           Write-Host ""
           Write-Host "Alle PowerShell-scripts hebben een BOM en ontleden schoon."
