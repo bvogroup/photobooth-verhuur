@@ -118,9 +118,17 @@ jobs:
           Get-ChildItem -Path . -Filter *.ps1 -File | ForEach-Object {
             $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
             $heeftBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-            if (-not $heeftBom) {
-              Write-Host "FOUT  $($_.Name): geen BOM — Windows PowerShell leest dit als ANSI"
+            # Alleen eisen wat nodig is. Een bestand met uitsluitend ASCII leest
+            # hetzelfde of Windows het nu als ANSI of als UTF-8 opvat, en dan is een
+            # BOM eisen alleen maar werk zonder opbrengst. Het gaat mis zodra er één
+            # byte boven 127 in staat — een ─, é of — — want dán lopen de twee
+            # lezingen uiteen en valt het bestand om.
+            $nietAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
+            if ($nietAscii -gt 0 -and -not $heeftBom) {
+              Write-Host "FOUT  $($_.Name): $nietAscii niet-ascii bytes zonder BOM — Windows PowerShell leest dit als ANSI"
               $stuk = $true
+            } elseif ($nietAscii -eq 0) {
+              Write-Host "ok    $($_.Name): alleen ascii, BOM niet nodig"
             } else {
               Write-Host "ok    $($_.Name): BOM aanwezig"
             }
