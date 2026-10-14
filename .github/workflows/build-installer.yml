@@ -257,6 +257,7 @@ jobs:
         with:
           name: schermafdrukken-bediening
           path: schermafdrukken/*.png
+          retention-days: 3
           if-no-files-found: warn
 
       - name: Inno Setup installeren
@@ -399,7 +400,7 @@ jobs:
         with:
           name: Bootharoo_Setup_${{ steps.versie.outputs.tag }}
           path: dist/Bootharoo_Setup_*.exe
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: error
 
       # Alleen bij een tag-push: de installer aan de bijbehorende release
